@@ -51,6 +51,14 @@ Disk.  For development, symlink this checkout into
   ground frames (`dts_ground`), triggers (`dts_triggers`), object
   visibility/frame tracks (`dts_object_anim`) and scale animation
   (`dts_scale_anim`).  Blend sequences store raw blend offsets in the pose.
+- **Sequence playback speed** is not a scene property.  A sequence stores its
+  own `dts_duration`, and one shape's sequences disagree — light_male's body
+  animations run at 15 fps and its short overlays at 30 — while the importer
+  lays keyframes one per Blender frame.  NLA → Add → *DTS Sequences (retimed)*
+  puts each sequence on its own track with `strip.scale` set so the strip spans
+  its real duration, which is the only way to hold differing rates at once.
+  Export is unaffected either way: `dts_duration` stays authoritative, so
+  retiming a strip never changes the written file.
 - **Materials** are Principled BSDF with the texture found next to the .dts
   by material name; DTS flags are `dts_*` boolean custom props (the props are
   the round-trip source of truth).  The exporter always writes a self-index

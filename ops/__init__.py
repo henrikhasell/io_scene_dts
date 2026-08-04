@@ -4,5 +4,6 @@ from .export_dsq import ExportDSQ
 from .export_dts import ExportDTS
 from .import_dsq import ImportDSQ
 from .import_dts import ImportDTS
+from .nla_stack import StackSequencesNLA
 
-__all__ = ["ImportDTS", "ExportDTS", "ImportDSQ", "ExportDSQ"]
+__all__ = ["ImportDTS", "ExportDTS", "ImportDSQ", "ExportDSQ", "StackSequencesNLA"]

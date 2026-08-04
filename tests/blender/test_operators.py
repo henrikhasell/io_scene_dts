@@ -753,6 +753,76 @@ def test_import_dts_rejects_more_than_one_shape():
         raise AssertionError("expected two .dts selections to be rejected")
 
 
+def _bone_driving_actions(arm):
+    return [
+        a for a in bpy.data.actions
+        if a.get("dts_sequence")
+        and any(fc.data_path.startswith('pose.bones["') for fc in _fcurves(a))
+    ]
+
+
+def test_nla_stack_retimes_each_sequence_to_its_own_rate():
+    """One scene fps cannot serve sequences authored at 15 and 30; a per-strip
+    scale can.  Each strip must span its sequence's real-world duration."""
+    from io_scene_dts.ops.nla_stack import strip_scale
+
+    _reset()
+    arm = _import_dts("v24_w_sqknest.dts")
+    bpy.context.view_layer.objects.active = arm
+    scene = bpy.context.scene
+    fps = scene.render.fps / scene.render.fps_base
+
+    res = bpy.ops.io_scene_dts.stack_sequences_nla()
+    assert res == {"FINISHED"}, res
+
+    tracks = arm.animation_data.nla_tracks
+    assert len(tracks) == len(_bone_driving_actions(arm))
+
+    checked = 0
+    for track in tracks:
+        strip = track.strips[0]
+        action = strip.action
+        assert not strip.use_sync_length, track.name
+        assert abs(strip.scale - strip_scale(action, fps)) < 1e-5, track.name
+        n = int(action.get("dts_keyframes") or 0)
+        duration = float(action.get("dts_duration") or 0.0)
+        if n > 1 and duration > 0.0:
+            seconds = (strip.frame_end - strip.frame_start) / fps
+            assert abs(seconds - duration) < 1e-3, (track.name, seconds, duration)
+            checked += 1
+    assert checked, "fixture carries no timed sequences"
+
+    # a library of clips, not forty animations blended at once
+    assert sum(0 if t.mute else 1 for t in tracks) == 1
+    # the assigned action would evaluate on top of its own strip
+    assert arm.animation_data.action is None
+
+
+def test_nla_stack_is_idempotent_and_leaves_export_alone():
+    _reset()
+    arm = _import_dts("v24_w_sqknest.dts")
+    bpy.context.view_layer.objects.active = arm
+    assert bpy.ops.io_scene_dts.stack_sequences_nla() == {"FINISHED"}
+    n_tracks = len(arm.animation_data.nla_tracks)
+
+    # re-running must not pile up duplicate tracks
+    assert bpy.ops.io_scene_dts.stack_sequences_nla() == {"CANCELLED"}
+    assert len(arm.animation_data.nla_tracks) == n_tracks
+
+    # retimed strips must not reach the exported sequence timing
+    out = _tmp(".dsq")
+    assert bpy.ops.io_scene_dts.export_dsq(filepath=out) == {"FINISHED"}
+    dsq = read_dsq(Path(out).read_bytes())
+    written = {n.lower(): s for n, s in zip(dsq.sequence_names, dsq.sequences)}
+    src = read_shape_file(FIXTURES / "v24_w_sqknest.dts")
+    for s in src.sequences:
+        name = src.name(s.name_index).lower()
+        if name not in written:
+            continue
+        assert written[name].num_keyframes == s.num_keyframes, name
+        assert abs(written[name].duration - s.duration) < 1e-4, name
+
+
 def test_import_hides_non_default_detail_levels():
     """Every LOD sits at the same origin; only the default (largest size) one
     is visible after import."""
