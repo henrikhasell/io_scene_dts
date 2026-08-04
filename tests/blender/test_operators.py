@@ -532,3 +532,46 @@ def test_texture_next_to_dts_wins():
 
     reset_texture_cache()
     assert find_texture("hull", shapes) == local
+
+
+def test_material_path_prefix_picks_subdirectory():
+    r"""A material named "skins\foo" means textures/skins/foo, not textures/foo."""
+    import tempfile
+
+    from io_scene_dts.mapping.materials import find_texture, reset_texture_cache
+
+    root = Path(tempfile.mkdtemp())
+    shapes = root / "shapes"
+    shapes.mkdir()
+    textures = root / "textures"
+    skins = textures / "skins"
+    skins.mkdir(parents=True)
+    shallow = textures / "base.lmale.png"
+    nested = skins / "base.lmale.png"
+    for p in (shallow, nested):
+        p.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    reset_texture_cache()
+    assert find_texture("skins\\base.lmale", shapes) == nested
+    # forward slashes too, and no prefix falls back to the flat search
+    assert find_texture("skins/base.lmale", shapes) == nested
+    assert find_texture("base.lmale", shapes) == shallow
+
+    # a prefix that names no directory still resolves via the flat index
+    assert find_texture("nosuchdir\\base.lmale", shapes) == shallow
+
+
+def test_material_prefix_cannot_escape_textures_tree():
+    import tempfile
+
+    from io_scene_dts.mapping.materials import find_texture, reset_texture_cache
+
+    root = Path(tempfile.mkdtemp())
+    shapes = root / "shapes"
+    shapes.mkdir()
+    (root / "textures").mkdir()
+    outside = root / "secret.png"
+    outside.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    reset_texture_cache()
+    assert find_texture("..\\secret", shapes) is None

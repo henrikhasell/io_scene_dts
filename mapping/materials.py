@@ -69,12 +69,44 @@ def sibling_texture_dir(search_dir: Path) -> Path | None:
     return tex if tex.is_dir() else None
 
 
+def _split_material_name(name: str) -> tuple[str, str]:
+    r"""Split a stored material name into (path prefix, bare name).
+
+    Names keep the authoring tool's path, e.g. ``skins\base.lmale``.  That
+    prefix is a real directory under ``textures/``, so it is worth keeping
+    rather than discarding -- it is the only thing distinguishing
+    ``textures/skins/base.lmale.png`` from a stale ``textures/base.lmale.png``.
+    """
+    norm = name.replace("\\", "/")
+    if "/" in norm:
+        prefix, _, bare = norm.rpartition("/")
+        return prefix, bare
+    return "", norm
+
+
+def _prefixed_dir(tex_dir: Path, prefix: str) -> Path | None:
+    """``tex_dir/prefix`` if it exists and stays inside the texture tree."""
+    if not prefix:
+        return None
+    try:
+        resolved = (tex_dir / prefix).resolve()
+        root = tex_dir.resolve()
+    except OSError:
+        return None
+    if not resolved.is_dir():
+        return None
+    # the prefix comes out of a file, so refuse anything that escapes the tree
+    if resolved != root and root not in resolved.parents:
+        return None
+    return resolved
+
+
 def _indexed(root: Path) -> dict[str, Path]:
     """Case-insensitive stem -> path over a texture tree, cached.
 
-    Textures sit in subdirectories (``textures/skins/foo.png``) and material
-    names carry at most a legacy prefix that ``Material.basename`` already
-    strips, so the index is keyed on the bare stem and built recursively.
+    Textures sit in subdirectories (``textures/skins/foo.png``), so the index
+    is keyed on the bare stem and built recursively; it is the fallback for
+    when a material's own path prefix does not locate the file.
     """
     key = root.resolve()
     cached = _texture_index.get(key)
@@ -106,14 +138,23 @@ def _match_keys(name: str) -> list[str]:
 
 
 def find_texture(name: str, search_dir: Path | None) -> Path | None:
-    """Find an image for a material name (case-insensitive).
+    r"""Find an image for a material name (case-insensitive).
 
-    Looks next to the .dts first, then in a sibling ``textures/`` tree when the
-    shape lives in a directory named ``shapes``.
+    Resolution order:
+
+    1. next to the .dts -- a texture dropped beside a shape is an override,
+       so it wins regardless of what the name's path prefix says;
+    2. the prefix directory under a sibling ``textures/`` tree, so
+       ``skins\base.lmale`` prefers ``textures/skins/base.lmale.png``;
+    3. anywhere in that tree, matched on the bare name.
+
+    The sibling hop only happens when the shape lives in a directory named
+    ``shapes``.
     """
     if search_dir is None or not search_dir.is_dir():
         return None
-    keys = _match_keys(name)
+    prefix, bare = _split_material_name(name)
+    keys = _match_keys(bare)
     local = {
         p.stem.lower(): p
         for p in sorted(search_dir.iterdir(), key=lambda q: str(q).lower())
@@ -123,8 +164,11 @@ def find_texture(name: str, search_dir: Path | None) -> Path | None:
         if key in local:
             return local[key]
     tex_dir = sibling_texture_dir(search_dir)
-    if tex_dir is not None:
-        index = _indexed(tex_dir)
+    if tex_dir is None:
+        return None
+    sub = _prefixed_dir(tex_dir, prefix)
+    for root in ([sub] if sub is not None else []) + [tex_dir]:
+        index = _indexed(root)
         for key in keys:
             if key in index:
                 return index[key]
@@ -162,7 +206,8 @@ def material_to_blender(
     bsdf = next(n for n in bmat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
     bsdf.inputs["Roughness"].default_value = 1.0
 
-    tex_path = find_texture(mat.basename, search_dir)
+    # the full name, not basename: the path prefix is the lookup hint
+    tex_path = find_texture(mat.name, search_dir)
     if tex_path is not None:
         img = bpy.data.images.load(str(tex_path), check_existing=True)
         tex = bmat.node_tree.nodes.new("ShaderNodeTexImage")
