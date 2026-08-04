@@ -1,0 +1,103 @@
+"""dtslib — pure-Python Torque DTS/DSQ format library (no bpy dependency).
+
+Supports reading DTS versions 19-24 and writing versions 24 (Torque Game
+Engine 1.5) and 23 (Tribes 2).  DSQ sequence files: read 17-24, write the
+modern (v22+) layout.
+"""
+
+from .errors import DtsError, DtsGuardMismatch, DtsUnsupportedVersion, DtsWriteError
+from .primitives import Quat16, TSIntegerSet
+from .reader import read_header, read_shape, read_shape_file
+from .sequence_io import read_dsq, write_dsq
+from .types import (
+    DECAL_MESH,
+    MESH_BILLBOARD,
+    MESH_BILLBOARD_Z_AXIS,
+    NO_MAP,
+    NULL_MESH,
+    PRIM_FAN,
+    PRIM_INDEXED,
+    PRIM_MATERIAL_MASK,
+    PRIM_NO_MATERIAL,
+    PRIM_STRIP,
+    PRIM_TRIANGLES,
+    PRIM_TYPE_MASK,
+    SEQ_BLEND,
+    SEQ_CYCLIC,
+    SEQ_MAKE_PATH,
+    SKIN_MESH,
+    SORTED_MESH,
+    STANDARD_MESH,
+    TRIGGER_INVERT_ON_REVERSE,
+    TRIGGER_STATE_ON,
+    Decal,
+    DecalMeshData,
+    Detail,
+    DsqFile,
+    IflMaterial,
+    Material,
+    Mesh,
+    Node,
+    Object,
+    ObjectState,
+    Primitive,
+    Sequence,
+    Shape,
+    SortedData,
+    Trigger,
+)
+from .writer import strip_ground_frames, write_shape, write_shape_file
+
+__all__ = [
+    "DtsError",
+    "DtsGuardMismatch",
+    "DtsUnsupportedVersion",
+    "DtsWriteError",
+    "Quat16",
+    "TSIntegerSet",
+    "read_header",
+    "read_shape",
+    "read_shape_file",
+    "read_dsq",
+    "write_dsq",
+    "write_shape",
+    "write_shape_file",
+    "strip_ground_frames",
+    "Shape",
+    "Node",
+    "Object",
+    "Decal",
+    "IflMaterial",
+    "Detail",
+    "ObjectState",
+    "Trigger",
+    "Primitive",
+    "Mesh",
+    "Sequence",
+    "Material",
+    "DsqFile",
+    "SortedData",
+    "DecalMeshData",
+    "STANDARD_MESH",
+    "SKIN_MESH",
+    "DECAL_MESH",
+    "SORTED_MESH",
+    "NULL_MESH",
+    "PRIM_TRIANGLES",
+    "PRIM_STRIP",
+    "PRIM_FAN",
+    "PRIM_INDEXED",
+    "PRIM_NO_MATERIAL",
+    "PRIM_TYPE_MASK",
+    "PRIM_MATERIAL_MASK",
+    "MESH_BILLBOARD",
+    "MESH_BILLBOARD_Z_AXIS",
+    "SEQ_CYCLIC",
+    "SEQ_BLEND",
+    "SEQ_MAKE_PATH",
+    "TRIGGER_STATE_ON",
+    "TRIGGER_INVERT_ON_REVERSE",
+    "NO_MAP",
+]
+
+__version__ = "1.0.0"

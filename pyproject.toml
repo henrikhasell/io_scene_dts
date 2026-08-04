@@ -1,0 +1,24 @@
+[project]
+name = "io_scene_dts"
+version = "1.0.0"
+description = "Blender add-on: Torque DTS/DSQ importer/exporter"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [".*", "*.egg", "build", "dist", ".venv", "tests/blender"]
+markers = [
+    "corpus: sweeps over the full on-disk DTS corpus (slow-ish; deselect with -m 'not corpus')",
+]
+
+[tool.coverage.run]
+source = ["dtslib", "mapping", "ops"]
+parallel = true
+relative_files = true
+omit = ["tests/*", ".venv/*"]
+
+[tool.coverage.paths]
+source = [
+    ".",
+    "*/io_scene_dts",
+]

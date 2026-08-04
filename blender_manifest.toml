@@ -1,0 +1,31 @@
+schema_version = "1.0.0"
+
+id = "io_scene_dts"
+version = "1.0.0"
+name = "Torque DTS format"
+tagline = "Import/export Torque DTS shapes and DSQ sequences"
+maintainer = "Henrik <henrik@henrik.si>"
+type = "add-on"
+
+website = "https://github.com/henrik/io_scene_dts"
+tags = ["Import-Export"]
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+
+[permissions]
+files = "Read/write .dts and .dsq files and load textures next to them"
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  ".git/",
+  ".venv/",
+  ".hypothesis/",
+  "tests/",
+  ".gitignore",
+  ".coverage*",
+  "htmlcov/",
+  "pyproject.toml",
+]
