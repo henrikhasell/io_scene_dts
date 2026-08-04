@@ -613,7 +613,7 @@ def _offset_bone(arm):
     return best
 
 
-def _probe_dsq(arm, node, *, rotate, translate):
+def _probe_dsq(arm, node, *, rotate, translate, name="Probe"):
     """A one-sequence DSQ over arm's bones that animates a single node with
     only the requested channels present."""
     from io_scene_dts.dtslib import DsqFile, Quat16, Sequence, TSIntegerSet, write_dsq
@@ -632,7 +632,7 @@ def _probe_dsq(arm, node, *, rotate, translate):
         seq.translation_matters.set(node)
         dsq.node_translations = [tuple(translate)] * seq.num_keyframes
     dsq.sequences = [seq]
-    dsq.sequence_names = ["Probe"]
+    dsq.sequence_names = [name]
     return write_dsq(dsq, 24)
 
 
@@ -704,34 +704,40 @@ def _fcurves(action):
 
 
 def test_import_dts_with_dsq_companions():
-    """A .dts selected together with .dsq files loads the sequences onto the
-    shape's armature in one go."""
+    """A shape ships its animations as many separate .dsq files — light_male
+    has about forty — so the importer takes any number of them at once."""
     import shutil
     import tempfile
 
     _reset()
     arm = _import_dts("v24_w_sqknest.dts")
     node, bone = _offset_bone(arm)
-    payload = _probe_dsq(arm, node, rotate=True, translate=None)
+    probes = ["ProbeA", "ProbeB", "ProbeC", "ProbeD", "ProbeE"]
 
     tmp = Path(tempfile.mkdtemp())
     shutil.copy(FIXTURES / "v24_w_sqknest.dts", tmp / "shape.dts")
-    (tmp / "probe.dsq").write_bytes(payload)
+    for seq in probes:
+        (tmp / f"{seq}.dsq").write_bytes(
+            _probe_dsq(arm, node, rotate=True, translate=None, name=seq)
+        )
 
     _reset()
     res = bpy.ops.io_scene_dts.import_dts(
         directory=str(tmp),
-        files=[{"name": "shape.dts"}, {"name": "probe.dsq"}],
+        files=[{"name": "shape.dts"}] + [{"name": f"{s}.dsq"} for s in probes],
     )
     assert res == {"FINISHED"}, res
 
     arm = _armature()
-    action = bpy.data.actions.get("Probe")
-    assert action is not None, [a.name for a in bpy.data.actions]
-    # bound to this armature's bones, not merely created
-    assert any(bone.name in fc.data_path for fc in _fcurves(action))
-    # nothing assigns DSQ actions, so they need a fake user to survive a save
-    assert action.use_fake_user
+    for seq in probes:
+        action = bpy.data.actions.get(seq)
+        assert action is not None, f"{seq} missing from {list(bpy.data.actions.keys())}"
+        # bound to this armature's bones, not merely created
+        assert any(bone.name in fc.data_path for fc in _fcurves(action))
+        # nothing assigns DSQ actions, so they need a fake user to survive a save
+        assert action.use_fake_user
+    # every companion landed, and none clobbered the shape's own sequences
+    assert len(bpy.data.actions) == len(read_shape_file(tmp / "shape.dts").sequences) + len(probes)
 
 
 def test_import_dts_rejects_more_than_one_shape():
