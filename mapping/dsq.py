@@ -67,6 +67,9 @@ def dsq_to_actions(dsq: DsqFile, arm_obj) -> tuple[list[bpy.types.Action], list[
 
     for name, seq in zip(dsq.sequence_names, dsq.sequences):
         action = bpy.data.actions.new(name or "sequence")
+        # Nothing assigns these, so they would be zero-user datablocks and get
+        # purged on save/reload — importing 40 DSQs would keep none of them.
+        action.use_fake_user = True
         action["dts_sequence"] = True
         action["dts_flags"] = seq.flags
         action["dts_cyclic"] = bool(seq.flags & SEQ_CYCLIC)
