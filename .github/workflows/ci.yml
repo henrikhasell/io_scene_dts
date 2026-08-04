@@ -1,0 +1,68 @@
+# Test on pushes to main, PRs, and semver tags; on a semver tag, build the
+# extension zip and create a GitHub release with the zip attached.
+#
+# Release flow:
+#   1. bump `version` in blender_manifest.toml (and pyproject.toml)
+#   2. git tag v1.2.3 && git push origin v1.2.3
+# The build fails if the tag's X.Y.Z core doesn't match the manifest version.
+#
+# Semver tags: optional leading "v", X.Y.Z core, optional -prerelease/+build,
+# e.g. v1.2.3, 1.2.3, v1.2.3-rc.1, v1.2.3+build5.  The tag globs below are a
+# coarse filter; scripts/build_extension.py --check-version is the
+# authoritative semver gate.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+      - '[0-9]*.[0-9]*.[0-9]*'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install --quiet pytest hypothesis
+      # corpus tests skip automatically (game-data trees are not in CI);
+      # Blender integration tests live outside the pytest testpaths
+      - run: python -m pytest -m "not corpus" -q
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build extension zip
+        run: python scripts/build_extension.py --check-version "$GITHUB_REF_NAME"
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(python -c 'import tomllib; print(tomllib.load(open("blender_manifest.toml","rb"))["version"])')
+          ASSET_NAME="io_scene_dts-${VERSION}.zip"
+          gh release create "$GITHUB_REF_NAME" "dist/${ASSET_NAME}" \
+            --title "io_scene_dts $GITHUB_REF_NAME" \
+            --notes "$(cat <<EOF
+          Torque DTS/DSQ importer/exporter for Blender 4.2+.
+
+          **Install:** download \`${ASSET_NAME}\` below, then in Blender:
+          *Edit → Preferences → Get Extensions → ⌄ → Install from Disk…*
+          (or drag the zip onto a Blender window).
+          EOF
+          )"

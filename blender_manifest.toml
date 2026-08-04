@@ -28,8 +28,8 @@ paths_exclude_pattern = [
   "scripts/",
   "dist/",
   "htmlcov/",
+  ".github/",
   ".gitignore",
-  ".gitlab-ci.yml",
   ".coverage*",
   "pyproject.toml",
 ]
