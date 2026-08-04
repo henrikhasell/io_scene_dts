@@ -1,6 +1,6 @@
 [project]
 name = "io_scene_dts"
-version = "1.0.0"
+version = "1.2.0"
 description = "Blender add-on: Torque DTS/DSQ importer/exporter"
 requires-python = ">=3.11"
 
