@@ -65,13 +65,6 @@ def _action_channelbag(action: bpy.types.Action, id_obj):
     return action, None  # pre-4.4: Action itself owns .fcurves
 
 
-def _assign_action(obj, action, slot) -> None:
-    ad = obj.animation_data or obj.animation_data_create()
-    ad.action = action
-    if slot is not None:
-        ad.action_slot = slot
-
-
 def _iter_fcurves(action: bpy.types.Action):
     if hasattr(action, "layers") and action.layers:
         for layer in action.layers:
@@ -90,13 +83,14 @@ def _iter_fcurves(action: bpy.types.Action):
 def import_sequences(shape: Shape, arm_obj: bpy.types.Object, bone_name_by_node: dict[int, str]) -> list[bpy.types.Action]:
     rest_local = _rest_local_matrices(shape)
     actions = []
-    slots = []
     for seq in shape.sequences:
         name = shape.name(seq.name_index) or "sequence"
         action = bpy.data.actions.new(name)
+        # a sequence only ever plays from an NLA strip, and deleting that track
+        # must not take the action with it
+        action.use_fake_user = True
         _store_sequence_props(action, seq, shape)
-        bag, slot = _action_channelbag(action, arm_obj)
-        slots.append(slot)
+        bag, _slot = _action_channelbag(action, arm_obj)
 
         n = seq.num_keyframes
         rot_members = sorted(seq.rotation_matters.indices())
@@ -137,8 +131,6 @@ def import_sequences(shape: Shape, arm_obj: bpy.types.Object, bone_name_by_node:
             marker = action.pose_markers.new(f"trig{state_bit.bit_length() - 1 if state_bit else 0}:{'on' if on else 'off'}")
             marker.frame = 1 + round(trig.pos * max(n - 1, 0))
         actions.append(action)
-    if actions:
-        _assign_action(arm_obj, actions[0], slots[0])
     return actions
 
 

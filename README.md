@@ -15,8 +15,8 @@ animation.
   armature's bones by node-name matching — either onto the active armature
   (File → Import → Torque Sequence), or by selecting `.dsq` files alongside
   the `.dts` in the shape importer, which loads them onto the armature it
-  just created.  Imported sequences become Actions but are not made active;
-  pick one in the Action Editor.
+  just created.  Sequences always arrive as NLA strips (see below), one track
+  each, all muted but one — pick which plays in the NLA editor.
 
 The format core (`dtslib/`) is bpy-free and byte-exact: rewriting any
 engine-written v23/v24 file reproduces it byte-for-byte (verified against
@@ -51,14 +51,20 @@ Disk.  For development, symlink this checkout into
   ground frames (`dts_ground`), triggers (`dts_triggers`), object
   visibility/frame tracks (`dts_object_anim`) and scale animation
   (`dts_scale_anim`).  Blend sequences store raw blend offsets in the pose.
-- **Sequence playback speed** is not a scene property.  A sequence stores its
-  own `dts_duration`, and one shape's sequences disagree — light_male's body
-  animations run at 15 fps and its short overlays at 30 — while the importer
-  lays keyframes one per Blender frame.  NLA → Add → *DTS Sequences (retimed)*
-  puts each sequence on its own track with `strip.scale` set so the strip spans
-  its real duration, which is the only way to hold differing rates at once.
-  Export is unaffected either way: `dts_duration` stays authoritative, so
-  retiming a strip never changes the written file.
+- **Sequences are NLA strips, always.**  Playback speed is not a scene
+  property: a sequence stores its own `dts_duration`, and one shape's sequences
+  disagree — across light_male and its DSQs, 13 are authored at 30 fps and 21
+  at about 15 — while keyframes are laid one per Blender frame.  An Action
+  assigned straight to the armature therefore plays at `scene.render.fps` and
+  is wrong for all but the sequences that happen to match, so the importer
+  never assigns one.  Each sequence gets a track with
+
+      strip.scale = dts_duration * fps / (dts_keyframes - 1)
+
+  so every strip spans its real duration whatever the scene is set to.  A
+  sequence with no bone channels (visibility- or decal-only) gets no strip and
+  is reported.  Export is unaffected: `dts_duration` stays the single source of
+  truth, so dragging a strip never changes the written file.
 - **Materials** are Principled BSDF with the texture found next to the .dts
   by material name; DTS flags are `dts_*` boolean custom props (the props are
   the round-trip source of truth).  The exporter always writes a self-index

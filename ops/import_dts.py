@@ -6,6 +6,7 @@ from bpy_extras.io_utils import ImportHelper
 
 from ..dtslib import DtsError, read_dsq, read_shape_file
 from ..mapping.dsq import dsq_to_actions
+from ..mapping.nla import scene_fps, stack_actions
 from ..mapping.shape_to_blender import shape_to_blender
 
 
@@ -44,20 +45,29 @@ class ImportDTS(bpy.types.Operator, ImportHelper):
             return [Path(self.directory) / n for n in names]
         return [Path(self.filepath)]
 
-    def _apply_companions(self, paths, arm_obj):
-        """Load .dsq files selected next to the shape onto its armature."""
-        total = 0
+    def _apply_companions(self, paths, arm_obj, context):
+        """Load .dsq files selected next to the shape onto its armature.
+
+        Returns (sequences, files_read) — a file that fails to read is skipped,
+        so the counts differ and the report should say so.
+        """
+        collected, read = [], 0
         for path in paths:
             try:
                 dsq = read_dsq(path.read_bytes())
             except (OSError, DtsError) as e:
                 self.report({"WARNING"}, f"{path.name}: {e}")
                 continue
+            read += 1
             actions, warnings = dsq_to_actions(dsq, arm_obj)
             for w in warnings:
                 self.report({"WARNING"}, f"{path.name}: {w}")
-            total += len(actions)
-        return total
+            collected += actions
+
+        _, skipped = stack_actions(arm_obj, collected, scene_fps(context))
+        for action in skipped:
+            self.report({"WARNING"}, f"{action.name}: no bone channels; no NLA strip created")
+        return len(collected), read
 
     def execute(self, context):
         paths = self._selected_paths()
@@ -94,11 +104,11 @@ class ImportDTS(bpy.types.Operator, ImportHelper):
         for w in warnings:
             self.report({"WARNING"}, w)
 
-        extra = self._apply_companions(companions, arm_obj) if companions else 0
         summary = (f"Imported {name}: {len(shape.nodes)} nodes, "
                    f"{len(shape.objects)} objects, {len(shape.sequences)} sequences")
         if companions:
-            summary += f"; +{extra} sequence(s) from {len(companions)} DSQ file(s)"
+            extra, read = self._apply_companions(companions, arm_obj, context)
+            summary += f"; +{extra} sequence(s) from {read} of {len(companions)} DSQ file(s)"
         self.report({"INFO"}, summary)
         return {"FINISHED"}
 

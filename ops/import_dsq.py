@@ -4,6 +4,7 @@ from bpy_extras.io_utils import ImportHelper
 
 from ..dtslib import DtsError, read_dsq
 from ..mapping.dsq import dsq_to_actions
+from ..mapping.nla import scene_fps, stack_actions
 
 
 class ImportDSQ(bpy.types.Operator, ImportHelper):
@@ -34,9 +35,19 @@ class ImportDSQ(bpy.types.Operator, ImportHelper):
         actions, warnings = dsq_to_actions(dsq, arm_obj)
         for w in warnings:
             self.report({"WARNING"}, w)
+
+        # what you just imported is what you want to see playing
+        tracks, skipped = stack_actions(
+            arm_obj, actions, scene_fps(context),
+            keep_playing=actions[0].name if actions else None,
+        )
+        for action in skipped:
+            self.report({"WARNING"}, f"{action.name}: no bone channels; no NLA strip created")
+
         self.report(
             {"INFO"},
-            f"Imported {len(actions)} sequence(s): {', '.join(a.name for a in actions)}",
+            f"Imported {len(actions)} sequence(s) as {len(tracks)} NLA track(s): "
+            + ", ".join(a.name for a in actions),
         )
         return {"FINISHED"}
 

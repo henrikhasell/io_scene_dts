@@ -4,6 +4,7 @@ from bpy_extras.io_utils import ExportHelper
 
 from ..dtslib import DtsError, write_dsq
 from ..mapping.dsq import actions_to_dsq
+from ..mapping.nla import playing_action
 
 
 class ExportDSQ(bpy.types.Operator, ExportHelper):
@@ -17,8 +18,11 @@ class ExportDSQ(bpy.types.Operator, ExportHelper):
     filter_glob: StringProperty(default="*.dsq", options={"HIDDEN"})
 
     active_action_only: BoolProperty(
-        name="Active Action Only",
-        description="Export only the armature's current action instead of all DTS actions",
+        name="Active Sequence Only",
+        description=(
+            "Export only the sequence currently playing — the armature's one "
+            "unmuted NLA track — instead of all DTS actions"
+        ),
         default=False,
     )
 
@@ -33,9 +37,14 @@ class ExportDSQ(bpy.types.Operator, ExportHelper):
             return {"CANCELLED"}
 
         if self.active_action_only:
-            action = arm_obj.animation_data.action if arm_obj.animation_data else None
+            # sequences import as NLA strips, so "active" is the one unmuted
+            # track rather than an assigned action
+            action = playing_action(arm_obj)
             if action is None:
-                self.report({"ERROR"}, "the armature has no active action")
+                self.report(
+                    {"ERROR"},
+                    "no single active sequence — leave exactly one NLA track unmuted",
+                )
                 return {"CANCELLED"}
             actions = [action]
         else:

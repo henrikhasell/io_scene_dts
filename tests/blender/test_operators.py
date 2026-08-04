@@ -253,7 +253,9 @@ def test_dsq_active_action_only():
     _import_dts("v24_w_sqknest.dts")
     arm = _armature()
     bpy.context.view_layer.objects.active = arm
-    assert arm.animation_data and arm.animation_data.action
+    # "active" is now the single unmuted NLA track, not an assigned action
+    assert arm.animation_data.action is None
+    assert sum(0 if t.mute else 1 for t in arm.animation_data.nla_tracks) == 1
     out = _tmp(".dsq")
     res = bpy.ops.io_scene_dts.export_dsq(filepath=out, active_action_only=True)
     assert res == {"FINISHED"}, res
@@ -637,16 +639,17 @@ def _probe_dsq(arm, node, *, rotate, translate, name="Probe"):
 
 
 def _import_probe(arm, payload):
+    """Import a probe DSQ and evaluate it.  Sequences arrive as NLA strips, so
+    the pose comes from the strip, not from an assigned action."""
     out = _tmp(".dsq")
     Path(out).write_bytes(payload)
     bpy.context.view_layer.objects.active = arm
     res = bpy.ops.io_scene_dts.import_dsq(filepath=out)
     assert res == {"FINISHED"}, res
     action = bpy.data.actions["Probe"]
-    ad = arm.animation_data or arm.animation_data_create()
-    ad.action = action
-    if getattr(action, "slots", None):
-        ad.action_slot = action.slots[0]
+    live = [t for t in arm.animation_data.nla_tracks if not t.mute]
+    assert [t.name for t in live] == ["Probe"], [t.name for t in live]
+    assert arm.animation_data.action is None
     bpy.context.scene.frame_set(1)
     bpy.context.view_layer.update()
     return action
@@ -761,19 +764,15 @@ def _bone_driving_actions(arm):
     ]
 
 
-def test_nla_stack_retimes_each_sequence_to_its_own_rate():
-    """One scene fps cannot serve sequences authored at 15 and 30; a per-strip
-    scale can.  Each strip must span its sequence's real-world duration."""
-    from io_scene_dts.ops.nla_stack import strip_scale
+def test_dts_import_stacks_sequences_as_nla_strips():
+    """Importing is the only way sequences arrive, and they arrive retimed: one
+    scene fps cannot serve sequences authored at 15 and 30, a per-strip scale
+    can.  Each strip must span its sequence's real-world duration."""
+    from io_scene_dts.mapping.nla import strip_scale
 
     _reset()
     arm = _import_dts("v24_w_sqknest.dts")
-    bpy.context.view_layer.objects.active = arm
-    scene = bpy.context.scene
-    fps = scene.render.fps / scene.render.fps_base
-
-    res = bpy.ops.io_scene_dts.stack_sequences_nla()
-    assert res == {"FINISHED"}, res
+    fps = bpy.context.scene.render.fps / bpy.context.scene.render.fps_base
 
     tracks = arm.animation_data.nla_tracks
     assert len(tracks) == len(_bone_driving_actions(arm))
@@ -792,24 +791,34 @@ def test_nla_stack_retimes_each_sequence_to_its_own_rate():
             checked += 1
     assert checked, "fixture carries no timed sequences"
 
-    # a library of clips, not forty animations blended at once
+    # a library of clips, not seventeen animations blended at once
     assert sum(0 if t.mute else 1 for t in tracks) == 1
-    # the assigned action would evaluate on top of its own strip
+    # an assigned action would evaluate on top of the stack, at scene fps
     assert arm.animation_data.action is None
+    # deleting a track must not take the sequence with it
+    assert all(a.use_fake_user for a in _bone_driving_actions(arm))
 
 
-def test_nla_stack_is_idempotent_and_leaves_export_alone():
+def test_no_standalone_nla_stacker():
+    """Stacking is not a separate step a user can forget to run.
+
+    bpy.ops namespaces resolve lazily, so hasattr always succeeds — check what
+    is actually registered.
+    """
+    assert "stack_sequences_nla" not in dir(bpy.ops.io_scene_dts)
+    assert not hasattr(bpy.types, "IO_SCENE_DTS_OT_stack_sequences_nla")
+
+
+def test_nla_strips_do_not_reach_the_exported_file():
+    """dts_duration stays the single source of truth, so retiming a strip
+    cannot change what gets written."""
     _reset()
     arm = _import_dts("v24_w_sqknest.dts")
     bpy.context.view_layer.objects.active = arm
-    assert bpy.ops.io_scene_dts.stack_sequences_nla() == {"FINISHED"}
-    n_tracks = len(arm.animation_data.nla_tracks)
 
-    # re-running must not pile up duplicate tracks
-    assert bpy.ops.io_scene_dts.stack_sequences_nla() == {"CANCELLED"}
-    assert len(arm.animation_data.nla_tracks) == n_tracks
+    for track in arm.animation_data.nla_tracks:
+        track.strips[0].scale *= 3.0  # deliberately wreck the display timing
 
-    # retimed strips must not reach the exported sequence timing
     out = _tmp(".dsq")
     assert bpy.ops.io_scene_dts.export_dsq(filepath=out) == {"FINISHED"}
     dsq = read_dsq(Path(out).read_bytes())

@@ -43,6 +43,7 @@ from ..dtslib.types import (
 
 from .materials import material_to_blender, reset_texture_cache
 from .naming import object_display_name
+from .nla import scene_fps, stack_actions
 from .sequences import dts_local_matrix, import_sequences
 
 BONE_LENGTH = 0.25
@@ -189,7 +190,13 @@ def shape_to_blender(
         _store_decals(shape, arm_obj)
 
     if do_import_sequences and shape.sequences:
-        import_sequences(shape, arm_obj, bone_name_by_node)
+        actions = import_sequences(shape, arm_obj, bone_name_by_node)
+        _, skipped = stack_actions(arm_obj, actions, scene_fps(context))
+        for action in skipped:
+            warnings.append(
+                f"sequence {action.name!r} has no bone channels "
+                "(visibility/decal only); no NLA strip created"
+            )
 
     return arm_obj, warnings
 

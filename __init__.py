@@ -10,14 +10,13 @@ except ModuleNotFoundError:  # imported outside Blender (pytest, tooling)
     bpy = None
 
 if bpy is not None:
-    from .ops import export_dsq, export_dts, import_dsq, import_dts, nla_stack
+    from .ops import export_dsq, export_dts, import_dsq, import_dts
 
     _CLASSES = (
         import_dts.ImportDTS,
         export_dts.ExportDTS,
         import_dsq.ImportDSQ,
         export_dsq.ExportDSQ,
-        nla_stack.StackSequencesNLA,
     )
 
     def register():
@@ -27,10 +26,8 @@ if bpy is not None:
         bpy.types.TOPBAR_MT_file_import.append(import_dsq.menu_func)
         bpy.types.TOPBAR_MT_file_export.append(export_dts.menu_func)
         bpy.types.TOPBAR_MT_file_export.append(export_dsq.menu_func)
-        bpy.types.NLA_MT_add.append(nla_stack.menu_func)
 
     def unregister():
-        bpy.types.NLA_MT_add.remove(nla_stack.menu_func)
         bpy.types.TOPBAR_MT_file_import.remove(import_dts.menu_func)
         bpy.types.TOPBAR_MT_file_import.remove(import_dsq.menu_func)
         bpy.types.TOPBAR_MT_file_export.remove(export_dts.menu_func)
