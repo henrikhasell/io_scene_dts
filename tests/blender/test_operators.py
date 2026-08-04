@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 import bpy
+from mathutils import Vector
 
 REPO = Path(__file__).resolve().parents[2]
 FIXTURES = REPO / "tests" / "fixtures"
@@ -575,3 +576,119 @@ def test_material_prefix_cannot_escape_textures_tree():
 
     reset_texture_cache()
     assert find_texture("..\\secret", shapes) is None
+
+
+# ----------------------------------------------------------------------
+# DSQ partial-channel regressions
+#
+# A sequence names the nodes it animates in rotation_matters /
+# translation_matters, and the two sets rarely agree: most nodes only rotate.
+# A DSQ carries no default transforms to fill the gap, so the importer has to
+# take the missing channel from the armature's rest pose (which was built from
+# the shape's defaults).  It used to substitute zero instead, collapsing every
+# rotation-only bone onto its parent.
+# ----------------------------------------------------------------------
+
+
+def _rest_local(bone):
+    if bone.parent:
+        return bone.parent.matrix_local.inverted() @ bone.matrix_local
+    return bone.matrix_local.copy()
+
+
+def _pose_local(pose_bone):
+    if pose_bone.parent:
+        return pose_bone.parent.matrix.inverted() @ pose_bone.matrix
+    return pose_bone.matrix.copy()
+
+
+def _offset_bone(arm):
+    """The bone whose rest offset from its parent is largest — the one where a
+    collapsed translation is most visible."""
+    best = max(
+        ((i, b) for i, b in enumerate(arm.data.bones)),
+        key=lambda ib: _rest_local(ib[1]).to_translation().length,
+    )
+    assert _rest_local(best[1]).to_translation().length > 0.05, "fixture has no offset bones"
+    return best
+
+
+def _probe_dsq(arm, node, *, rotate, translate):
+    """A one-sequence DSQ over arm's bones that animates a single node with
+    only the requested channels present."""
+    from io_scene_dts.dtslib import DsqFile, Quat16, Sequence, TSIntegerSet, write_dsq
+
+    dsq = DsqFile(version=24)
+    dsq.node_names = [b.get("dts_name") or b.name for b in arm.data.bones]
+    seq = Sequence()
+    seq.num_keyframes = 2
+    seq.duration = 0.5
+    if rotate:
+        seq.rotation_matters = TSIntegerSet()
+        seq.rotation_matters.set(node)
+        dsq.node_rotations = [Quat16.identity()] * seq.num_keyframes
+    if translate is not None:
+        seq.translation_matters = TSIntegerSet()
+        seq.translation_matters.set(node)
+        dsq.node_translations = [tuple(translate)] * seq.num_keyframes
+    dsq.sequences = [seq]
+    dsq.sequence_names = ["Probe"]
+    return write_dsq(dsq, 24)
+
+
+def _import_probe(arm, payload):
+    out = _tmp(".dsq")
+    Path(out).write_bytes(payload)
+    bpy.context.view_layer.objects.active = arm
+    res = bpy.ops.io_scene_dts.import_dsq(filepath=out)
+    assert res == {"FINISHED"}, res
+    action = bpy.data.actions["Probe"]
+    ad = arm.animation_data or arm.animation_data_create()
+    ad.action = action
+    if getattr(action, "slots", None):
+        ad.action_slot = action.slots[0]
+    bpy.context.scene.frame_set(1)
+    bpy.context.view_layer.update()
+    return action
+
+
+def test_dsq_rotation_only_node_keeps_rest_translation():
+    """Regression: a node in rotation_matters but not translation_matters used
+    to get translation (0,0,0), teleporting the bone onto its parent."""
+    _reset()
+    arm = _import_dts("v24_w_sqknest.dts")
+    node, bone = _offset_bone(arm)
+    rest_t = _rest_local(bone).to_translation()
+
+    _import_probe(arm, _probe_dsq(arm, node, rotate=True, translate=None))
+
+    posed_t = _pose_local(arm.pose.bones[bone.name]).to_translation()
+    assert (posed_t - rest_t).length < 1e-5, (
+        f"{bone.name}: rotation-only node moved to {posed_t[:]} instead of "
+        f"keeping its rest offset {rest_t[:]}"
+    )
+    # the pose channel itself must be neutral, not a counter-offset
+    assert arm.pose.bones[bone.name].location.length < 1e-5
+
+
+def test_dsq_translation_only_node_keeps_rest_rotation():
+    """Regression: a node in translation_matters but not rotation_matters had
+    the rest matrix composed on the wrong side, applying the translation in the
+    bone's rotated frame."""
+    _reset()
+    arm = _import_dts("v24_w_sqknest.dts")
+    node, bone = _offset_bone(arm)
+    rest_q = _rest_local(bone).to_quaternion()
+    target = (0.25, -0.5, 0.75)
+
+    _import_probe(arm, _probe_dsq(arm, node, rotate=False, translate=target))
+
+    posed = _pose_local(arm.pose.bones[bone.name])
+    assert (posed.to_translation() - Vector(target)).length < 1e-5, (
+        f"{bone.name}: translation-only node landed at {posed.to_translation()[:]} "
+        f"instead of {target}"
+    )
+    assert posed.to_quaternion().rotation_difference(rest_q).angle < 1e-4, (
+        f"{bone.name}: translation-only node should keep its rest orientation"
+    )
+

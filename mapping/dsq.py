@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 
 import bpy
+from mathutils import Vector
 
 from ..dtslib import DsqFile, Quat16, Sequence, Trigger, TSIntegerSet
 from ..dtslib.types import SEQ_BLEND, SEQ_CYCLIC, SEQ_MAKE_PATH
@@ -99,11 +100,14 @@ def dsq_to_actions(dsq: DsqFile, arm_obj) -> tuple[list[bpy.types.Action], list[
                 rest_m = rest[bone]
                 if q16 is None and t is None:
                     local = rest_m
+                elif q16 is None:
+                    # translation-only: keep the node's rest orientation
+                    local = rest_m.copy()
+                    local.translation = Vector(t)
                 else:
-                    q = q16 if q16 is not None else Quat16.identity()
-                    local = dts_local_matrix(q, t if t is not None else (0.0, 0.0, 0.0))
-                    if q16 is None:
-                        local = rest_m @ local  # translation-only: unlikely, keep sane
+                    # A DSQ has no default transforms, but the armature's rest pose
+                    # was built from them, so it supplies whichever channel is absent.
+                    local = dts_local_matrix(q16, t if t is not None else rest_m.to_translation())
                 basis = local if blend else rest_m.inverted() @ local
                 quats.append(basis.to_quaternion())
                 locs.append(basis.to_translation())
