@@ -1,0 +1,90 @@
+# Test on branches/MRs/tags; on a semver tag, build the extension zip,
+# upload it to the generic package registry, and create a release with the
+# zip attached.
+#
+# Release flow:
+#   1. bump `version` in blender_manifest.toml (and pyproject.toml)
+#   2. git tag v1.2.3 && git push origin v1.2.3
+# The build fails if the tag's X.Y.Z core doesn't match the manifest version.
+#
+# Semver tags: optional leading "v", X.Y.Z core, optional -prerelease/+build,
+# e.g. v1.2.3, 1.2.3, v1.2.3-rc.1, v1.2.3+build5.
+
+stages:
+  - test
+  - build
+  - release
+
+test:
+  stage: test
+  image: python:3.12
+  rules:
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  script:
+    - pip install --quiet pytest hypothesis
+    # corpus tests skip automatically (game-data trees are not in CI);
+    # Blender integration tests live outside the pytest testpaths
+    - python -m pytest -m "not corpus" -q
+
+build:
+  stage: build
+  image: python:3.12
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v?\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/'
+  script:
+    - python scripts/build_extension.py --check-version "$CI_COMMIT_TAG"
+    - VERSION=$(python -c 'import tomllib; print(tomllib.load(open("blender_manifest.toml","rb"))["version"])')
+    - ASSET_NAME="io_scene_dts-${VERSION}.zip"
+    - PACKAGE_URL="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/io_scene_dts/${CI_COMMIT_TAG}/${ASSET_NAME}"
+    - |
+      python - <<'EOF'
+      import os
+      import urllib.request
+
+      url = os.environ["PACKAGE_URL"]
+      with open("dist/" + os.environ["ASSET_NAME"], "rb") as f:
+          data = f.read()
+      req = urllib.request.Request(
+          url, data=data, method="PUT",
+          headers={"JOB-TOKEN": os.environ["CI_JOB_TOKEN"]},
+      )
+      with urllib.request.urlopen(req) as resp:
+          print(f"uploaded {url}: HTTP {resp.status}")
+      EOF
+    - echo "VERSION=${VERSION}" >> build.env
+    - echo "ASSET_NAME=${ASSET_NAME}" >> build.env
+    - echo "PACKAGE_URL=${PACKAGE_URL}" >> build.env
+  artifacts:
+    paths:
+      - dist/
+    reports:
+      dotenv: build.env
+    expire_in: 1 week
+
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v?\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/'
+  needs:
+    - job: test
+    - job: build
+      artifacts: true
+  script:
+    - echo "Creating release ${CI_COMMIT_TAG} for ${ASSET_NAME}"
+  release:
+    tag_name: '$CI_COMMIT_TAG'
+    name: 'io_scene_dts $CI_COMMIT_TAG'
+    description: |
+      Torque DTS/DSQ importer/exporter for Blender 4.2+.
+
+      **Install:** download `$ASSET_NAME` below, then in Blender:
+      *Edit → Preferences → Get Extensions → ⌄ → Install from Disk…*
+      (or drag the zip onto a Blender window).
+    assets:
+      links:
+        - name: '$ASSET_NAME'
+          url: '$PACKAGE_URL'
+          link_type: package
