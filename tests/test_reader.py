@@ -27,11 +27,20 @@ class TestHeader:
 
 
 class TestUnsupportedVersions:
-    @pytest.mark.parametrize("name", ["v15_chaingun_shot.dts", "v18_octahedron.dts"])
-    def test_old_versions_refused(self, name):
+    def test_pre_keyframe_era_refused(self, name="v15_chaingun_shot.dts"):
         with pytest.raises(DtsUnsupportedVersion) as e:
             read_shape(fixture_bytes(name))
-        assert e.value.version < 19
+        assert e.value.version < 17
+
+    def test_v18_old_format_parses(self):
+        shape = read_shape(fixture_bytes("v18_octahedron.dts"))
+        assert shape.source_version == 18
+        assert shape.nodes
+        assert shape.meshes
+        mesh = next(m for m in shape.meshes if m is not None)
+        assert mesh.verts
+        # bounds were recomputed (old files carry none)
+        assert mesh.bounds != (0.0,) * 6
 
     def test_future_version_refused(self):
         data = bytearray(fixture_bytes("v24_octahedron.dts"))

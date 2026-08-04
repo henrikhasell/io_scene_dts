@@ -271,3 +271,215 @@ def test_import_t2_player():
     assert meshes
     actions = [a for a in bpy.data.actions if a.get("dts_sequence")]
     assert len(actions) == len(src.sequences)
+
+
+def test_material_fields_survive():
+    """All six material-list fields survive import -> export."""
+    _reset()
+    _import_dts("v23_pack_upgrade_cloaking.dts")
+    out = _tmp(".dts")
+    res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="23")
+    assert res == {"FINISHED"}, res
+    src = read_shape_file(FIXTURES / "v23_pack_upgrade_cloaking.dts")
+    dst = read_shape_file(out)
+    src_by_name = {m.name.lower(): (i, m) for i, m in enumerate(src.materials)}
+    assert len(dst.materials) == len(src.materials)
+
+    def canon(mats, idx, own):
+        if idx == 0xFFFFFFFF:
+            return "none"
+        if idx == own:
+            return "self"
+        return mats[idx].name.lower()
+
+    for j, m_dst in enumerate(dst.materials):
+        i, m_src = src_by_name[m_dst.name.lower()]
+        assert m_dst.flags == m_src.flags, m_dst.name
+        assert m_dst.detail_scale == m_src.detail_scale, m_dst.name
+        assert m_dst.reflection_amount == m_src.reflection_amount, m_dst.name
+        assert canon(dst.materials, m_dst.reflectance_map, j) == canon(src.materials, m_src.reflectance_map, i), m_dst.name
+        assert canon(dst.materials, m_dst.bump_map, j) == canon(src.materials, m_src.bump_map, i), m_dst.name
+        assert canon(dst.materials, m_dst.detail_map, j) == canon(src.materials, m_src.detail_map, i), m_dst.name
+
+
+def test_material_cross_refs_survive():
+    """Synthetic case absent from the corpus: reflectance pointing at another
+    material, bump and detail maps set — must survive the Blender round-trip."""
+    sys.path.insert(0, str(REPO))  # test_synthetic does `from dtslib import ...`
+    sys.path.insert(0, str(REPO / "tests"))
+    from test_synthetic import make_triangle_shape
+
+    from io_scene_dts.dtslib import Material, write_shape_file
+
+    shape = make_triangle_shape()
+    shape.materials = [
+        Material(name="base", flags=0x3, reflectance_map=1, bump_map=2, detail_map=3,
+                 detail_scale=2.5, reflection_amount=0.25),
+        Material(name="envmap", flags=0x3, reflectance_map=1),
+        Material(name="bumpmap", flags=0x3, reflectance_map=2),
+        Material(name="detailmap", flags=0x3, reflectance_map=3),
+    ]
+    src_path = _tmp(".dts")
+    write_shape_file(shape, src_path, 24)
+
+    _reset()
+    res = bpy.ops.io_scene_dts.import_dts(filepath=src_path)
+    assert res == {"FINISHED"}, res
+    out = _tmp(".dts")
+    res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="24")
+    assert res == {"FINISHED"}, res
+    dst = read_shape_file(out)
+    by_name = {m.name: i for i, m in enumerate(dst.materials)}
+    m = dst.materials[by_name["base"]]
+    assert dst.materials[m.reflectance_map].name == "envmap"
+    assert dst.materials[m.bump_map].name == "bumpmap"
+    assert dst.materials[m.detail_map].name == "detailmap"
+    assert m.detail_scale == 2.5
+    assert abs(m.reflection_amount - 0.25) < 1e-6
+
+
+def test_texture_pairing():
+    """Every material whose texture exists next to the .dts gets its own image."""
+    _reset()
+    res = bpy.ops.io_scene_dts.import_dts(filepath=str(FIXTURES / "gman" / "v24_gman.dts"))
+    assert res == {"FINISHED"}, res
+    on_disk = {p.stem.lower() for p in (FIXTURES / "gman").glob("*.png")}
+    paired = 0
+    for m in bpy.data.materials:
+        if "dts_name" not in m or not m.use_nodes:
+            continue
+        images = [n.image for n in m.node_tree.nodes if n.type == "TEX_IMAGE" and n.image]
+        stem = Path(str(m["dts_name"])).stem.lower()
+        if stem in on_disk:
+            assert images, f"material {m['dts_name']!r} has a texture on disk but none loaded"
+            assert Path(images[0].filepath).stem.lower() == stem, (
+                f"material {m['dts_name']!r} got wrong image {images[0].filepath!r}"
+            )
+            paired += 1
+    assert paired >= 10, f"only {paired} materials paired with their textures"
+
+
+def test_uv_and_alpha():
+    _reset()
+    _import_dts("v24_shrub.dts")
+    src = read_shape_file(FIXTURES / "v24_shrub.dts")
+    # uv set matches tverts (v flipped)
+    src_uvs = {(round(u, 4), round(1.0 - v, 4)) for m in src.meshes if m for (u, v) in m.tverts}
+    mesh_obj = next(o for o in bpy.context.scene.objects if o.type == "MESH")
+    uv = mesh_obj.data.uv_layers.active
+    got = {(round(d.uv[0], 4), round(d.uv[1], 4)) for d in uv.data}
+    assert got, "no UVs imported"
+    assert got <= src_uvs, "imported UVs not a subset of source tverts"
+    # translucent material got its alpha wired
+    m = next(m for m in bpy.data.materials if m.get("dts_translucent"))
+    links = [(l.from_node.type, l.to_socket.name) for l in m.node_tree.links]
+    assert ("TEX_IMAGE", "Alpha") in links, links
+
+
+def test_decals_preserved():
+    _reset()
+    _import_dts("v23_bioderm_light.dts")
+    src = read_shape_file(FIXTURES / "v23_bioderm_light.dts")
+    out = _tmp(".dts")
+    res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="23")
+    assert res == {"FINISHED"}, res
+    dst = read_shape_file(out)
+    assert len(dst.decals) == len(src.decals) == 24
+    src_names = [src.name(d.raw[0]) for d in src.decals]
+    dst_names = [dst.name(d.raw[0]) for d in dst.decals]
+    assert dst_names == src_names
+    # decal mesh payloads survive verbatim
+    for d_src, d_dst in zip(src.decals, dst.decals):
+        for j in range(d_src.raw[1]):
+            m_src = src.meshes[d_src.raw[2] + j]
+            m_dst = dst.meshes[d_dst.raw[2] + j]
+            assert (m_src is None) == (m_dst is None)
+            if m_src is not None:
+                assert m_dst.decal_data == m_src.decal_data
+    # default decal states survive
+    assert dst.decal_states[: len(dst.decals)] == src.decal_states[: len(src.decals)]
+    # the Damage sequence's decal track survives
+    s_src = next(s for s in src.sequences if src.name(s.name_index) == "Damage")
+    s_dst = next(s for s in dst.sequences if dst.name(s.name_index) == "Damage")
+    assert s_dst.decal_matters.count() == s_src.decal_matters.count() == 24
+    n = s_src.num_keyframes
+    src_track = src.decal_states[s_src.base_decal_state : s_src.base_decal_state + 24 * n]
+    dst_track = dst.decal_states[s_dst.base_decal_state : s_dst.base_decal_state + 24 * n]
+    assert dst_track == src_track
+
+
+def test_multiframe_shape_keys():
+    _reset()
+    _import_dts("v22_disc.dts")
+    src = read_shape_file(FIXTURES / "v22_disc.dts")
+    keyed = [
+        o for o in bpy.context.scene.objects
+        if o.type == "MESH" and o.data.shape_keys is not None
+    ]
+    assert keyed, "no shape keys created for the multi-frame meshes"
+    out = _tmp(".dts")
+    res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="23")
+    assert res == {"FINISHED"}, res
+    dst = read_shape_file(out)
+    src_mf = [m for m in src.meshes if m and m.num_frames > 1]
+    dst_mf = [m for m in dst.meshes if m and m.num_frames > 1]
+    assert len(dst_mf) == len(src_mf) == 2
+    for m_src, m_dst in zip(src_mf, dst_mf):
+        assert m_dst.num_frames == m_src.num_frames == 17
+        assert len(m_dst.verts) == m_dst.num_frames * m_dst.verts_per_frame
+        # frame geometry survives (dedup may reorder/split verts; compare
+        # point sets with a small tolerance)
+        def close(p, pts, tol=1e-3):
+            return any(sum((a - b) ** 2 for a, b in zip(p, q)) < tol * tol for q in pts)
+
+        for f in range(m_src.num_frames):
+            src_frame = m_src.verts[f * m_src.verts_per_frame : (f + 1) * m_src.verts_per_frame]
+            dst_frame = m_dst.verts[f * m_dst.verts_per_frame : (f + 1) * m_dst.verts_per_frame]
+            assert all(close(p, dst_frame) for p in src_frame), f"frame {f}: src point missing"
+            assert all(close(p, src_frame) for p in dst_frame), f"frame {f}: dst point extra"
+
+
+def test_ifl_preserved():
+    _reset()
+    _import_dts("v22_energy_explosion.dts")
+    src = read_shape_file(FIXTURES / "v22_energy_explosion.dts")
+    out = _tmp(".dts")
+    res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="23")
+    assert res == {"FINISHED"}, res
+    dst = read_shape_file(out)
+    assert len(dst.ifl_materials) == len(src.ifl_materials) == 1
+    assert dst.name(dst.ifl_materials[0].raw[0]) == src.name(src.ifl_materials[0].raw[0])
+    assert dst.ifl_materials[0].raw[1:] == src.ifl_materials[0].raw[1:]
+    assert [m.name for m in dst.materials] == [m.name for m in src.materials]
+
+
+def test_sorted_edit_refused():
+    _reset()
+    _import_dts("v19_xorg20.dts")
+    out = _tmp(".dts")
+    res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="23")
+    assert res == {"FINISHED"}, res  # unedited: exports fine
+
+    frozen = next(o for o in bpy.context.scene.objects if "dts_frozen_payload" in o)
+    frozen.data.vertices[0].co.x += 1.0
+    try:
+        res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="23")
+        assert res == {"CANCELLED"}, res
+    except RuntimeError as e:
+        assert "round-trips verbatim" in str(e), str(e)
+
+
+def test_import_v18_old_format():
+    _reset()
+    arm = _import_dts("v18_octahedron.dts")
+    src = read_shape_file(FIXTURES / "v18_octahedron.dts")
+    assert src.source_version == 18
+    assert len(arm.data.bones) == len(src.nodes)
+    meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+    assert meshes
+    out = _tmp(".dts")
+    res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="24")
+    assert res == {"FINISHED"}, res
+    dst = read_shape_file(out)
+    assert dst.source_version == 24
+    assert len(dst.nodes) == len(src.nodes)

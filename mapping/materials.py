@@ -2,6 +2,11 @@
 
 The dts_* custom properties on the Blender material are the round-trip source
 of truth; viewport/shader settings are cosmetic.
+
+The reflectance/bump/detail map slots hold *indices into the material list*;
+they are stored on the Blender material as name references ("self", "none",
+or the referenced material's DTS name) so they survive reordering, and are
+resolved back to indices in a second pass on export.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from ..dtslib.types import (
     MAT_SUBTRACTIVE,
     MAT_T_WRAP,
     MAT_TRANSLUCENT,
+    NO_MAP,
     Material,
 )
 
@@ -37,6 +43,8 @@ _FLAG_PROPS = {
     "dts_ifl_material": MAT_IFL_MATERIAL,
 }
 
+_MAP_PROPS = ("dts_reflectance_map", "dts_bump_map", "dts_detail_map")
+
 
 def find_texture(name: str, search_dir: Path | None) -> Path | None:
     """Find an image for a material name next to the .dts (case-insensitive)."""
@@ -49,7 +57,19 @@ def find_texture(name: str, search_dir: Path | None) -> Path | None:
     return None
 
 
-def material_to_blender(mat: Material, search_dir: Path | None) -> bpy.types.Material:
+def _map_ref(value: int, own_index: int, all_mats: list[Material]) -> str:
+    if value == NO_MAP:
+        return "none"
+    if value == own_index:
+        return "self"
+    if 0 <= value < len(all_mats):
+        return all_mats[value].name
+    return "none"
+
+
+def material_to_blender(
+    mat: Material, index: int, all_mats: list[Material], search_dir: Path | None
+) -> bpy.types.Material:
     bmat = bpy.data.materials.new(name=mat.basename or "material")
     bmat["dts_name"] = mat.name
     bmat["dts_flags"] = mat.flags
@@ -57,6 +77,9 @@ def material_to_blender(mat: Material, search_dir: Path | None) -> bpy.types.Mat
         bmat[prop] = bool(mat.flags & bit)
     bmat["dts_detail_scale"] = mat.detail_scale
     bmat["dts_reflection_amount"] = mat.reflection_amount
+    bmat["dts_reflectance_map"] = _map_ref(mat.reflectance_map, index, all_mats)
+    bmat["dts_bump_map"] = _map_ref(mat.bump_map, index, all_mats)
+    bmat["dts_detail_map"] = _map_ref(mat.detail_map, index, all_mats)
 
     bmat.use_nodes = True
     bsdf = next(n for n in bmat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
@@ -81,24 +104,68 @@ def material_to_blender(mat: Material, search_dir: Path | None) -> bpy.types.Mat
     return bmat
 
 
-def material_from_blender(bmat: bpy.types.Material, index: int) -> Material:
-    name = bmat.get("dts_name") or bmat.name
+def _flags_from_blender(bmat: bpy.types.Material) -> int:
     if "dts_flags" in bmat:
         flags = int(bmat["dts_flags"])
         for prop, bit in _FLAG_PROPS.items():
             if prop in bmat:  # checkbox props override the packed word
                 flags = (flags | bit) if bmat[prop] else (flags & ~bit)
-    else:
-        flags = MAT_S_WRAP | MAT_T_WRAP
-        if bmat.get("dts_translucent"):
-            flags |= MAT_TRANSLUCENT
+        return flags
+    flags = MAT_S_WRAP | MAT_T_WRAP
+    for prop, bit in _FLAG_PROPS.items():
+        if bmat.get(prop):
+            flags |= bit
+    return flags
 
-    mat = Material(name=name, flags=flags)
-    # never write 0xFFFFFFFF reflectance: the engine NULL-derefs on env-mapped
-    # render (tsMesh.cc:921) — point at self and keep env-mapping off instead
-    mat.reflectance_map = index
-    if not (flags & MAT_NEVER_ENV_MAP) and "dts_never_env_map" not in bmat:
-        mat.flags |= MAT_NEVER_ENV_MAP
-    mat.detail_scale = float(bmat.get("dts_detail_scale", 1.0))
-    mat.reflection_amount = float(bmat.get("dts_reflection_amount", 1.0))
-    return mat
+
+def materials_from_blender(bmats: list[bpy.types.Material]) -> tuple[list[Material], list[str]]:
+    """Two-pass conversion: build the list, then resolve map references."""
+    warnings: list[str] = []
+    mats: list[Material] = []
+    for bmat in bmats:
+        name = str(bmat.get("dts_name") or bmat.name)
+        mats.append(
+            Material(
+                name=name,
+                flags=_flags_from_blender(bmat),
+                detail_scale=float(bmat.get("dts_detail_scale", 1.0)),
+                reflection_amount=float(bmat.get("dts_reflection_amount", 1.0)),
+            )
+        )
+
+    index_by_name = {m.name.lower(): i for i, m in enumerate(mats)}
+
+    def resolve(ref: str | None, own_index: int, default: int) -> int:
+        if ref is None:
+            return default
+        if ref == "self":
+            return own_index
+        if ref == "none":
+            return NO_MAP
+        idx = index_by_name.get(str(ref).lower())
+        if idx is None:
+            warnings.append(
+                f"material {mats[own_index].name!r}: map reference {ref!r} "
+                f"not among exported materials; dropped"
+            )
+            return default
+        return idx
+
+    for i, (bmat, mat) in enumerate(zip(bmats, mats)):
+        has_refs = _MAP_PROPS[0] in bmat
+        if has_refs:
+            # imported material: reproduce the stored slots verbatim
+            mat.reflectance_map = resolve(bmat.get("dts_reflectance_map"), i, i)
+            mat.bump_map = resolve(bmat.get("dts_bump_map"), i, NO_MAP)
+            mat.detail_map = resolve(bmat.get("dts_detail_map"), i, NO_MAP)
+        else:
+            # new material: engine-safe defaults — reflectance points at self
+            # and env-mapping is off.  Never write 0xFFFFFFFF reflectance for
+            # a material that could env-map: the engine NULL-derefs on
+            # env-mapped render (tsMesh.cc:921).
+            mat.reflectance_map = i
+            mat.bump_map = NO_MAP
+            mat.detail_map = NO_MAP
+            if not (mat.flags & MAT_NEVER_ENV_MAP) and "dts_never_env_map" not in bmat:
+                mat.flags |= MAT_NEVER_ENV_MAP
+    return mats, warnings

@@ -6,14 +6,14 @@ class DtsError(Exception):
 
 
 class DtsUnsupportedVersion(DtsError):
-    """File version outside the supported range (DTS 19-24, DSQ 17-24)."""
+    """File version outside the supported range (DTS/DSQ 17-24)."""
 
     def __init__(self, version, kind="DTS"):
         self.version = version
         self.kind = kind
         super().__init__(
             f"unsupported {kind} version {version} "
-            f"(supported: {'19-24' if kind == 'DTS' else '17-24'})"
+            f"(supported: 17-24)"
         )
 
 

@@ -35,7 +35,7 @@ def _id(path):
 def test_dts_roundtrip(path):
     data = Path(path).read_bytes()
     version, _ = read_header(data)
-    if version < 19 or version > 24:
+    if version < 17 or version > 24:
         with pytest.raises(DtsUnsupportedVersion):
             read_shape(data)
         return
@@ -44,7 +44,11 @@ def test_dts_roundtrip(path):
         assert write_shape(shape, version, shape.exporter_version) == data, (
             f"{path}: v{version} rewrite not byte-identical"
         )
+    elif version >= 19:
+        target = 24 if shape.ground_translations else 23
+        assert_shapes_equal(shape, read_shape(write_shape(shape, target)))
     else:
+        # old flat-stream format (17/18): converted structure must survive
         target = 24 if shape.ground_translations else 23
         assert_shapes_equal(shape, read_shape(write_shape(shape, target)))
 

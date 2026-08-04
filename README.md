@@ -5,7 +5,8 @@ exports Torque three-space shapes (`.dts`) and standalone sequence files
 (`.dsq`) — geometry, materials, node hierarchy, detail levels, skinning, and
 animation.
 
-- **Reads** DTS versions 19–24 (Tribes 2 through Torque Game Engine 1.5).
+- **Reads** DTS versions 17–24 (Tribes 2 through Torque Game Engine 1.5;
+  15/16 — the keyframe-table era — are refused).
 - **Writes** DTS version **24** ("Torque") and **23** ("Tribes 2") —
   selectable in the export dialog.  v23 has no ground-frame storage; exporting
   a shape with ground frames as v23 is refused unless "Strip Ground Frames"
@@ -55,13 +56,13 @@ Disk.  For development, symlink this checkout into
 
 ### Known limitations
 
-- Decal meshes (a dead legacy feature) are dropped on import with a warning.
-- Sorted and multi-frame meshes import as frozen payloads
-  (`dts_frozen_payload`): they re-export verbatim, but geometry edits to them
-  are ignored.
-- IFL material animation is not editable in Blender (entries are dropped
-  with a warning on import).
-- DTS versions below 19 (`readOldShape` stream format) are refused.
+- Decal meshes are preserved verbatim (armature JSON) but not editable in Blender.
+- Multi-frame (vertex-animated) meshes import as shape keys (`frame_NNN`).
+- Sorted and multi-matframe meshes import as frozen payloads
+  (`dts_frozen_payload`): they re-export verbatim, and export refuses with a
+  clear error if their geometry was edited.
+- IFL material entries are preserved (not editable in Blender).
+- DTS versions below 17 (the keyframe-table era) are refused.
 
 ## Development
 

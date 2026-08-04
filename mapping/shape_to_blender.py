@@ -72,7 +72,10 @@ def shape_to_blender(
     bmats = []
     if create_materials:
         search_dir = Path(filepath).parent if filepath else None
-        bmats = [material_to_blender(m, search_dir) for m in shape.materials]
+        bmats = [
+            material_to_blender(m, i, shape.materials, search_dir)
+            for i, m in enumerate(shape.materials)
+        ]
 
     detail_collections = {}
     node_mats = _node_armature_matrices(shape)
@@ -128,15 +131,53 @@ def shape_to_blender(
             for d in shape.details
         ]
     )
+    # material list order — map slots and IFL entries index into it
+    arm_obj["dts_materials_order"] = json.dumps([m.name for m in shape.materials])
     if shape.ifl_materials:
-        warnings.append(f"{len(shape.ifl_materials)} IFL material entr(ies) dropped")
+        arm_obj["dts_ifl_materials"] = json.dumps(
+            [{"name": shape.name(m.raw[0]), "raw": list(m.raw)} for m in shape.ifl_materials]
+        )
     if shape.decals:
-        warnings.append(f"{len(shape.decals)} decal record(s) dropped")
+        _store_decals(shape, arm_obj)
 
     if do_import_sequences and shape.sequences:
         import_sequences(shape, arm_obj, bone_name_by_node)
 
     return arm_obj, warnings
+
+
+def _store_decals(shape: Shape, arm_obj) -> None:
+    """Decals (legacy damage-overlay meshes) can't be edited in Blender, but
+    they round-trip: records + mesh payloads keyed by owner object name, plus
+    the shape's default decal states (the first numDecals entries)."""
+    entries = []
+    for d in shape.decals:
+        name_index, num_meshes, start, obj_index, _sibling = d.raw
+        slots = []
+        for j in range(num_meshes):
+            mesh = shape.meshes[start + j] if start + j < len(shape.meshes) else None
+            slots.append(
+                base64.b64encode(pickle.dumps(mesh)).decode("ascii") if mesh is not None else None
+            )
+        owner = shape.name(shape.objects[obj_index].name_index) if 0 <= obj_index < len(shape.objects) else ""
+        entries.append({"name": shape.name(name_index), "object": owner, "meshes": slots})
+    arm_obj["dts_decals"] = json.dumps(entries)
+    arm_obj["dts_decal_states"] = json.dumps(shape.decal_states[: len(shape.decals)])
+
+
+def geometry_digest(me) -> str:
+    """Stable digest of a Blender mesh's geometry, used to detect edits to
+    meshes that only round-trip as frozen payloads (sorted/multi-matframe)."""
+    import hashlib
+
+    h = hashlib.sha1()
+    h.update(len(me.vertices).to_bytes(4, "little"))
+    for v in me.vertices:
+        h.update(b"%.4f%.4f%.4f" % tuple(v.co))
+    for p in me.polygons:
+        for vi in p.vertices:
+            h.update(vi.to_bytes(4, "little"))
+    return h.hexdigest()
 
 
 # ----------------------------------------------------------------------
@@ -218,7 +259,9 @@ def decode_primitives(mesh: Mesh) -> list[tuple[int, int, int, int]]:
 
 
 def _needs_freezing(mesh: Mesh) -> bool:
-    return mesh.mesh_type == SORTED_MESH or mesh.num_frames > 1 or mesh.num_mat_frames > 1
+    # plain multi-frame meshes are handled via shape keys; only sorted meshes
+    # and multi-matframe meshes still round-trip as frozen payloads
+    return mesh.mesh_type == SORTED_MESH or mesh.num_mat_frames > 1
 
 
 def _build_mesh_object(shape: Shape, mesh: Mesh, name: str, bmats, warnings) -> bpy.types.Object:
@@ -273,11 +316,28 @@ def _build_mesh_object(shape: Shape, mesh: Mesh, name: str, bmats, warnings) -> 
         bobj["dts_billboard_z"] = True
     if _needs_freezing(mesh):
         bobj["dts_frozen_payload"] = base64.b64encode(pickle.dumps(mesh)).decode("ascii")
+        bobj["dts_frozen_digest"] = geometry_digest(bm)
         warnings.append(
-            f"mesh {name!r} is {'sorted' if mesh.mesh_type == SORTED_MESH else 'multi-frame'}; "
-            f"geometry edits will not be exported (payload preserved verbatim)"
+            f"mesh {name!r} is {'sorted' if mesh.mesh_type == SORTED_MESH else 'multi-matframe'}; "
+            f"it re-exports verbatim and refuses to export if its geometry is edited"
         )
+    elif mesh.num_frames > 1:
+        _add_frame_shape_keys(mesh, bobj)
     return bobj
+
+
+def _add_frame_shape_keys(mesh: Mesh, bobj) -> None:
+    """Import vertex-animation frames as shape keys frame_001..frame_NNN
+    (frame 0 is the Basis).  Frame animation itself rides the sequences'
+    frame tracks (dts_object_anim)."""
+    vpf = mesh.verts_per_frame
+    if vpf <= 0 or len(mesh.verts) < mesh.num_frames * vpf:
+        return
+    bobj.shape_key_add(name="Basis")
+    for f in range(1, mesh.num_frames):
+        sk = bobj.shape_key_add(name=f"frame_{f:03d}", from_mix=False)
+        for vi in range(min(vpf, len(bobj.data.vertices))):
+            sk.data[vi].co = Vector(mesh.verts[f * vpf + vi])
 
 
 def _parent_rigid(bobj, arm_obj, node_index, bone_name_by_node, node_mats) -> None:

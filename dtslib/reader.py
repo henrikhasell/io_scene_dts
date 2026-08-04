@@ -1,4 +1,7 @@
-"""DTS shape reader, versions 19-24.
+"""DTS shape reader.
+
+Versions 19-24 use the three-buffer memory-block format handled here;
+versions 17-18 are delegated to old_reader (the flat-stream format).
 
 Port of TSShape::read + assembleShape (tsShape.cc:1295/:616).  Old files are
 normalized to the modern in-memory layout on load:
@@ -59,7 +62,12 @@ def _read_shape(data: bytes) -> Shape:
     word = r.u32()
     version = word & 0xFF
     exporter_version = word >> 16
-    if version < MIN_VERSION or version > MAX_VERSION:
+    if version < MIN_VERSION:
+        # 17-18 use the old flat-stream format; below that is refused
+        from .old_reader import read_old_shape
+
+        return read_old_shape(data, version, exporter_version)
+    if version > MAX_VERSION:
         raise DtsUnsupportedVersion(version)
 
     size_mem_buffer = r.u32()

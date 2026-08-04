@@ -27,19 +27,23 @@ from ..dtslib.types import (
     PRIM_INDEXED,
     PRIM_NO_MATERIAL,
     PRIM_TRIANGLES,
+    Decal,
     Detail,
+    IflMaterial,
     Mesh,
     Node,
     Object,
     ObjectState,
     Primitive,
     SKIN_MESH,
+    SORTED_MESH,
     STANDARD_MESH,
 )
 
-from .materials import material_from_blender
+from .materials import materials_from_blender
 from .naming import detail_name_for_size, split_detail_suffix, strip_blender_dedup
 from .sequences import blender_quat_to_dts, export_sequences
+from .shape_to_blender import geometry_digest
 
 
 class ExportError(Exception):
@@ -82,6 +86,28 @@ def blender_to_shape(
     mesh_objs = _gather_mesh_objects(context, arm_obj, selected_only)
     if not mesh_objs:
         warnings.append("no mesh objects found under the armature")
+
+    # seed the material list in the original order — map slots and IFL
+    # entries index into it, so unused materials must survive too
+    stored_mat_order = json.loads(arm_obj.get("dts_materials_order", "[]") or "[]")
+    if stored_mat_order:
+        pool = {}
+        for o in mesh_objs:
+            for slot in o.material_slots:
+                if slot.material is not None and "dts_name" in slot.material:
+                    pool.setdefault(str(slot.material["dts_name"]).lower(), slot.material)
+        for bm in bpy.data.materials:
+            if "dts_name" in bm:
+                pool.setdefault(str(bm["dts_name"]).lower(), bm)
+        for mat_name in stored_mat_order:
+            bm = pool.get(str(mat_name).lower())
+            if bm is not None:
+                _material_slot_index(bm)
+            else:
+                warnings.append(
+                    f"material {mat_name!r} from the original list no longer exists; "
+                    f"material indices may shift"
+                )
 
     # group by (subshape, object base name) preserving discovery order; each
     # object's meshes are keyed by detail identity (name, size) — size alone
@@ -218,7 +244,17 @@ def blender_to_shape(
         shape.object_states.append(ObjectState(vis, 0, 0))
 
     # -- materials ----------------------------------------------------
-    shape.materials = [material_from_blender(bmat, i) for i, bmat in enumerate(_used_materials)]
+    shape.materials, mat_warnings = materials_from_blender(_used_materials)
+    warnings += mat_warnings
+
+    # -- IFL materials (preserved shape-level) ------------------------
+    for entry in json.loads(arm_obj.get("dts_ifl_materials", "[]") or "[]"):
+        raw = list(entry["raw"])
+        raw[0] = shape.add_name(str(entry["name"]))
+        shape.ifl_materials.append(IflMaterial(tuple(raw)))
+
+    # -- decals (preserved records + frozen mesh payloads) ------------
+    decal_index_map = _restore_decals(shape, arm_obj, object_index_by_name, warnings)
 
     # -- bounds -------------------------------------------------------
     _compute_shape_bounds(shape, node_arm_matrix)
@@ -241,9 +277,63 @@ def blender_to_shape(
     # -- sequences ----------------------------------------------------
     if do_export_sequences:
         actions = [a for a in bpy.data.actions if a.get("dts_sequence") or _action_targets_armature(a, arm_obj)]
-        warnings += export_sequences(shape, arm_obj, actions, node_index_by_bone, object_index_by_name)
+        warnings += export_sequences(
+            shape, arm_obj, actions, node_index_by_bone, object_index_by_name, decal_index_map
+        )
 
     return shape, warnings
+
+
+def _restore_decals(shape, arm_obj, object_index_by_name, warnings) -> dict[int, int]:
+    """Re-emit preserved decal records/meshes; returns old->new index map."""
+    stored = json.loads(arm_obj.get("dts_decals", "[]") or "[]")
+    default_states = json.loads(arm_obj.get("dts_decal_states", "[]") or "[]")
+    if not stored:
+        return {}
+
+    # order decals by the (remapped) subshape of their owner object so the
+    # subShapeFirstDecal ranges stay contiguous
+    def owner_subshape(obj_index: int) -> int:
+        for s in range(len(shape.sub_shape_first_object)):
+            first = shape.sub_shape_first_object[s]
+            if first <= obj_index < first + shape.sub_shape_num_objects[s]:
+                return s
+        return 0
+
+    placed = []  # (subshape, old_index, entry, obj_index)
+    for old_index, entry in enumerate(stored):
+        obj_index = object_index_by_name.get(str(entry["object"]))
+        if obj_index is None:
+            warnings.append(
+                f"decal {entry['name']!r}: owner object {entry['object']!r} was not "
+                f"exported; decal dropped"
+            )
+            continue
+        placed.append((owner_subshape(obj_index), old_index, entry, obj_index))
+    placed.sort(key=lambda p: (p[0], p[1]))
+
+    decal_index_map: dict[int, int] = {}
+    shape.sub_shape_first_decal = [0] * len(shape.sub_shape_first_object)
+    shape.sub_shape_num_decals = [0] * len(shape.sub_shape_first_object)
+    next_first = 0
+    for s in range(len(shape.sub_shape_first_object)):
+        shape.sub_shape_first_decal[s] = next_first
+        group = [p for p in placed if p[0] == s]
+        shape.sub_shape_num_decals[s] = len(group)
+        next_first += len(group)
+
+    for _, old_index, entry, obj_index in placed:
+        start = len(shape.meshes)
+        for slot in entry["meshes"]:
+            shape.meshes.append(pickle.loads(base64.b64decode(slot)) if slot else None)
+        decal_index_map[old_index] = len(shape.decals)
+        shape.decals.append(
+            Decal((shape.add_name(str(entry["name"])), len(entry["meshes"]), start, obj_index, -1))
+        )
+        shape.decal_states.append(
+            int(default_states[old_index]) if old_index < len(default_states) else 0
+        )
+    return decal_index_map
 
 
 # ----------------------------------------------------------------------
@@ -308,6 +398,13 @@ def _material_slot_index(bmat) -> int:
 def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warnings):
     """Returns (dtslib.Mesh, node_index)."""
     if "dts_frozen_payload" in bobj:
+        stored_digest = bobj.get("dts_frozen_digest")
+        if stored_digest and geometry_digest(bobj.data) != stored_digest:
+            kind = "sorted" if int(bobj.get("dts_mesh_type", 0)) == SORTED_MESH else "multi-matframe"
+            raise ExportError(
+                f"{bobj.name!r} is a {kind} mesh that only round-trips verbatim, but its "
+                f"geometry has been edited — revert the edits or delete the object"
+            )
         mesh = pickle.loads(base64.b64decode(bobj["dts_frozen_payload"]))
         for slot in bobj.material_slots:
             if slot.material is not None:
@@ -387,6 +484,26 @@ def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warn
     mesh.flags = (MESH_BILLBOARD if bobj.get("dts_billboard") else 0) | (
         MESH_BILLBOARD_Z_AXIS if bobj.get("dts_billboard_z") else 0
     )
+
+    # vertex-animation frames from shape keys named frame_NNN
+    frame_keys = []
+    if me.shape_keys is not None:
+        frame_keys = sorted(
+            (kb for kb in me.shape_keys.key_blocks if kb.name.startswith("frame_")),
+            key=lambda kb: kb.name,
+        )
+    if frame_keys:
+        if is_skin:
+            warnings.append(f"{bobj.name!r}: frame_* shape keys on a skin are not supported; ignored")
+        else:
+            mesh.num_frames = 1 + len(frame_keys)
+            base_norms = list(mesh.norms)
+            for kb in frame_keys:
+                for key in key_to_index:  # ordered by insertion == DTS vert order
+                    bvert = key[0]
+                    mesh.verts.append(tuple(to_dts @ kb.data[bvert].co))
+                mesh.norms.extend(base_norms)
+
     _compute_mesh_bounds(mesh)
 
     if is_skin:

@@ -194,6 +194,19 @@ def _store_sequence_props(action: bpy.types.Action, seq: Sequence, shape: Shape)
     if trigs:
         action["dts_triggers"] = json.dumps(trigs)
 
+    if seq.ifl_matters.count():
+        action["dts_ifl_matters"] = json.dumps(sorted(seq.ifl_matters.indices()))
+
+    if seq.decal_matters.count():
+        decal_tracks = {}
+        for di in seq.decal_matters.indices():
+            track = []
+            for kf in range(n):
+                idx = seq.base_decal_state + seq.decal_matters.ordinal_of(di) * n + kf
+                track.append(shape.decal_states[idx] if idx < len(shape.decal_states) else 0)
+            decal_tracks[str(di)] = track
+        action["dts_decal_anim"] = json.dumps(decal_tracks)
+
     obj_anim = {}
     for kind, matters in (("vis", seq.vis_matters), ("frame", seq.frame_matters), ("matframe", seq.mat_frame_matters)):
         for obj_index in matters.indices():
@@ -243,9 +256,11 @@ def export_sequences(
     actions: list[bpy.types.Action],
     node_index_by_bone: dict[str, int],
     object_index_by_name: dict[str, int],
+    decal_index_map: dict[int, int] | None = None,
 ) -> list[str]:
     """Append sequences built from actions to shape.  Returns warnings."""
     warnings = []
+    decal_index_map = decal_index_map or {}
     rest_local = _rest_local_matrices(shape)
 
     for action in actions:
@@ -349,6 +364,33 @@ def export_sequences(
                 shape.object_states.append(
                     ObjectState(float(vis[kf]), int(frame[kf]), int(matframe[kf]))
                 )
+
+        # ifl membership (entries preserved shape-level in armature JSON)
+        ifl_indices = json.loads(action.get("dts_ifl_matters", "[]") or "[]")
+        iset = TSIntegerSet()
+        for i in ifl_indices:
+            if i < len(shape.ifl_materials):
+                iset.set(int(i))
+        seq.ifl_matters = iset
+
+        # decal-state tracks
+        decal_anim = json.loads(action.get("dts_decal_anim", "{}") or "{}")
+        dset = TSIntegerSet()
+        decal_tracked = []
+        for k, track in decal_anim.items():
+            new = decal_index_map.get(int(k))
+            if new is None:
+                warnings.append(
+                    f"action {action.name!r}: decal {k} no longer exists; state track dropped"
+                )
+                continue
+            dset.set(new)
+            decal_tracked.append((new, track))
+        seq.decal_matters = dset
+        seq.base_decal_state = len(shape.decal_states)
+        for _, track in sorted(decal_tracked):
+            padded = list(track[:n]) + [0] * max(0, n - len(track))
+            shape.decal_states.extend(int(x) for x in padded)
 
         # scale animation (preserved blob)
         scale = json.loads(action.get("dts_scale_anim", "{}") or "{}")

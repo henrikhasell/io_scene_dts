@@ -1,6 +1,6 @@
 """dtslib — pure-Python Torque DTS/DSQ format library (no bpy dependency).
 
-Supports reading DTS versions 19-24 and writing versions 24 (Torque Game
+Supports reading DTS versions 17-24 and writing versions 24 (Torque Game
 Engine 1.5) and 23 (Tribes 2).  DSQ sequence files: read 17-24, write the
 modern (v22+) layout.
 """
