@@ -79,6 +79,7 @@ def shape_to_blender(
         ]
 
     detail_collections = {}
+    detail_sizes = {}
     node_mats = _node_armature_matrices(shape)
 
     for obj_index, obj in enumerate(shape.objects):
@@ -130,12 +131,15 @@ def shape_to_blender(
                 coll = bpy.data.collections.new(coll_name)
                 scene_coll.children.link(coll)
                 detail_collections[coll_name] = coll
+            detail_sizes[coll_name] = max(detail_sizes.get(coll_name, size), size)
             coll.objects.link(bobj)
 
             if mesh.mesh_type == SKIN_MESH:
                 _bind_skin(shape, mesh, bobj, arm_obj, bone_name_by_node)
             else:
                 _parent_rigid(bobj, arm_obj, obj.node_index, bone_name_by_node, node_mats)
+
+    _hide_non_default_details(context, detail_collections, detail_sizes)
 
     # the name table order is load-bearing: every name_index in the file is an
     # offset into it, and the source order (details, then nodes, then objects)
@@ -430,6 +434,29 @@ def _subshape_of_object(shape: Shape, obj_index: int) -> int:
         if first <= obj_index < first + shape.sub_shape_num_objects[s]:
             return s
     return 0
+
+
+def _hide_non_default_details(context, detail_collections, detail_sizes) -> None:
+    """Show only the default detail level.
+
+    A shape carries every LOD plus collision/LOS details (which use negative
+    sizes), all at the same origin — drawing them at once stacks dozens of
+    overlapping copies.  The engine's default is the largest size, so keep that
+    one visible and switch the rest off in the view layer.  Nothing is deleted,
+    and hide_render is untouched.
+    """
+    if not detail_collections:
+        return
+    default = max(detail_collections, key=lambda cname: detail_sizes[cname])
+    layer_children = {lc.collection.name: lc for lc in context.view_layer.layer_collection.children}
+    for cname, coll in detail_collections.items():
+        if cname == default:
+            continue
+        lc = layer_children.get(coll.name)
+        if lc is not None:
+            lc.hide_viewport = True
+        else:  # collection not in this view layer (rare); fall back to the datablock
+            coll.hide_viewport = True
 
 
 def _detail_for(shape: Shape, subshape: int, object_detail_num: int):

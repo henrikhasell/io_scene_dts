@@ -692,3 +692,25 @@ def test_dsq_translation_only_node_keeps_rest_rotation():
         f"{bone.name}: translation-only node should keep its rest orientation"
     )
 
+
+def test_import_hides_non_default_detail_levels():
+    """Every LOD sits at the same origin; only the default (largest size) one
+    is visible after import."""
+    _reset()
+    _import_dts("v23_bioderm_light.dts")
+    vl = bpy.context.view_layer
+    lods = [
+        lc for lc in vl.layer_collection.children
+        if any("dts_detail_size" in o for o in lc.collection.objects)
+    ]
+    assert len(lods) > 1, "fixture has only one detail level"
+
+    def size_of(lc):
+        return max(o["dts_detail_size"] for o in lc.collection.objects)
+
+    visible = [lc for lc in lods if not lc.hide_viewport]
+    assert len(visible) == 1, [lc.name for lc in visible]
+    assert size_of(visible[0]) == max(size_of(lc) for lc in lods)
+    # hidden, not deleted, and still renderable
+    assert all(lc.collection.objects for lc in lods)
+    assert not any(lc.collection.hide_render for lc in lods)
