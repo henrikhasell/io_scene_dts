@@ -1,4 +1,3 @@
-import glob
 import sys
 from pathlib import Path
 
@@ -7,12 +6,20 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-FIXTURES = REPO_ROOT / "tests" / "fixtures"
+# corpus discovery lives in a pytest-free module so the headless Blender
+# runners under tests/blender/ can share it; re-exported here for the suite
+from tests.corpus import (  # noqa: E402,F401
+    HASELL_FILES,
+    MYGAME,
+    T2_SHAPES,
+    _collect,
+    corpus_dsq_files,
+    corpus_dts_files,
+    corpus_dts_files_of_version,
+    dts_version,
+)
 
-# on-disk corpora, referenced in place (skip-if-missing)
-T2_SHAPES = Path("/home/henrik/Documents/Repositories/hasell-engine/t2/shapes")
-HASELL_FILES = Path("/home/henrik/Documents/Repositories/hasell-engine/files")
-MYGAME = Path("/home/henrik/Documents/Repositories/agentic-torque/mygame")
+FIXTURES = REPO_ROOT / "tests" / "fixtures"
 
 
 def fixture(name: str) -> Path:
@@ -21,22 +28,6 @@ def fixture(name: str) -> Path:
 
 def fixture_bytes(name: str) -> bytes:
     return fixture(name).read_bytes()
-
-
-def _collect(*roots, pattern):
-    files = set()
-    for root in roots:
-        if root.is_dir():
-            files.update(glob.glob(str(root / "**" / pattern), recursive=True))
-    return sorted(p for p in files if Path(p).stat().st_size >= 16)
-
-
-def corpus_dts_files():
-    return _collect(T2_SHAPES, HASELL_FILES, MYGAME, pattern="*.dts")
-
-
-def corpus_dsq_files():
-    return _collect(T2_SHAPES, HASELL_FILES, MYGAME, pattern="*.dsq")
 
 
 def pytest_collection_modifyitems(config, items):

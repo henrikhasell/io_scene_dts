@@ -460,7 +460,9 @@ def test_sorted_edit_refused():
     res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="23")
     assert res == {"FINISHED"}, res  # unedited: exports fine
 
-    frozen = next(o for o in bpy.context.scene.objects if "dts_frozen_payload" in o)
+    # every mesh carries a source payload now; only sorted/multi-matframe ones
+    # are strict, i.e. refuse to export when edited instead of re-deriving
+    frozen = next(o for o in bpy.context.scene.objects if o.get("dts_strict_freeze"))
     frozen.data.vertices[0].co.x += 1.0
     try:
         res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="23")
@@ -483,3 +485,50 @@ def test_import_v18_old_format():
     dst = read_shape_file(out)
     assert dst.source_version == 24
     assert len(dst.nodes) == len(src.nodes)
+
+
+def test_sibling_textures_under_shapes_dir():
+    """shapes/ and textures/ are siblings in Tribes 2 layouts, so a shape's
+    textures are never next to the .dts itself."""
+    import tempfile
+
+    from io_scene_dts.mapping.materials import find_texture, reset_texture_cache
+
+    root = Path(tempfile.mkdtemp())
+    (root / "shapes").mkdir()
+    skins = root / "textures" / "skins"
+    skins.mkdir(parents=True)
+    body = skins / "base.lmale.png"
+    dotted = skins / "armor.damage.1.png"
+    for p in (body, dotted):
+        p.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    reset_texture_cache()
+    assert find_texture("base.lmale", root / "shapes") == body
+    # dots in a material name are not extensions: Path(...).stem would
+    # truncate these to "base" and "armor.damage" and find nothing
+    assert find_texture("armor.damage.1", root / "shapes") == dotted
+
+    # the sibling hop is gated on the directory actually being named "shapes"
+    (root / "models").mkdir()
+    reset_texture_cache()
+    assert find_texture("base.lmale", root / "models") is None
+
+
+def test_texture_next_to_dts_wins():
+    """A texture beside the .dts takes precedence over the sibling tree."""
+    import tempfile
+
+    from io_scene_dts.mapping.materials import find_texture, reset_texture_cache
+
+    root = Path(tempfile.mkdtemp())
+    shapes = root / "shapes"
+    shapes.mkdir()
+    skins = root / "textures" / "skins"
+    skins.mkdir(parents=True)
+    (skins / "hull.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    local = shapes / "hull.png"
+    local.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    reset_texture_cache()
+    assert find_texture("hull", shapes) == local

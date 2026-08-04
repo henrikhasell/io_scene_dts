@@ -41,7 +41,7 @@ from ..dtslib.types import (
     Mesh,
 )
 
-from .materials import material_to_blender
+from .materials import material_to_blender, reset_texture_cache
 from .naming import object_display_name
 from .sequences import dts_local_matrix, import_sequences
 
@@ -72,6 +72,7 @@ def shape_to_blender(
     bmats = []
     if create_materials:
         search_dir = Path(filepath).parent if filepath else None
+        reset_texture_cache()
         bmats = [
             material_to_blender(m, i, shape.materials, search_dir)
             for i, m in enumerate(shape.materials)
@@ -96,7 +97,17 @@ def shape_to_blender(
             size = int(detail.size) if detail else j
             display = object_display_name(base_name or "object", size)
             bobj = _build_mesh_object(shape, mesh, display, bmats, warnings)
+            # index in the source shape's mesh array, so a verbatim re-emit can
+            # re-point parent_mesh at wherever the parent lands on export
+            bobj["dts_source_index"] = obj.start_mesh_index + j
             bobj["dts_object_name"] = base_name
+            # an object can own trailing empty mesh slots (a detail level it has
+            # no geometry for); without the source count they get truncated
+            bobj["dts_object_num_meshes"] = obj.num_meshes
+            # export order would otherwise follow scene iteration order, which
+            # sorts objects whose only geometry sits at a high detail level
+            # (collision/LOS) to the end
+            bobj["dts_object_index"] = obj_index
             bobj["dts_subshape"] = subshape
             bobj["dts_detail_size"] = size
             if detail is not None:
@@ -107,6 +118,11 @@ def shape_to_blender(
                 st = shape.object_states[obj_index]
                 if st.vis != 1.0:
                     bobj["dts_default_vis"] = st.vis
+                # which frame / material frame the object rests on by default
+                if st.frame_index:
+                    bobj["dts_default_frame"] = st.frame_index
+                if st.mat_frame_index:
+                    bobj["dts_default_matframe"] = st.mat_frame_index
 
             coll_name = f"{name}.{shape.name(detail.name_index) if detail else f'detail{j}'}"
             coll = detail_collections.get(coll_name)
@@ -121,13 +137,41 @@ def shape_to_blender(
             else:
                 _parent_rigid(bobj, arm_obj, obj.node_index, bone_name_by_node, node_mats)
 
+    # the name table order is load-bearing: every name_index in the file is an
+    # offset into it, and the source order (details, then nodes, then objects)
+    # is not the order the exporter would rebuild it in
+    arm_obj["dts_names_order"] = json.dumps(list(shape.names))
+    # Node rest transforms as stored, keyed by DTS node name.  A quaternion and
+    # its negation are the same rotation, and the bone-matrix round-trip picks
+    # a sign freely, so re-deriving these rewrites bits without changing the
+    # pose; the export prefers these whenever the bone still agrees with them.
+    arm_obj["dts_node_transforms"] = json.dumps(
+        {
+            shape.node_name(i): [
+                [q.x, q.y, q.z, q.w],
+                list(shape.default_translations[i]),
+            ]
+            for i, q in enumerate(shape.default_rotations)
+        }
+    )
     arm_obj["dts_smallest_visible_size"] = shape.smallest_visible_size
     arm_obj["dts_smallest_visible_dl"] = shape.smallest_visible_dl
     arm_obj["dts_exporter_version"] = shape.exporter_version
-    # full detail table (details can exist with no geometry at all)
+    # full detail table (details can exist with no geometry at all).  The
+    # trailing error/poly-count fields are LOD selection metadata the add-on
+    # cannot recompute, so they ride along; readers of the 4-element form
+    # written by earlier versions still work.
     arm_obj["dts_details"] = json.dumps(
         [
-            [shape.name(d.name_index), d.sub_shape_num, d.object_detail_num, d.size]
+            [
+                shape.name(d.name_index),
+                d.sub_shape_num,
+                d.object_detail_num,
+                d.size,
+                d.average_error,
+                d.max_error,
+                d.poly_count,
+            ]
             for d in shape.details
         ]
     )
@@ -314,9 +358,17 @@ def _build_mesh_object(shape: Shape, mesh: Mesh, name: str, bmats, warnings) -> 
         bobj["dts_billboard"] = True
     if mesh.flags & MESH_BILLBOARD_Z_AXIS:
         bobj["dts_billboard_z"] = True
+    # Every mesh keeps a verbatim copy of its source payload.  On export an
+    # unedited mesh is re-emitted from this rather than re-derived, which is
+    # what preserves strip packing, vertex order and count, parent_mesh vertex
+    # sharing, merge_indices and encoded normals -- re-deriving throws all of
+    # that away and roughly triples the file.  Only an edited mesh is rebuilt
+    # from the Blender geometry.
+    bobj["dts_source_payload"] = base64.b64encode(pickle.dumps(mesh)).decode("ascii")
+    bobj["dts_source_digest"] = geometry_digest(bm)
     if _needs_freezing(mesh):
-        bobj["dts_frozen_payload"] = base64.b64encode(pickle.dumps(mesh)).decode("ascii")
-        bobj["dts_frozen_digest"] = geometry_digest(bm)
+        # these cannot be re-derived at all, so an edit is refused outright
+        bobj["dts_strict_freeze"] = True
         warnings.append(
             f"mesh {name!r} is {'sorted' if mesh.mesh_type == SORTED_MESH else 'multi-matframe'}; "
             f"it re-exports verbatim and refuses to export if its geometry is edited"

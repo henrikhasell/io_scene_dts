@@ -21,6 +21,7 @@ from mathutils import Matrix, Vector
 
 from ..dtslib import Shape
 from ..dtslib.primitives import MAX_TS_SET_SIZE
+from ..dtslib.runtime_links import recompute_runtime_links
 from ..dtslib.types import (
     MESH_BILLBOARD,
     MESH_BILLBOARD_Z_AXIS,
@@ -35,6 +36,7 @@ from ..dtslib.types import (
     Object,
     ObjectState,
     Primitive,
+    Quat16,
     SKIN_MESH,
     SORTED_MESH,
     STANDARD_MESH,
@@ -63,10 +65,17 @@ def blender_to_shape(
     warnings: list[str] = []
     shape = Shape()
 
+    # seed the name table in its original order so every add_name() below
+    # resolves to the source index; names for anything added in Blender still
+    # append at the end
+    stored_names = json.loads(arm_obj.get("dts_names_order", "[]") or "[]")
+    shape.names = [str(n) for n in stored_names]
+
     # -- nodes --------------------------------------------------------
     bones = _ordered_bones(arm_obj)
     if len(bones) > MAX_TS_SET_SIZE:
         raise ExportError(f"{len(bones)} bones exceed the DTS limit of {MAX_TS_SET_SIZE} nodes")
+    stored_transforms = json.loads(arm_obj.get("dts_node_transforms", "{}") or "{}")
     node_index_by_bone: dict[str, int] = {}
     node_arm_matrix: list[Matrix] = []
     for i, bone in enumerate(bones):
@@ -79,8 +88,13 @@ def blender_to_shape(
         arm_mat = bone.matrix_local.copy()
         node_arm_matrix.append(arm_mat)
         local = (bones[parent].matrix_local.inverted() @ arm_mat) if parent >= 0 else arm_mat
-        shape.default_rotations.append(blender_quat_to_dts(local.to_quaternion()))
-        shape.default_translations.append(tuple(local.to_translation()))
+        rot = blender_quat_to_dts(local.to_quaternion())
+        trans = tuple(local.to_translation())
+        stored = stored_transforms.get(dts_name)
+        if stored is not None:
+            rot, trans = _prefer_stored_transform(rot, trans, stored)
+        shape.default_rotations.append(rot)
+        shape.default_translations.append(trans)
 
     # -- gather mesh objects -----------------------------------------
     mesh_objs = _gather_mesh_objects(context, arm_obj, selected_only)
@@ -99,8 +113,13 @@ def blender_to_shape(
         for bm in bpy.data.materials:
             if "dts_name" in bm:
                 pool.setdefault(str(bm["dts_name"]).lower(), bm)
-        for mat_name in stored_mat_order:
-            bm = pool.get(str(mat_name).lower())
+        # prefer the recorded index: two entries can share a name
+        by_index = {}
+        for bm in bpy.data.materials:
+            if "dts_material_index" in bm:
+                by_index.setdefault(int(bm["dts_material_index"]), bm)
+        for slot_index, mat_name in enumerate(stored_mat_order):
+            bm = by_index.get(slot_index) or pool.get(str(mat_name).lower())
             if bm is not None:
                 _material_slot_index(bm)
             else:
@@ -114,6 +133,7 @@ def blender_to_shape(
     # is ambiguous (e.g. "collision-1" and "detail-1" are both size -1)
     grouped: dict[tuple[int, str], dict[tuple[str, int], bpy.types.Object]] = {}
     order: list[tuple[int, str]] = []
+    source_order: dict[tuple[int, str], int] = {}  # key -> index in the source shape
     detail_odn_hint: dict[tuple[int, str, int], int] = {}  # (sub, name, size) -> stored odn
     for bobj in mesh_objs:
         base = bobj.get("dts_object_name") or None
@@ -130,12 +150,20 @@ def blender_to_shape(
         if key not in grouped:
             grouped[key] = {}
             order.append(key)
+            if "dts_object_index" in bobj:
+                source_order[key] = int(bobj["dts_object_index"])
         if dkey in grouped[key]:
             warnings.append(f"duplicate detail {detail_name!r} for object {base!r}; {bobj.name!r} skipped")
             continue
         grouped[key][dkey] = bobj
         if "dts_detail_odn" in bobj:
             detail_odn_hint[(sub, detail_name, size)] = int(bobj["dts_detail_odn"])
+
+    # imported objects go back in their original order; anything added in
+    # Blender keeps discovery order and follows them
+    if source_order:
+        discovery = {k: i for i, k in enumerate(order)}
+        order.sort(key=lambda k: (0, source_order[k]) if k in source_order else (1, discovery[k]))
 
     # the armature may carry the full imported detail table — details can
     # exist with no geometry at all (e.g. an empty collision detail)
@@ -148,11 +176,17 @@ def blender_to_shape(
     # per remapped subshape: detail key (name, int size) -> objectDetailNum
     details_by_sub: dict[int, dict[tuple[str, int], int]] = {}
     detail_float_size: dict[tuple[int, str, int], float] = {}
-    for dname, dsub, dodn, dsize in stored_details:
+    # (sub, name, size) -> (average_error, max_error, poly_count)
+    detail_metrics: dict[tuple[int, str, int], tuple[float, float, int]] = {}
+    for entry in stored_details:
+        # earlier versions stored only the first four fields
+        dname, dsub, dodn, dsize = entry[:4]
         s = sub_remap[int(dsub)]
         dkey = (str(dname), int(dsize))
         details_by_sub.setdefault(s, {})[dkey] = int(dodn)
         detail_float_size[(s, *dkey)] = float(dsize)
+        if len(entry) >= 7:
+            detail_metrics[(s, *dkey)] = (float(entry[4]), float(entry[5]), int(entry[6]))
     for (sub, _), by_dkey in grouped.items():
         details_by_sub.setdefault(sub_remap[sub], {})
         for dkey in by_dkey:
@@ -175,14 +209,16 @@ def blender_to_shape(
             detail_entries.append((detail_float_size.get((s, dname, size), float(size)), dname, s, odn))
     detail_entries.sort(key=lambda e: (-e[0], e[3]))
     for size, dname, s, odn in detail_entries:
-        shape.details.append(
-            Detail(
-                name_index=shape.add_name(dname),
-                sub_shape_num=s,
-                object_detail_num=odn,
-                size=float(size),
-            )
+        metrics = detail_metrics.get((s, dname, int(size)))
+        detail = Detail(
+            name_index=shape.add_name(dname),
+            sub_shape_num=s,
+            object_detail_num=odn,
+            size=float(size),
         )
+        if metrics is not None:
+            detail.average_error, detail.max_error, detail.poly_count = metrics
+        shape.details.append(detail)
 
     # -- objects + meshes ---------------------------------------------
     object_index_by_name: dict[str, int] = {}
@@ -198,6 +234,11 @@ def blender_to_shape(
     shape.sub_shape_first_object = []
     shape.sub_shape_num_objects = []
 
+    # source mesh index -> index in the shape being written, for meshes
+    # re-emitted verbatim; drives the parent_mesh fixup below
+    mesh_src_to_new: dict[int, int] = {}
+    verbatim_meshes: set[int] = set()
+
     for s in range(len(subshapes)):
         shape.sub_shape_first_object.append(len(shape.objects))
         dmap = details_by_sub.get(s, {})
@@ -207,16 +248,28 @@ def blender_to_shape(
             for dkey, bobj in by_dkey.items():
                 odn_map[dmap[dkey]] = bobj
             max_odn = max(odn_map) if odn_map else -1
-            num_meshes = max_odn + 1
+            # keep any trailing null slots the source object declared -- they are
+            # detail levels this object simply has no geometry for
+            stored_counts = [
+                int(b["dts_object_num_meshes"])
+                for b in by_dkey.values()
+                if "dts_object_num_meshes" in b
+            ]
+            num_meshes = max([max_odn + 1] + stored_counts)
             node_index = -1
             for odn in range(num_meshes):
                 bobj = odn_map.get(odn)
                 if bobj is None:
                     shape.meshes.append(None)
                     continue
-                mesh, mesh_node = _export_mesh(
+                mesh, mesh_node, verbatim = _export_mesh(
                     shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warnings
                 )
+                if verbatim:
+                    src = bobj.get("dts_source_index")
+                    if src is not None:
+                        mesh_src_to_new[int(src)] = len(shape.meshes)
+                    verbatim_meshes.add(len(shape.meshes))
                 shape.meshes.append(mesh)
                 if node_index < 0:
                     node_index = mesh_node
@@ -235,13 +288,17 @@ def blender_to_shape(
 
     # default object states, one per object
     for i, obj in enumerate(shape.objects):
-        vis = 1.0
+        vis, frame, matframe = 1.0, 0, 0
         for (sub, base), by_size in grouped.items():
             if object_index_by_name.get(base) == i:
                 for bobj in by_size.values():
                     if "dts_default_vis" in bobj:
                         vis = float(bobj["dts_default_vis"])
-        shape.object_states.append(ObjectState(vis, 0, 0))
+                    if "dts_default_frame" in bobj:
+                        frame = int(bobj["dts_default_frame"])
+                    if "dts_default_matframe" in bobj:
+                        matframe = int(bobj["dts_default_matframe"])
+        shape.object_states.append(ObjectState(vis, frame, matframe))
 
     # -- materials ----------------------------------------------------
     shape.materials, mat_warnings = materials_from_blender(_used_materials)
@@ -256,7 +313,15 @@ def blender_to_shape(
     # -- decals (preserved records + frozen mesh payloads) ------------
     decal_index_map = _restore_decals(shape, arm_obj, object_index_by_name, warnings)
 
+    # every mesh is in shape.meshes by now, so parent_mesh can be resolved
+    _remap_parent_meshes(shape, mesh_src_to_new, verbatim_meshes)
+
+    # engine scratch links, derivable from the hierarchy we just built
+    recompute_runtime_links(shape)
+
     # -- bounds -------------------------------------------------------
+    # always recomputed: these are derived from the geometry, so carrying the
+    # source values through would just risk them going stale
     _compute_shape_bounds(shape, node_arm_matrix)
 
     # -- header-ish ---------------------------------------------------
@@ -282,6 +347,62 @@ def blender_to_shape(
         )
 
     return shape, warnings
+
+
+_QUAT_LSB_SLACK = 2  # Quat16 components are int16; a matrix round-trip drifts a little
+_TRANS_EPS = 1e-5
+
+
+def _prefer_stored_transform(rot, trans, stored):
+    """Keep the source rest transform unless the bone genuinely moved.
+
+    Deriving these from the bone matrix is lossy in two harmless ways: the
+    quaternion sign is arbitrary (q and -q are the same rotation) and the
+    int16 components drift by an LSB or two.  Both rewrite the file without
+    moving anything, so the stored values win when the bone still matches them.
+    """
+    (sx, sy, sz, sw), strans = stored
+    stored_rot = Quat16(int(sx), int(sy), int(sz), int(sw))
+    got = (rot.x, rot.y, rot.z, rot.w)
+    same = all(
+        abs(a - b) <= _QUAT_LSB_SLACK for a, b in zip(got, (sx, sy, sz, sw))
+    ) or all(abs(a + b) <= _QUAT_LSB_SLACK for a, b in zip(got, (sx, sy, sz, sw)))
+    if not same:
+        return rot, trans
+    if any(abs(a - b) > _TRANS_EPS for a, b in zip(trans, strans)):
+        return stored_rot, trans
+    return stored_rot, tuple(float(v) for v in strans)
+
+
+def _remap_parent_meshes(shape, src_to_new: dict[int, int], verbatim: set[int]) -> None:
+    """Re-point parent_mesh at the re-emitted parent, or clear it.
+
+    A verbatim payload carries the *source* file's parent_mesh index, which
+    means nothing in the new mesh layout -- leaving it there is what produced
+    files the reader rejected with "mesh references bad parent".
+
+    Clearing is always safe: the reader materializes a child's verts/tverts/
+    norms as a prefix slice of its parent's, so every Mesh we hold is
+    self-contained.  Remapping is preferred where possible because it keeps the
+    vertex sharing, and with it the file size.
+    """
+    for new_index, mesh in enumerate(shape.meshes):
+        if mesh is None or mesh.parent_mesh < 0:
+            continue
+        parent_new = src_to_new.get(mesh.parent_mesh, -1)
+        parent = shape.meshes[parent_new] if 0 <= parent_new < len(shape.meshes) else None
+        shareable = (
+            new_index in verbatim
+            and parent is not None
+            and parent_new < new_index
+            and parent_new in verbatim
+            # the engine slices the parent's arrays with the child's counts, so
+            # the parent must still be at least as long in every shared array
+            and len(parent.verts) >= len(mesh.verts)
+            and len(parent.tverts) >= len(mesh.tverts)
+            and len(parent.norms) >= len(mesh.norms)
+        )
+        mesh.parent_mesh = parent_new if shareable else -1
 
 
 def _restore_decals(shape, arm_obj, object_index_by_name, warnings) -> dict[int, int]:
@@ -396,20 +517,26 @@ def _material_slot_index(bmat) -> int:
 
 
 def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warnings):
-    """Returns (dtslib.Mesh, node_index)."""
-    if "dts_frozen_payload" in bobj:
-        stored_digest = bobj.get("dts_frozen_digest")
-        if stored_digest and geometry_digest(bobj.data) != stored_digest:
+    """Returns (dtslib.Mesh, node_index, verbatim)."""
+    # "dts_frozen_payload" is the pre-source-payload property name; a .blend
+    # saved by an older add-on only has the strict sorted/multi-matframe ones
+    payload = bobj.get("dts_source_payload") or bobj.get("dts_frozen_payload")
+    if payload:
+        stored_digest = bobj.get("dts_source_digest") or bobj.get("dts_frozen_digest")
+        edited = bool(stored_digest) and geometry_digest(bobj.data) != stored_digest
+        strict = bool(bobj.get("dts_strict_freeze")) or "dts_source_payload" not in bobj
+        if edited and strict:
             kind = "sorted" if int(bobj.get("dts_mesh_type", 0)) == SORTED_MESH else "multi-matframe"
             raise ExportError(
                 f"{bobj.name!r} is a {kind} mesh that only round-trips verbatim, but its "
                 f"geometry has been edited — revert the edits or delete the object"
             )
-        mesh = pickle.loads(base64.b64decode(bobj["dts_frozen_payload"]))
-        for slot in bobj.material_slots:
-            if slot.material is not None:
-                _material_slot_index(slot.material)
-        return mesh, int(bobj.get("dts_node_index", -1))
+        if not edited:
+            mesh = pickle.loads(base64.b64decode(payload))
+            for slot in bobj.material_slots:
+                if slot.material is not None:
+                    _material_slot_index(slot.material)
+            return mesh, int(bobj.get("dts_node_index", -1)), True
 
     is_skin = bool(bobj.vertex_groups) and any(
         m.type == "ARMATURE" and m.object == arm_obj for m in bobj.modifiers
@@ -510,7 +637,7 @@ def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warn
         _export_skin_data(shape, mesh, bobj, node_index_by_bone, node_arm_matrix, key_to_index, warnings)
         node_index = -1
 
-    return mesh, node_index
+    return mesh, node_index, False
 
 
 def _export_skin_data(shape, mesh, bobj, node_index_by_bone, node_arm_matrix, key_to_index, warnings):

@@ -194,6 +194,16 @@ def _store_sequence_props(action: bpy.types.Action, seq: Sequence, shape: Shape)
     if trigs:
         action["dts_triggers"] = json.dumps(trigs)
 
+    # A sequence can animate a node's rotation without its translation and vice
+    # versa; both sets are stored by node name so the export does not have to
+    # infer them from which fcurves happen to exist.
+    action["dts_rot_matters"] = json.dumps(
+        [shape.node_name(i) for i in sorted(seq.rotation_matters.indices())]
+    )
+    action["dts_trans_matters"] = json.dumps(
+        [shape.node_name(i) for i in sorted(seq.translation_matters.indices())]
+    )
+
     if seq.ifl_matters.count():
         action["dts_ifl_matters"] = json.dumps(sorted(seq.ifl_matters.indices()))
 
@@ -300,24 +310,56 @@ def export_sequences(
             (node_index_by_bone[b] for b in bone_channels),
         )
         rot_set, trans_set = TSIntegerSet(), TSIntegerSet()
-        for node in members:
-            rot_set.set(node)
-            trans_set.set(node)
+        stored_rot = json.loads(action.get("dts_rot_matters", "null") or "null")
+        stored_trans = json.loads(action.get("dts_trans_matters", "null") or "null")
+        if stored_rot is None or stored_trans is None:
+            # hand-authored action: infer from the channels each bone actually
+            # has rather than marking every animated bone for both
+            for bone, props in bone_channels.items():
+                node = node_index_by_bone[bone]
+                if any(p.startswith("rotation_") for p in props):
+                    rot_set.set(node)
+                if "location" in props:
+                    trans_set.set(node)
+                if not any(p.startswith("rotation_") for p in props) and "location" not in props:
+                    rot_set.set(node)
+                    trans_set.set(node)
+        else:
+            # the stored sets name DTS nodes, which are not always spelled the
+            # same as the Blender bones, so resolve through the node table
+            node_by_dts_name = {shape.node_name(i): i for i in range(len(shape.nodes))}
+            stored_nodes = set()
+            for name in stored_rot:
+                if name in node_by_dts_name:
+                    rot_set.set(node_by_dts_name[name])
+                    stored_nodes.add(node_by_dts_name[name])
+            for name in stored_trans:
+                if name in node_by_dts_name:
+                    trans_set.set(node_by_dts_name[name])
+                    stored_nodes.add(node_by_dts_name[name])
+            # a bone animated in Blender but absent from the stored sets was
+            # added after import, so it still has to be marked
+            for node in members:
+                if node not in stored_nodes:
+                    rot_set.set(node)
+                    trans_set.set(node)
         seq.rotation_matters = rot_set
         seq.translation_matters = trans_set
 
         seq.base_rotation = len(shape.node_rotations)
         seq.base_translation = len(shape.node_translations)
         bone_by_node = {node_index_by_bone[b]: b for b in bone_channels}
-        # rotations, channel-major
-        for node in members:
-            chans = bone_channels[bone_by_node[node]]
+        # channel-major, and only over the nodes each set actually marks --
+        # the reader indexes these arrays by ordinal within the matters set, so
+        # writing a row for an unmarked node shifts every later node's track
+        for node in sorted(rot_set.indices()):
+            chans = bone_channels.get(bone_by_node.get(node, ""), {})
             for kf in range(n):
                 basis = _sample_basis(chans, kf + 1)
                 local = basis if blend else rest_local[node] @ basis
                 shape.node_rotations.append(blender_quat_to_dts(local.to_quaternion()))
-        for node in members:
-            chans = bone_channels[bone_by_node[node]]
+        for node in sorted(trans_set.indices()):
+            chans = bone_channels.get(bone_by_node.get(node, ""), {})
             for kf in range(n):
                 basis = _sample_basis(chans, kf + 1)
                 local = basis if blend else rest_local[node] @ basis

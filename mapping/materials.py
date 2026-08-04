@@ -46,14 +46,88 @@ _FLAG_PROPS = {
 _MAP_PROPS = ("dts_reflectance_map", "dts_bump_map", "dts_detail_map")
 
 
+# resolved textures/ dir -> {lowercase stem: path}, rebuilt per import
+_texture_index: dict[Path, dict[str, Path]] = {}
+
+
+def reset_texture_cache() -> None:
+    """Drop the sibling-textures index so a re-import picks up new files."""
+    _texture_index.clear()
+
+
+def sibling_texture_dir(search_dir: Path) -> Path | None:
+    """The ``textures/`` dir beside a ``shapes/`` dir, if that is the layout.
+
+    Tribes 2 and friends keep ``shapes/`` and ``textures/`` as siblings under
+    the mod root, so a shape's textures are never next to the .dts itself.
+    Gated on the directory actually being named "shapes" -- without that check
+    this would start guessing at sibling directories for arbitrary layouts.
+    """
+    if search_dir.name.lower() != "shapes":
+        return None
+    tex = search_dir.parent / "textures"
+    return tex if tex.is_dir() else None
+
+
+def _indexed(root: Path) -> dict[str, Path]:
+    """Case-insensitive stem -> path over a texture tree, cached.
+
+    Textures sit in subdirectories (``textures/skins/foo.png``) and material
+    names carry at most a legacy prefix that ``Material.basename`` already
+    strips, so the index is keyed on the bare stem and built recursively.
+    """
+    key = root.resolve()
+    cached = _texture_index.get(key)
+    if cached is not None:
+        return cached
+    index: dict[str, Path] = {}
+    # sort so a stem present more than once (case-variant duplicates exist in
+    # real game data) always resolves to the same file
+    for p in sorted(root.rglob("*"), key=lambda q: (len(q.parts), str(q).lower())):
+        if p.suffix.lower() in _TEXTURE_EXTENSIONS and p.is_file():
+            index.setdefault(p.stem.lower(), p)
+    _texture_index[key] = index
+    return index
+
+
+def _match_keys(name: str) -> list[str]:
+    """Index keys to try for a material name, best first.
+
+    Material names routinely contain dots that are *not* extensions
+    ("base.lmale", "armor.damage.1"), so the whole name is the primary key --
+    ``Path(name).stem`` would truncate those to "base" / "armor.damage".  The
+    stem is kept as a fallback for the rare name that does carry an image
+    extension.
+    """
+    keys = [name.lower()]
+    if Path(name).suffix.lower() in _TEXTURE_EXTENSIONS:
+        keys.append(Path(name).stem.lower())
+    return keys
+
+
 def find_texture(name: str, search_dir: Path | None) -> Path | None:
-    """Find an image for a material name next to the .dts (case-insensitive)."""
+    """Find an image for a material name (case-insensitive).
+
+    Looks next to the .dts first, then in a sibling ``textures/`` tree when the
+    shape lives in a directory named ``shapes``.
+    """
     if search_dir is None or not search_dir.is_dir():
         return None
-    stem = Path(name).stem.lower()
-    for p in search_dir.iterdir():
-        if p.suffix.lower() in _TEXTURE_EXTENSIONS and p.stem.lower() == stem:
-            return p
+    keys = _match_keys(name)
+    local = {
+        p.stem.lower(): p
+        for p in sorted(search_dir.iterdir(), key=lambda q: str(q).lower())
+        if p.suffix.lower() in _TEXTURE_EXTENSIONS
+    }
+    for key in keys:
+        if key in local:
+            return local[key]
+    tex_dir = sibling_texture_dir(search_dir)
+    if tex_dir is not None:
+        index = _indexed(tex_dir)
+        for key in keys:
+            if key in index:
+                return index[key]
     return None
 
 
@@ -72,6 +146,9 @@ def material_to_blender(
 ) -> bpy.types.Material:
     bmat = bpy.data.materials.new(name=mat.basename or "material")
     bmat["dts_name"] = mat.name
+    # names are not unique in real shapes (the same texture can appear twice
+    # with different flags), so the index is the only reliable identity
+    bmat["dts_material_index"] = index
     bmat["dts_flags"] = mat.flags
     for prop, bit in _FLAG_PROPS.items():
         bmat[prop] = bool(mat.flags & bit)
