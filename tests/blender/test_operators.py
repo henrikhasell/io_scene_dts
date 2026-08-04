@@ -693,6 +693,60 @@ def test_dsq_translation_only_node_keeps_rest_rotation():
     )
 
 
+def _fcurves(action):
+    if getattr(action, "layers", None):
+        for layer in action.layers:
+            for strip in layer.strips:
+                for bag in strip.channelbags:
+                    yield from bag.fcurves
+    else:
+        yield from action.fcurves
+
+
+def test_import_dts_with_dsq_companions():
+    """A .dts selected together with .dsq files loads the sequences onto the
+    shape's armature in one go."""
+    import shutil
+    import tempfile
+
+    _reset()
+    arm = _import_dts("v24_w_sqknest.dts")
+    node, bone = _offset_bone(arm)
+    payload = _probe_dsq(arm, node, rotate=True, translate=None)
+
+    tmp = Path(tempfile.mkdtemp())
+    shutil.copy(FIXTURES / "v24_w_sqknest.dts", tmp / "shape.dts")
+    (tmp / "probe.dsq").write_bytes(payload)
+
+    _reset()
+    res = bpy.ops.io_scene_dts.import_dts(
+        directory=str(tmp),
+        files=[{"name": "shape.dts"}, {"name": "probe.dsq"}],
+    )
+    assert res == {"FINISHED"}, res
+
+    arm = _armature()
+    action = bpy.data.actions.get("Probe")
+    assert action is not None, [a.name for a in bpy.data.actions]
+    # bound to this armature's bones, not merely created
+    assert any(bone.name in fc.data_path for fc in _fcurves(action))
+    # nothing assigns DSQ actions, so they need a fake user to survive a save
+    assert action.use_fake_user
+
+
+def test_import_dts_rejects_more_than_one_shape():
+    _reset()
+    try:
+        bpy.ops.io_scene_dts.import_dts(
+            directory=str(FIXTURES),
+            files=[{"name": "v24_ammo.dts"}, {"name": "v24_octahedron.dts"}],
+        )
+    except RuntimeError as e:
+        assert "exactly one .dts" in str(e), str(e)
+    else:
+        raise AssertionError("expected two .dts selections to be rejected")
+
+
 def test_import_hides_non_default_detail_levels():
     """Every LOD sits at the same origin; only the default (largest size) one
     is visible after import."""

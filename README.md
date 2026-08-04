@@ -11,8 +11,12 @@ animation.
   selectable in the export dialog.  v23 has no ground-frame storage; exporting
   a shape with ground frames as v23 is refused unless "Strip Ground Frames"
   is checked.
-- **DSQ**: reads 17–24, writes the modern layout; import applies sequences to
-  the active armature by node-name matching.
+- **DSQ**: reads 17–24, writes the modern layout.  Sequences bind to an
+  armature's bones by node-name matching — either onto the active armature
+  (File → Import → Torque Sequence), or by selecting `.dsq` files alongside
+  the `.dts` in the shape importer, which loads them onto the armature it
+  just created.  Imported sequences become Actions but are not made active;
+  pick one in the Action Editor.
 
 The format core (`dtslib/`) is bpy-free and byte-exact: rewriting any
 engine-written v23/v24 file reproduces it byte-for-byte (verified against
