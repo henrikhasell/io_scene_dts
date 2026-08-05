@@ -28,7 +28,7 @@ These stop with a clear error.  None of them corrupt a file.
 | DTS version 25+ | Same error.  Torque 3D–era shapes are not read. | `dtslib/reader.py:71` |
 | Writing any version but 23/24 | `only 24 (Torque) and 23 (Tribes 2) are supported — older versions keep skins in a separate section`.  You cannot import a v19 shape and write a v19 shape. | `dtslib/writer.py:22` |
 | Ground frames in a v23 export | Refused unless **Strip Ground Frames** is checked, which discards them (movement animations lose their ground speed). v23 has nowhere to store them. | `dtslib/writer.py:27`, `ops/export_dts.py:37` |
-| More than 192 nodes or objects | `TSIntegerSet` is 6 dwords wide, so a shape cannot name a 193rd node in a matters set. | `mapping/blender_to_shape.py:77,263`, `dtslib/primitives.py:14` |
+| More than 192 nodes or objects | `TSIntegerSet` is 6 dwords wide, so a shape cannot name a 193rd node in a matters set. | `mapping/blender_to_shape.py:76,276`, `dtslib/primitives.py:14` |
 | More than 65535 unique vertices in one mesh | 16-bit index buffer. | `mapping/blender_to_shape.py:563` |
 | Exporting without an armature | `select an armature (the DTS shape root)` — the armature *is* the shape. | `mapping/blender_to_shape.py:62` |
 | Arbitrary node scale | Per-axis factors *plus* an orientation quaternion for the axes to be measured along, which a bone's scale cannot express.  Refused rather than half-written.  No sequence in the 630-shape corpus uses it. | `mapping/sequences.py:502` |
@@ -100,7 +100,7 @@ way to check your work short of re-reading the exported file.
 - **`merge_indices`**, the legacy LOD-morph table.  An int array on the mesh
   object (`dts_merge_indices`), editable only as raw numbers in the N-panel.
   Order matters and entries repeat, so a vertex group cannot hold it.  See §4
-  for what an edit costs. `mapping/shape_to_blender.py:397`
+  for what an edit costs. `mapping/shape_to_blender.py:435`
 - **Sorted meshes.**  A `SORTED_MESH` is the engine's answer to translucency:
   its triangles are partitioned into a small tree of clusters, and at draw time
   the engine walks the tree from the camera to get a back-to-front order without
@@ -125,7 +125,7 @@ way to check your work short of re-reading the exported file.
   `MESH_USE_ENCODED_NORMALS`) plus the mesh-type echo in the low three bits get
   a named boolean, so nothing hides in a packed word.  Only `dts_billboard`
   changes anything you can see.  Undocumented bits are dropped with a warning;
-  no corpus mesh has one. `mapping/shape_to_blender.py:354`
+  no corpus mesh has one. `mapping/shape_to_blender.py:392`
 - **Triggers** (footstep sounds, effect hooks).  A collection on the action,
   edited in the DTS tab of the Dope Sheet or NLA sidebar: a state number 1..30
   and two flags rather than the packed U32 the file holds.  Pose markers show
@@ -238,7 +238,7 @@ or changes what renders:
   so a merge entry pointing at one has nothing left to name and is dropped with
   a warning — 15 of 61 entries on `weapon_energy_vehicle`'s first mesh.  The
   entries that survive are remapped exactly.  An unedited mesh still round-trips
-  the whole table through the payload. `mapping/blender_to_shape.py:636`
+  the whole table through the payload. `mapping/blender_to_shape.py:649`
 - **Decal faces that do not sit on the target mesh.**  A decal can only cover
   its target's own geometry, since the engine indexes the target's vertex
   array; a face moved off it is dropped with a warning.
@@ -257,7 +257,7 @@ or changes what renders:
 - **Bone channels with no DTS node.**  A bone you add in Blender animates
   nothing on export. `mapping/sequences.py:297`, `mapping/dsq.py:179`
 - **Duplicate detail sizes for one object.**  `duplicate detail 'X' for object
-  'Y'; 'Z' skipped`. `mapping/blender_to_shape.py:156`
+  'Y'; 'Z' skipped`. `mapping/blender_to_shape.py:155`
 - **`dts_bump_map` and `dts_detail_map` on a material created in Blender.**
   The export path decides whether a material carries map references by testing
   for `dts_reflectance_map` *alone* — `has_refs = _MAP_PROPS[0] in bmat` — and
