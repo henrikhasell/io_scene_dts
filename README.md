@@ -85,6 +85,11 @@ Disk.  For development, symlink this checkout into
 
 ### Known limitations
 
+The short list is below; [UNSUPPORTED.md](UNSUPPORTED.md) has the full
+inventory, sorted by *how* a feature is unsupported — refused outright,
+round-trips but uneditable, correct in the file but invisible in the viewport,
+dropped outright, or frozen against Blender-side edits.
+
 - Decal meshes are preserved verbatim (armature JSON) but not editable in Blender.
 - Multi-frame (vertex-animated) meshes import as shape keys (`frame_NNN`).
 - Sorted and multi-matframe meshes import as frozen payloads
