@@ -28,6 +28,7 @@ from mathutils import Matrix, Quaternion, Vector
 
 from ..dtslib import ObjectState, Quat16, Sequence, Shape, Trigger, TSIntegerSet
 from ..dtslib.types import SEQ_BLEND, SEQ_CYCLIC, SEQ_MAKE_PATH
+from .decals import decal_names_by_index, write_decal_fcurves
 from .visibility import write_vis_fcurves
 
 
@@ -83,6 +84,7 @@ def _iter_fcurves(action: bpy.types.Action):
 
 def import_sequences(shape: Shape, arm_obj: bpy.types.Object, bone_name_by_node: dict[int, str]) -> list[bpy.types.Action]:
     rest_local = _rest_local_matrices(shape)
+    decal_names = decal_names_by_index(shape)
     actions = []
     for seq in shape.sequences:
         name = shape.name(seq.name_index) or "sequence"
@@ -126,9 +128,10 @@ def import_sequences(shape: Shape, arm_obj: bpy.types.Object, bone_name_by_node:
             _write_fcurves(bag, f"{base}.rotation_quaternion", 4, [[q.w, q.x, q.y, q.z] for q in quats])
             _write_fcurves(bag, f"{base}.location", 3, [list(v) for v in locs])
 
-        # object visibility rides in the same slot as the bones, so one strip
-        # drives both (see mapping/visibility.py)
+        # object visibility and decal states ride in the same slot as the
+        # bones, so one strip drives pose, visibility and damage together
         write_vis_fcurves(bag, action, arm_obj)
+        write_decal_fcurves(bag, action, arm_obj, decal_names)
 
         for i, trig in enumerate(_seq_triggers(shape, seq)):
             state_bit = trig.state & 0x3FFFFFFF

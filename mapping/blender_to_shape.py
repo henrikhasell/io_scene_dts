@@ -42,6 +42,7 @@ from ..dtslib.types import (
     STANDARD_MESH,
 )
 
+from .decals import build_decals
 from .materials import materials_from_blender
 from .naming import detail_name_for_size, split_detail_suffix, strip_blender_dedup
 from .sequences import blender_quat_to_dts, export_sequences
@@ -300,6 +301,13 @@ def blender_to_shape(
                         matframe = int(bobj["dts_default_matframe"])
         shape.object_states.append(ObjectState(vis, frame, matframe))
 
+    # -- decals (recomputed from the projector empties) ---------------
+    # before the material list is built: a decal's material is often used by
+    # nothing else, so this is where it gets registered
+    decal_index_map = build_decals(
+        shape, arm_obj, object_index_by_name, _material_slot_index, warnings
+    )
+
     # -- materials ----------------------------------------------------
     shape.materials, mat_warnings = materials_from_blender(_used_materials)
     warnings += mat_warnings
@@ -310,8 +318,6 @@ def blender_to_shape(
         raw[0] = shape.add_name(str(entry["name"]))
         shape.ifl_materials.append(IflMaterial(tuple(raw)))
 
-    # -- decals (preserved records + frozen mesh payloads) ------------
-    decal_index_map = _restore_decals(shape, arm_obj, object_index_by_name, warnings)
 
     # every mesh is in shape.meshes by now, so parent_mesh can be resolved
     _remap_parent_meshes(shape, mesh_src_to_new, verbatim_meshes)
@@ -403,58 +409,6 @@ def _remap_parent_meshes(shape, src_to_new: dict[int, int], verbatim: set[int]) 
             and len(parent.norms) >= len(mesh.norms)
         )
         mesh.parent_mesh = parent_new if shareable else -1
-
-
-def _restore_decals(shape, arm_obj, object_index_by_name, warnings) -> dict[int, int]:
-    """Re-emit preserved decal records/meshes; returns old->new index map."""
-    stored = json.loads(arm_obj.get("dts_decals", "[]") or "[]")
-    default_states = json.loads(arm_obj.get("dts_decal_states", "[]") or "[]")
-    if not stored:
-        return {}
-
-    # order decals by the (remapped) subshape of their owner object so the
-    # subShapeFirstDecal ranges stay contiguous
-    def owner_subshape(obj_index: int) -> int:
-        for s in range(len(shape.sub_shape_first_object)):
-            first = shape.sub_shape_first_object[s]
-            if first <= obj_index < first + shape.sub_shape_num_objects[s]:
-                return s
-        return 0
-
-    placed = []  # (subshape, old_index, entry, obj_index)
-    for old_index, entry in enumerate(stored):
-        obj_index = object_index_by_name.get(str(entry["object"]))
-        if obj_index is None:
-            warnings.append(
-                f"decal {entry['name']!r}: owner object {entry['object']!r} was not "
-                f"exported; decal dropped"
-            )
-            continue
-        placed.append((owner_subshape(obj_index), old_index, entry, obj_index))
-    placed.sort(key=lambda p: (p[0], p[1]))
-
-    decal_index_map: dict[int, int] = {}
-    shape.sub_shape_first_decal = [0] * len(shape.sub_shape_first_object)
-    shape.sub_shape_num_decals = [0] * len(shape.sub_shape_first_object)
-    next_first = 0
-    for s in range(len(shape.sub_shape_first_object)):
-        shape.sub_shape_first_decal[s] = next_first
-        group = [p for p in placed if p[0] == s]
-        shape.sub_shape_num_decals[s] = len(group)
-        next_first += len(group)
-
-    for _, old_index, entry, obj_index in placed:
-        start = len(shape.meshes)
-        for slot in entry["meshes"]:
-            shape.meshes.append(pickle.loads(base64.b64decode(slot)) if slot else None)
-        decal_index_map[old_index] = len(shape.decals)
-        shape.decals.append(
-            Decal((shape.add_name(str(entry["name"])), len(entry["meshes"]), start, obj_index, -1))
-        )
-        shape.decal_states.append(
-            int(default_states[old_index]) if old_index < len(default_states) else 0
-        )
-    return decal_index_map
 
 
 # ----------------------------------------------------------------------

@@ -380,7 +380,26 @@ def test_uv_and_alpha():
     assert ("TEX_IMAGE", "Alpha") in links, links
 
 
-def test_decals_preserved():
+def _decal_triangles(shape, decal, slot, mesh):
+    """The decal's covered triangles as vertex *positions*.
+
+    Index equality is the wrong bar: a decal is rebuilt by matching its faces
+    back onto the target's vertices, and a mesh splits vertices at UV seams,
+    so a position can name several.  Either names the same triangle.
+    """
+    from io_scene_dts.mapping.shape_to_blender import decode_primitives
+
+    target = shape.meshes[shape.objects[decal.raw[3]].start_mesh_index + slot]
+    verts = target.verts or target.initial_verts
+    return {
+        tuple(sorted(tuple(round(c, 4) for c in verts[i]) for i in tri[:3]))
+        for tri in decode_primitives(mesh.decal_data)
+    }
+
+
+def test_decals_roundtrip_through_uv_projection():
+    """Decals are not replayed from a payload: the texgen planes are read back
+    off the projector empty and the indices re-derived from the faces."""
     _reset()
     _import_dts("v23_bioderm_light.dts")
     src = read_shape_file(FIXTURES / "v23_bioderm_light.dts")
@@ -392,14 +411,27 @@ def test_decals_preserved():
     src_names = [src.name(d.raw[0]) for d in src.decals]
     dst_names = [dst.name(d.raw[0]) for d in dst.decals]
     assert dst_names == src_names
-    # decal mesh payloads survive verbatim
+
+    compared = 0
     for d_src, d_dst in zip(src.decals, dst.decals):
         for j in range(d_src.raw[1]):
             m_src = src.meshes[d_src.raw[2] + j]
             m_dst = dst.meshes[d_dst.raw[2] + j]
             assert (m_src is None) == (m_dst is None)
-            if m_src is not None:
-                assert m_dst.decal_data == m_src.decal_data
+            if m_src is None or m_src.decal_data is None:
+                continue
+            compared += 1
+            # the same faces are covered
+            assert _decal_triangles(dst, d_dst, j, m_dst) == _decal_triangles(
+                src, d_src, j, m_src
+            ), (src_names[0], j)
+            # and the same projection lands on them
+            a, b = m_src.decal_data, m_dst.decal_data
+            for pa, pb in zip(a.texgen_s + a.texgen_t, b.texgen_s + b.texgen_t):
+                for x, y in zip(pa, pb):
+                    assert abs(x - y) < 1e-5, (x, y)
+            assert (b.material_index & 0x0FFFFFFF) == (a.material_index & 0x0FFFFFFF)
+    assert compared == 144, compared
     # default decal states survive
     assert dst.decal_states[: len(dst.decals)] == src.decal_states[: len(src.decals)]
     # the Damage sequence's decal track survives
@@ -410,6 +442,93 @@ def test_decals_preserved():
     src_track = src.decal_states[s_src.base_decal_state : s_src.base_decal_state + 24 * n]
     dst_track = dst.decal_states[s_dst.base_decal_state : s_dst.base_decal_state + 24 * n]
     assert dst_track == src_track
+
+
+def test_decals_import_as_projected_uvs():
+    """Each decal becomes the faces it covers plus a projector empty, and the
+    projected UVs must reproduce the engine's own texgen dot product."""
+    _reset()
+    _import_dts("v23_bioderm_light.dts")
+    src = read_shape_file(FIXTURES / "v23_bioderm_light.dts")
+
+    empties = [o for o in bpy.data.objects if o.type == "EMPTY" and "dts_decal_name" in o]
+    meshes = [o for o in bpy.data.objects if o.type == "MESH" and "dts_decal_name" in o]
+    assert len(empties) == 24, len(empties)
+    assert meshes
+
+    for o in meshes:
+        mods = [m.type for m in o.modifiers]
+        assert "UV_PROJECT" in mods, (o.name, mods)
+        uvp = next(m for m in o.modifiers if m.type == "UV_PROJECT")
+        assert uvp.projectors[0].object is not None
+        assert uvp.projectors[0].object.get("dts_decal_name") == o["dts_decal_name"]
+
+    dg = bpy.context.evaluated_depsgraph_get()
+    worst, checked = 0.0, 0
+    for decal in src.decals:
+        name = src.name(decal.raw[0])
+        for j in range(decal.raw[1]):
+            m = src.meshes[decal.raw[2] + j]
+            if m is None or m.decal_data is None or not m.decal_data.texgen_s:
+                continue
+            cand = [o for o in meshes
+                    if o.get("dts_decal_name") == name and o.get("dts_decal_slot") == j]
+            if not cand:
+                continue
+            ob = cand[0]
+            S, T = m.decal_data.texgen_s[0], m.decal_data.texgen_t[0]
+            ev = ob.evaluated_get(dg).data
+            uvl = ev.uv_layers[0].data
+            base = ob.data.vertices  # undisplaced: the lift is a preview modifier
+            for poly in ev.polygons:
+                for li in poly.loop_indices:
+                    p = base[ev.loops[li].vertex_index].co
+                    want = (S[0]*p.x + S[1]*p.y + S[2]*p.z + S[3],
+                            1.0 - (T[0]*p.x + T[1]*p.y + T[2]*p.z + T[3]))
+                    got = uvl[li].uv
+                    worst = max(worst, abs(want[0]-got[0]), abs(want[1]-got[1]))
+            checked += 1
+    assert checked == 144, checked
+    assert worst < 1e-3, worst
+
+
+def test_decals_rest_hidden_and_follow_their_state():
+    """Every Tribes 2 decal rests at state -1 (off) and a sequence switches it
+    on; the meshes read that state through a driver into alpha."""
+    from io_scene_dts.mapping.decals import decal_prop
+    from io_scene_dts.mapping.visibility import _do_refresh
+
+    _reset()
+    arm = _import_dts("v23_bioderm_light.dts")
+    src = read_shape_file(FIXTURES / "v23_bioderm_light.dts")
+
+    names = [src.name(d.raw[0]) for d in src.decals]
+    for i, name in enumerate(names):
+        assert decal_prop(name) in arm.keys(), name
+        assert arm[decal_prop(name)] == float(src.decal_states[i])
+    assert all(s < 0 for s in src.decal_states[: len(src.decals)]), "fixture tests nothing"
+
+    meshes = [o for o in bpy.data.objects if o.type == "MESH" and "dts_decal_name" in o]
+    for o in meshes:
+        paths = {(d.data_path, d.array_index) for d in o.animation_data.drivers}
+        assert ("color", 3) in paths, (o.name, paths)
+
+    # the timer that rebuilds driver relations does not fire in background mode
+    _do_refresh()
+
+    damage = next((a for a in bpy.data.actions if a.name == "Damage"), None)
+    assert damage is not None
+    for t in arm.animation_data.nla_tracks:
+        t.mute = t.name != "Damage"
+
+    n = int(damage["dts_keyframes"])
+    counts = []
+    for f in range(1, n + 1):
+        bpy.context.scene.frame_set(f)
+        bpy.context.view_layer.update()
+        counts.append(sum(1 for name in names if arm[decal_prop(name)] >= 0))
+    assert counts[0] == 0, counts
+    assert counts[-1] > counts[0], counts
 
 
 def test_multiframe_shape_keys():

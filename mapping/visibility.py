@@ -89,6 +89,50 @@ def write_vis_fcurves(bag, action: bpy.types.Action, arm_obj) -> set:
     return written
 
 
+_PENDING_REFRESH = set()
+_REFRESH_PASSES = [0]
+# The first pass has to land after the import's own depsgraph evaluation has
+# settled; firing immediately (interval 0) runs too early and does nothing.
+_REFRESH_DELAY = 0.1
+
+
+def _do_refresh():
+    """Re-assign every pending driver's expression, marking it dirty so the
+    dependency graph rebuilds its relations."""
+    for name in list(_PENDING_REFRESH):
+        obj = bpy.data.objects.get(name)
+        if obj is not None and obj.animation_data is not None:
+            for fcurve in obj.animation_data.drivers:
+                fcurve.driver.expression = fcurve.driver.expression
+    _REFRESH_PASSES[0] -= 1
+    if _REFRESH_PASSES[0] > 0:
+        return _REFRESH_DELAY
+    _PENDING_REFRESH.clear()
+    return None
+
+
+def refresh_driver_relations(objects) -> None:
+    """Queue a dependency-relation rebuild for these objects' drivers.
+
+    A driver added while its target property is *already* animated gets no
+    relation to that animation, so the strip moves the property and nothing
+    follows.  Re-assigning an expression marks the driver dirty — but only
+    once the importing operator has returned, so it is deferred to a timer.
+    There is no public "rebuild relations" call and drivers.update() does not
+    do it.
+
+    Sequences that animate a bone as well as a property are unaffected: the
+    bone channel gives the armature a real animation component for the driver
+    to depend on.  A decal-only sequence like light_male's Damage has none.
+    """
+    _PENDING_REFRESH.update(
+        obj.name for obj in objects if obj.animation_data is not None
+    )
+    if _PENDING_REFRESH and not bpy.app.timers.is_registered(_do_refresh):
+        _REFRESH_PASSES[0] = 2
+        bpy.app.timers.register(_do_refresh, first_interval=_REFRESH_DELAY)
+
+
 def _add_driver(obj, path, index, arm_obj, base_name, expression):
     existing = obj.animation_data.drivers if obj.animation_data else []
     for d in existing:
@@ -205,4 +249,5 @@ def wire_drivers(arm_obj, names, warnings=None) -> int:
             _add_driver(obj, "hide_viewport", None, arm_obj, base_name, "vis <= 0.0")
             _add_driver(obj, "hide_render", None, arm_obj, base_name, "vis <= 0.0")
             wired += 1
+    refresh_driver_relations(m for meshes in by_name.values() for m in meshes)
     return wired

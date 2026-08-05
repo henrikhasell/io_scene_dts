@@ -40,12 +40,6 @@ These stop with a clear error.  None of them corrupt a file.
 Preserved as a pickled/JSON custom property and re-emitted verbatim.  Safe to
 import and re-export; impossible to author or modify.
 
-- **Decal meshes.**  Legacy damage-overlay geometry.  No Blender mesh is
-  created (`object 'X': decal mesh dropped (not supported in Blender
-  round-trip)`); the records and mesh payloads are stashed on the armature as
-  `dts_decals` / `dts_decal_states`, keyed by owner object name, and replayed
-  on export.  A decal whose owner object is *not* exported is dropped with a
-  warning. `mapping/shape_to_blender.py:102,225`, `mapping/blender_to_shape.py:408`
 - **Sorted meshes** (`SORTED_MESH`) — the engine's BSP-ordered geometry.  The
   cluster/BSP tables cannot be re-derived from a Blender mesh at all, so these
   carry `dts_strict_freeze` and refuse edits. `mapping/shape_to_blender.py:401`
@@ -77,10 +71,6 @@ way to check your work short of re-reading the exported file.
   `mapping/shape_to_blender.py:413`
 - **`matframe` (material/UV animation) tracks.**  Preserved in
   `dts_object_anim`, no preview at all.
-- **Decal state tracks** (`dts_decal_anim`).  Since the decal meshes
-  themselves are invisible, so is their animation — this is why light_male's
-  `Damage` sequence gets no NLA strip: the armature can evaluate nothing from
-  it. `mapping/sequences.py:415`, `mapping/nla.py:32`
 - **Triggers** (footstep sounds, effect hooks).  `dts_triggers` JSON on the
   action.  No timeline markers, no UI.
 - **Ground frames** (root-motion speed).  `dts_ground` JSON.  Not shown as
@@ -94,9 +84,23 @@ way to check your work short of re-reading the exported file.
   importer builds ignores all of them.  A map referencing a material that was
   not exported is dropped with a warning. `mapping/materials.py:199,260`
 
-Object **visibility** used to be on this list.  It is now previewed through
-per-object drivers into alpha and the hide flags, and round-trips through DTS
-— see the README.  It is still blind in one direction: see §4.
+Object **visibility** and **decals** used to be on this list.  Both are now
+previewed through per-object drivers into alpha, and round-trip through DTS —
+see the README.  Both are still blind in one direction: see §4.
+
+Two caveats specific to decals, neither of which occurs in the Tribes 2 corpus
+or changes what renders:
+
+- **Multi-frame decals import only their first frame**, and the rest are lost
+  on export (warned).  A decal frame is a whole alternative projection *and*
+  face subset, so previewing more than one would mean a mesh per frame.  All
+  10,584 decal meshes across the 240-shape corpus are single-frame.
+- **Decal indices may alias to a coincident vertex.**  Export re-derives them
+  by matching faces onto the target's vertices, and a mesh splits vertices at
+  UV seams, so a position can name several.  Round-tripping bioderm_light's
+  144 decal meshes, the covered triangles are identical *by position* but 2
+  of 23 name a different duplicate index.  The engine reads position alone,
+  so the render is unchanged.
 
 ---
 
@@ -105,8 +109,12 @@ per-object drivers into alpha and the hide flags, and round-trips through DTS
 - **Everything object-related in a DSQ.**  `DsqFile` has no `object_states`,
   `decal_states` or IFL tables at all (`dtslib/types.py:345`), so exporting an
   action to `.dsq` silently discards its visibility, frame, matframe and decal
-  tracks.  Visibility round-trips through **DTS only**.  There is currently no
-  warning when this happens — worth adding.
+  tracks.  Visibility and decal states round-trip through **DTS only**.  There
+  is currently no warning when this happens — worth adding.
+- **Decal faces that do not sit on the target mesh.**  A decal can only cover
+  its target's own geometry, since the engine indexes the target's vertex
+  array; a face moved off it is dropped with a warning.
+  `mapping/decals.py` (`_decal_mesh_from_blender`)
 - **Scale animation in a DSQ, both directions.**  `dtslib` reads and writes
   the DSQ scale tables, but `mapping/dsq.py` never touches them, so importing
   a scale-animated DSQ loses the scale and exporting one never writes it.
@@ -161,8 +169,8 @@ Subtle, because nothing errors and nothing warns.
 
 ## Coverage
 
-`tests/blender/test_operators.py` (37 tests) covers the round-trip of every
-"opaque" item above, plus visibility export/reimport.  The "blind" items are
-tested at the file level only — no test asserts a preview exists, because none
-does.  The "dropped" items have no tests: they are known losses, not
-regressions to guard.
+`tests/blender/test_operators.py` (39 tests) covers the round-trip of every
+"opaque" item above, plus visibility and decal export/reimport.  The remaining
+"blind" items are tested at the file level only — no test asserts a preview
+exists, because none does.  The "dropped" items have no tests: they are known
+losses, not regressions to guard.

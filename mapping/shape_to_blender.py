@@ -41,6 +41,7 @@ from ..dtslib.types import (
     Mesh,
 )
 
+from .decals import apply_default_states, import_decals, wire_decal_drivers
 from .materials import material_to_blender, reset_texture_cache
 from .naming import object_display_name
 from .nla import scene_fps, stack_actions
@@ -89,6 +90,10 @@ def shape_to_blender(
     detail_collections = {}
     detail_sizes = {}
     node_mats = _node_armature_matrices(shape)
+    # (object index, mesh slot) -> (blender object, dtslib mesh), so a decal can
+    # find the target whose vertices its indices point at
+    decal_targets = {}
+    collection_by_object = {}
 
     for obj_index, obj in enumerate(shape.objects):
         base_name = shape.name(obj.name_index)
@@ -98,9 +103,8 @@ def shape_to_blender(
             if mesh is None:
                 continue
             if mesh.mesh_type == DECAL_MESH:
-                warnings.append(
-                    f"object {base_name!r}: decal mesh dropped (not supported in Blender round-trip)"
-                )
+                # a decal owned by an object slot rather than the decal table;
+                # import_decals walks shape.decals instead
                 continue
             detail = _detail_for(shape, subshape, j)
             size = int(detail.size) if detail else j
@@ -146,6 +150,9 @@ def shape_to_blender(
                 _bind_skin(shape, mesh, bobj, arm_obj, bone_name_by_node)
             else:
                 _parent_rigid(bobj, arm_obj, obj.node_index, bone_name_by_node, node_mats)
+
+            decal_targets[(obj_index, j)] = (bobj, mesh)
+            collection_by_object[bobj.name] = coll
 
     _hide_non_default_details(context, detail_collections, detail_sizes)
 
@@ -194,7 +201,21 @@ def shape_to_blender(
             [{"name": shape.name(m.raw[0]), "raw": list(m.raw)} for m in shape.ifl_materials]
         )
     if shape.decals:
-        _store_decals(shape, arm_obj)
+        n_decals, n_meshes = import_decals(
+            shape,
+            arm_obj,
+            bmats,
+            decal_targets,
+            lambda obj: collection_by_object.get(obj.name),
+            _parent_like,
+            warnings,
+        )
+        # every Tribes 2 decal rests at state -1 (off); the states must exist
+        # before import_sequences keyframes them and before the drivers resolve
+        apply_default_states(arm_obj, shape)
+        warnings.append(
+            f"decals: {n_decals} projector(s) across {n_meshes} mesh(es)"
+        )
 
     if do_import_sequences and shape.sequences:
         actions = import_sequences(shape, arm_obj, bone_name_by_node)
@@ -212,6 +233,13 @@ def shape_to_blender(
                 f"visibility: {len(names)} object(s) driven across {wired} mesh(es); "
                 f"{len(fades)} fade via alpha ({mats} material(s) rewired)"
             )
+        if shape.decals:
+            # re-seed the states here, after the sequences have created their
+            # fcurves, and wire immediately after: a driver whose target
+            # property has not been written since the fcurve appeared never
+            # gets a relation to it and evaluates stale forever
+            apply_default_states(arm_obj, shape)
+            wire_decal_drivers(arm_obj, warnings)
         _, skipped = stack_actions(arm_obj, actions, scene_fps(context))
         for action in skipped:
             warnings.append(
@@ -222,23 +250,24 @@ def shape_to_blender(
     return arm_obj, warnings
 
 
-def _store_decals(shape: Shape, arm_obj) -> None:
-    """Decals (legacy damage-overlay meshes) can't be edited in Blender, but
-    they round-trip: records + mesh payloads keyed by owner object name, plus
-    the shape's default decal states (the first numDecals entries)."""
-    entries = []
-    for d in shape.decals:
-        name_index, num_meshes, start, obj_index, _sibling = d.raw
-        slots = []
-        for j in range(num_meshes):
-            mesh = shape.meshes[start + j] if start + j < len(shape.meshes) else None
-            slots.append(
-                base64.b64encode(pickle.dumps(mesh)).decode("ascii") if mesh is not None else None
-            )
-        owner = shape.name(shape.objects[obj_index].name_index) if 0 <= obj_index < len(shape.objects) else ""
-        entries.append({"name": shape.name(name_index), "object": owner, "meshes": slots})
-    arm_obj["dts_decals"] = json.dumps(entries)
-    arm_obj["dts_decal_states"] = json.dumps(shape.decal_states[: len(shape.decals)])
+def _parent_like(bobj, target_obj, keep_transform: bool = False) -> None:
+    """Hang a decal object off whatever its target hangs off.
+
+    A decal's vertices are copied from the target's local coordinates, so it
+    needs the target's transform verbatim; the projector empty, whose matrix
+    was already solved in that space, keeps its own.  Both must follow the
+    same bone or the decal slides off during animation.
+    """
+    world = bobj.matrix_world.copy() if keep_transform else target_obj.matrix_world.copy()
+    bobj.parent = target_obj.parent
+    bobj.parent_type = target_obj.parent_type
+    bobj.parent_bone = target_obj.parent_bone
+    bobj.matrix_parent_inverse = target_obj.matrix_parent_inverse.copy()
+    for mod in target_obj.modifiers:
+        if mod.type == "ARMATURE":
+            copy = bobj.modifiers.new(mod.name, "ARMATURE")
+            copy.object = mod.object
+    bobj.matrix_world = world
 
 
 def geometry_digest(me) -> str:
