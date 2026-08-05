@@ -18,9 +18,11 @@ animation.
   just created.  Sequences always arrive as NLA strips (see below), one track
   each, all muted but one — pick which plays in the NLA editor.
 
-The format core (`dtslib/`) is bpy-free and byte-exact: rewriting any
-engine-written v23/v24 file reproduces it byte-for-byte (verified against
-407 Tribes 2 / TGE shapes and 1709 DSQ files).
+The format core (`dtslib/`) is bpy-free and reads and writes the formats
+directly, exercised against a corpus of 407 Tribes 2 / TGE shapes and 1709
+DSQ files.  Fields the engine recomputes at load are carried through from the
+source rather than regenerated, so a rewrite stays as close to the original as
+the data allows.
 
 ## Install
 
@@ -62,8 +64,17 @@ Disk.  For development, symlink this checkout into
       strip.scale = dts_duration * fps / (dts_keyframes - 1)
 
   so every strip spans its real duration whatever the scene is set to.  A
-  sequence with no bone channels (visibility- or decal-only) gets no strip and
-  is reported.  Export is unaffected: `dts_duration` stays the single source of
+  sequence the armature can evaluate nothing from (a decal-only one) gets no
+  strip and is reported.
+- **Object visibility** animates.  A sequence's `vis` track is keyframed as a
+  custom property on the armature, in the same slot as the bones, and each mesh
+  built from that object reads it through a driver into alpha (`color[3]`) and
+  the hide flags.  One DTS object is one mesh *per detail level*, so the driver
+  fans out across LODs — light_male's `Jetfire` is ten meshes.  Keeping the
+  value on the armature means one animated ID and one strip, so retiming the
+  strip retimes visibility too.  Drivers are display only; export samples
+  `dts_object_anim` and never reads them, and `.dsq` cannot carry object states
+  at all, so this round-trips through DTS only.  Export is unaffected: `dts_duration` stays the single source of
   truth, so dragging a strip never changes the written file.
 - **Materials** are Principled BSDF with the texture found next to the .dts
   by material name; DTS flags are `dts_*` boolean custom props (the props are

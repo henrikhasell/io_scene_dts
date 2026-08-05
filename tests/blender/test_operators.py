@@ -799,6 +799,63 @@ def test_dts_import_stacks_sequences_as_nla_strips():
     assert all(a.use_fake_user for a in _bone_driving_actions(arm))
 
 
+def test_object_visibility_animates_through_the_strip():
+    """A sequence's vis track is keyframed on the armature and fanned out to
+    every LOD copy by a driver, so one strip drives pose and visibility."""
+    from io_scene_dts.mapping.visibility import vis_prop
+
+    _reset()
+    arm = _import_dts("v23_pack_upgrade_cloaking.dts")
+    animated = ["Main_light", "Hand_bottom_light", "Hand_right_light", "Hand_left_light"]
+
+    # the value lives on the armature, in the bones' own slot
+    for name in animated:
+        assert vis_prop(name) in arm.keys(), name
+    assert any(
+        fc.data_path == f'["{vis_prop("Main_light")}"]'
+        for fc in _fcurves(bpy.data.actions["ambient"])
+    )
+
+    # every mesh built from an animated object is driven; a DTS object is one
+    # mesh per detail level, so this is 1:N
+    driven = [o for o in bpy.data.objects
+              if o.type == "MESH" and o.get("dts_object_name") in animated]
+    assert driven
+    for o in driven:
+        paths = {d.data_path for d in o.animation_data.drivers}
+        assert {"color", "hide_viewport", "hide_render"} <= paths, (o.name, paths)
+        for d in o.animation_data.drivers:
+            assert d.driver.variables[0].targets[0].id is arm
+
+    # a vis-only sequence must still get a strip — it used to be skipped for
+    # having no bone channels, which left the visibility inert
+    tracks = {t.name for t in arm.animation_data.nla_tracks}
+    assert "ambient" in tracks, tracks
+
+    # and it must actually move
+    for t in arm.animation_data.nla_tracks:
+        t.mute = t.name != "ambient"
+    n = int(bpy.data.actions["ambient"]["dts_keyframes"])
+    seen = set()
+    for f in range(1, n + 1):
+        bpy.context.scene.frame_set(f)
+        bpy.context.view_layer.update()
+        seen.add(round(arm[vis_prop("Main_light")], 3))
+    assert len(seen) > 1, f"visibility never changed: {seen}"
+
+
+def test_visibility_drivers_are_not_duplicated_on_reimport():
+    _reset()
+    arm = _import_dts("v23_pack_upgrade_shield.dts")
+    driven = next(o for o in bpy.data.objects
+                  if o.type == "MESH" and o.get("dts_object_name") == "CenterFace_ambient")
+    before = len(driven.animation_data.drivers)
+
+    from io_scene_dts.mapping.visibility import wire_drivers
+    wire_drivers(arm, {"CenterFace_ambient"}, [])
+    assert len(driven.animation_data.drivers) == before
+
+
 def test_no_standalone_nla_stacker():
     """Stacking is not a separate step a user can forget to run.
 

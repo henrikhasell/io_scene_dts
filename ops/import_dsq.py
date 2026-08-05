@@ -42,7 +42,7 @@ class ImportDSQ(bpy.types.Operator, ImportHelper):
             keep_playing=actions[0].name if actions else None,
         )
         for action in skipped:
-            self.report({"WARNING"}, f"{action.name}: no bone channels; no NLA strip created")
+            self.report({"WARNING"}, f"{action.name}: no evaluable channels; no NLA strip created")
 
         self.report(
             {"INFO"},

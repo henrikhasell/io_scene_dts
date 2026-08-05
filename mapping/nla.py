@@ -29,11 +29,21 @@ def strip_scale(action: bpy.types.Action, fps: float) -> float:
     return 1.0
 
 
-def drives_bones(action: bpy.types.Action, arm_obj) -> bool:
-    """True when the action animates a bone this armature actually has."""
+def has_channels(action: bpy.types.Action, arm_obj) -> bool:
+    """True when this armature can evaluate anything in the action.
+
+    Bone channels for bones it actually has, or custom properties on the object
+    itself — object visibility is keyframed there so that one strip drives both
+    the pose and the meshes' visibility drivers (see mapping/visibility.py).
+    A sequence with neither (light_male's decal-only Damage) would be an empty
+    strip.
+    """
     bones = arm_obj.data.bones
     for fc in _iter_fcurves(action):
-        if fc.data_path.startswith('pose.bones["') and fc.data_path.split('"')[1] in bones:
+        path = fc.data_path
+        if path.startswith('pose.bones["') and path.split('"')[1] in bones:
+            return True
+        if path.startswith('["') and path.split('"')[1] in arm_obj.keys():
             return True
     return False
 
@@ -46,9 +56,9 @@ def scene_fps(context) -> float:
 def stack_actions(arm_obj, actions, fps: float, keep_playing: str | None = None):
     """Give each action its own NLA track, timed to its stored duration.
 
-    Returns ``(tracks, skipped)``.  *skipped* holds actions with no bone
-    channels — a shape's visibility/decal-only sequences, which a strip would
-    evaluate to nothing.  Actions already on a track are left alone, so this is
+    Returns ``(tracks, skipped)``.  *skipped* holds actions this armature can
+    evaluate nothing from — a decal-only sequence, which a strip would render
+    as an empty box.  Actions already on a track are left alone, so this is
     safe to call once per import into the same armature.
     """
     anim = arm_obj.animation_data or arm_obj.animation_data_create()
@@ -58,7 +68,7 @@ def stack_actions(arm_obj, actions, fps: float, keep_playing: str | None = None)
 
     tracks, skipped = [], []
     for action in actions:
-        if not drives_bones(action, arm_obj):
+        if not has_channels(action, arm_obj):
             skipped.append(action)
             continue
         if action.name in existing:

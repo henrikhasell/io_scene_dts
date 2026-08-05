@@ -66,7 +66,7 @@ class ImportDTS(bpy.types.Operator, ImportHelper):
 
         _, skipped = stack_actions(arm_obj, collected, scene_fps(context))
         for action in skipped:
-            self.report({"WARNING"}, f"{action.name}: no bone channels; no NLA strip created")
+            self.report({"WARNING"}, f"{action.name}: no evaluable channels; no NLA strip created")
         return len(collected), read
 
     def execute(self, context):

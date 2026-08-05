@@ -28,6 +28,7 @@ from mathutils import Matrix, Quaternion, Vector
 
 from ..dtslib import ObjectState, Quat16, Sequence, Shape, Trigger, TSIntegerSet
 from ..dtslib.types import SEQ_BLEND, SEQ_CYCLIC, SEQ_MAKE_PATH
+from .visibility import write_vis_fcurves
 
 
 # ----------------------------------------------------------------------
@@ -124,6 +125,10 @@ def import_sequences(shape: Shape, arm_obj: bpy.types.Object, bone_name_by_node:
             base = f'pose.bones["{bone}"]'
             _write_fcurves(bag, f"{base}.rotation_quaternion", 4, [[q.w, q.x, q.y, q.z] for q in quats])
             _write_fcurves(bag, f"{base}.location", 3, [list(v) for v in locs])
+
+        # object visibility rides in the same slot as the bones, so one strip
+        # drives both (see mapping/visibility.py)
+        write_vis_fcurves(bag, action, arm_obj)
 
         for i, trig in enumerate(_seq_triggers(shape, seq)):
             state_bit = trig.state & 0x3FFFFFFF
