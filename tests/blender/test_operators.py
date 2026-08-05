@@ -537,6 +537,23 @@ def _decal_triangles(shape, decal, slot, mesh):
     }
 
 
+def test_decal_meshes_are_not_exported_as_objects():
+    """A decal hangs off the armature like an ordinary mesh, but belongs to the
+    decal table alone.  Exporting it as both gave the shape a phantom object
+    per decal, with its own geometry and detail levels."""
+    _reset()
+    _import_dts("v23_bioderm_light.dts")
+    src = read_shape_file(FIXTURES / "v23_bioderm_light.dts")
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
+    dst = read_shape_file(out)
+    assert len(dst.objects) == len(src.objects) == 19
+    assert len(dst.details) == len(src.details) == 10
+    src_names = sorted(src.name(o.name_index) for o in src.objects)
+    dst_names = sorted(dst.name(o.name_index) for o in dst.objects)
+    assert dst_names == src_names
+
+
 def test_decals_roundtrip_through_uv_projection():
     """Decals are not replayed from a payload: the texgen planes are read back
     off the projector empty and the indices re-derived from the faces."""

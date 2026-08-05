@@ -439,10 +439,18 @@ def _ordered_bones(arm_obj) -> list:
 
 
 def _gather_mesh_objects(context, arm_obj, selected_only):
+    """Mesh objects belonging to this shape, excluding decals.
+
+    A decal mesh hangs off the armature exactly like its target does — that is
+    what keeps it stuck to the right bone during animation — so it looks like
+    an ordinary shape mesh here.  It is not one: build_decals emits it into the
+    decal table instead, and letting it through as well exports every decal
+    twice, once as a phantom object with its own geometry and detail levels.
+    """
     objs = []
     pool = context.selected_objects if selected_only else context.scene.objects
     for o in pool:
-        if o.type != "MESH":
+        if o.type != "MESH" or "dts_decal_name" in o:
             continue
         if o.parent == arm_obj or any(
             m.type == "ARMATURE" and m.object == arm_obj for m in o.modifiers
