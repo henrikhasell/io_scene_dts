@@ -28,9 +28,9 @@ These stop with a clear error.  None of them corrupt a file.
 | DTS version 25+ | Same error.  Torque 3D–era shapes are not read. | `dtslib/reader.py:71` |
 | Writing any version but 23/24 | `only 24 (Torque) and 23 (Tribes 2) are supported — older versions keep skins in a separate section`.  You cannot import a v19 shape and write a v19 shape. | `dtslib/writer.py:22` |
 | Ground frames in a v23 export | Refused unless **Strip Ground Frames** is checked, which discards them (movement animations lose their ground speed). v23 has nowhere to store them. | `dtslib/writer.py:27`, `ops/export_dts.py:37` |
-| Editing a sorted or multi-matframe mesh | `is a {sorted,multi-matframe} mesh that only round-trips verbatim, but its geometry has been edited — revert the edits or delete the object` | `mapping/blender_to_shape.py:530` |
+| Editing a sorted or multi-matframe mesh | `is a {sorted,multi-matframe} mesh that only round-trips verbatim, but its geometry has been edited — revert the edits or delete the object` | `mapping/blender_to_shape.py:485` |
 | More than 192 nodes or objects | `TSIntegerSet` is 6 dwords wide, so a shape cannot name a 193rd node in a matters set. | `mapping/blender_to_shape.py:77,287`, `dtslib/primitives.py:14` |
-| More than 65535 unique vertices in one mesh | 16-bit index buffer. | `mapping/blender_to_shape.py:588` |
+| More than 65535 unique vertices in one mesh | 16-bit index buffer. | `mapping/blender_to_shape.py:542` |
 | Exporting without an armature | `select an armature (the DTS shape root)` — the armature *is* the shape. | `mapping/blender_to_shape.py:62` |
 
 ---
@@ -42,20 +42,20 @@ import and re-export; impossible to author or modify.
 
 - **Sorted meshes** (`SORTED_MESH`) — the engine's BSP-ordered geometry.  The
   cluster/BSP tables cannot be re-derived from a Blender mesh at all, so these
-  carry `dts_strict_freeze` and refuse edits. `mapping/shape_to_blender.py:401`
+  carry `dts_strict_freeze` and refuse edits. `mapping/shape_to_blender.py:433`
 - **Multi-matframe meshes** — same treatment, same reason.
 - **IFL material entries** (animated texture flipbooks).  Stored as
   `dts_ifl_materials` JSON on the armature; per-sequence membership as
   `dts_ifl_matters`.  You cannot add, remove or preview one.
-  `mapping/shape_to_blender.py:192`, `mapping/sequences.py:407`
+  `mapping/shape_to_blender.py:200`, `mapping/sequences.py:208`
 - **Node scale animation** (uniform, aligned and arbitrary).  Preserved as a
   `dts_scale_anim` JSON blob on the action.  Scaling a pose bone in Blender
-  does **not** produce scale animation. `mapping/sequences.py:435`
+  does **not** produce scale animation. `mapping/sequences.py:255`
 - **Mesh strip packing, vertex order, `parent_mesh` vertex sharing,
   `merge_indices` and encoded normals.**  Preserved via `dts_source_payload`
   and re-emitted verbatim *only while the geometry is untouched* — a digest
   detects edits.  Edit the mesh and all of it is regenerated from scratch,
-  which roughly triples the file. `mapping/shape_to_blender.py:395`
+  which roughly triples the file. `mapping/shape_to_blender.py:429`
 
 ---
 
@@ -68,7 +68,7 @@ way to check your work short of re-reading the exported file.
   keys `frame_001…frame_NNN`, and the sequence's `frame` track is preserved in
   `dts_object_anim` — but nothing drives the shape keys from the track.  The
   frames are there and the animation is there; they are not connected.
-  `mapping/shape_to_blender.py:413`
+  `mapping/shape_to_blender.py:443`
 - **`matframe` (material/UV animation) tracks.**  Preserved in
   `dts_object_anim`, no preview at all.
 - **Triggers** (footstep sounds, effect hooks).  `dts_triggers` JSON on the
@@ -82,11 +82,38 @@ way to check your work short of re-reading the exported file.
   reflectance/environment maps, plus `detail_scale` and `reflection_amount`.
   Round-trip as `dts_*` custom props on the material; the Principled BSDF the
   importer builds ignores all of them.  A map referencing a material that was
-  not exported is dropped with a warning. `mapping/materials.py:199,260`
+  not exported is dropped with a warning. `mapping/materials.py:351,437`
+  Two further ways a map slot can be lost or silently retargeted are in §4.
+- **Four material flag bits have no named property.**  `_FLAG_PROPS` gives a
+  boolean checkbox to ten of the fourteen flags; `MAT_MIP_MAP_ZERO_BORDER` (8),
+  `MAT_IFL_FRAME` (28), `MAT_DETAIL_MAP_ONLY` (29) and `MAT_BUMP_MAP_ONLY` (30)
+  survive only inside the packed `dts_flags` word.  They import and export
+  correctly, but setting one means computing an integer by hand.  None of the
+  four occurs anywhere in the 630-file corpus. `mapping/materials.py:35`
+- **Subtractive materials preview only approximately.**  EEVEE has no
+  subtractive blend mode.  `MAT_SUBTRACTIVE` is encoded as the additive graph
+  with the emission colour inverted — this add-on's own convention, chosen so
+  the flag has a place on the material to live.  It round-trips exactly; it
+  does not render the way the engine draws it.  No shape in the 630-file corpus
+  is subtractive, so the encoding has never been checked against real art.
+  `mapping/materials.py:226`
+- **`dts_flags` holds the low 31 bits only.**  Blender's integer
+  ID-properties are a C `int`, so a word past `INT_MAX` cannot be assigned at
+  all.  `MAT_REFLECTANCE_MAP_ONLY` (1 << 31) is the one material flag above
+  that line: it is masked out of the stored word and carried by its
+  `dts_reflectance_map_only` checkbox, which `_flags_from_blender` ORs back in.
+  Read `dts_flags` as the full word and you will be wrong about that one bit.
+  `mapping/materials.py:53,348`
 
 Object **visibility** and **decals** used to be on this list.  Both are now
 previewed through per-object drivers into alpha, and round-trip through DTS —
 see the README.  Both are still blind in one direction: see §4.
+
+**Translucent and additive** materials are no longer blind either.  Both are
+carried by the shader the importer builds — `surface_render_method` for
+translucency, `Transparent BSDF + Emission -> Add Shader` for additive — and
+export reads the flags back out of it, so editing the material in the node
+editor changes the file. `mapping/materials.py:309`
 
 Two caveats specific to decals, neither of which occurs in the Tribes 2 corpus
 or changes what renders:
@@ -121,14 +148,33 @@ or changes what renders:
   (The DTS path preserves it as a blob — §2.)
 - **`frame_*` shape keys on a skinned mesh.**  `'X': frame_* shape keys on a
   skin are not supported; ignored` — DTS cannot combine vertex animation with
-  skinning. `mapping/blender_to_shape.py:624`
+  skinning. `mapping/blender_to_shape.py:578`
 - **DSQ channels for nodes the armature lacks.**  `DSQ node 'X' not found in
   armature; its channels are dropped` — expected when applying a sequence to a
   different skeleton. `mapping/dsq.py:59`
 - **Bone channels with no DTS node.**  A bone you add in Blender animates
-  nothing on export. `mapping/sequences.py:301`, `mapping/dsq.py:180`
+  nothing on export. `mapping/sequences.py:303`, `mapping/dsq.py:180`
 - **Duplicate detail sizes for one object.**  `duplicate detail 'X' for object
-  'Y'; 'Z' skipped`. `mapping/blender_to_shape.py:156`
+  'Y'; 'Z' skipped`. `mapping/blender_to_shape.py:157`
+- **`dts_bump_map` and `dts_detail_map` on a material created in Blender.**
+  The export path decides whether a material carries map references by testing
+  for `dts_reflectance_map` *alone* — `has_refs = _MAP_PROPS[0] in bmat` — and
+  when it is absent it writes engine-safe defaults instead of reading the other
+  two props.  So a new material given only `dts_bump_map` and `dts_detail_map`
+  exports as `bump=NO_MAP, detail=NO_MAP`, with no warning.  Adding
+  `dts_reflectance_map` as well makes all three take effect; imported materials
+  always carry all three, so they are unaffected.
+  `mapping/materials.py:445`
+- **The identity of a map target whose name is not unique.**  Map slots are
+  stored as material *names* so they survive reordering, and resolved back
+  through `index_by_name = {m.name.lower(): i ...}`, where a later entry
+  overwrites an earlier one.  Material names are not unique in real shapes —
+  the importer says so itself, and keys material identity on
+  `dts_material_index` for that reason (`mapping/materials.py:345`) — so a slot
+  pointing at the *first* of two materials named `glass` comes back pointing at
+  the last, silently.  104 of the 630 corpus shapes have duplicate material
+  names, but none of them has a map slot targeting a duplicated name, so no
+  real file is currently mistranslated. `mapping/materials.py:336,426`
 
 ---
 
@@ -142,16 +188,27 @@ Subtle, because nothing errors and nothing warns.
   imported sequence always has the property, so **adding or removing keyframes
   in Blender does not change the exported length** — keys are sampled at frames
   `1..n` regardless.  Changing a key's *value* inside that range does export.
-  `mapping/sequences.py:274`, `mapping/dsq.py:155`
+  `mapping/sequences.py:277`, `mapping/dsq.py:155`
 - **Sequence timing.**  `dts_duration` is the single source of truth.  NLA
   strip scale is display-only by design, so retiming a strip cannot change the
   file — you must edit `dts_duration` on the action.
 - **Detail sizes.**  Taken from the object-name suffix (`shape2`, `shape32`,
   `collision-1`), with `dts_*` custom props overriding.  Renaming a collection
   does nothing.
-- **Material flags.**  The `dts_*` boolean props are authoritative, not the
-  Blender shader.  Making a material transparent in the node editor does not
-  set `MAT_TRANSLUCENT`.
+- **Material flags, except the three blend bits.**  The `dts_*` boolean props
+  are authoritative for wrapping, self-illumination, env-mapping, mip-mapping
+  and the IFL bits; the Blender shader has no bearing on them.
+  `MAT_TRANSLUCENT`, `MAT_ADDITIVE` and `MAT_SUBTRACTIVE` are no longer on this
+  list — they are read off the material, and their props are rewritten to match
+  on export. `mapping/materials.py:393`
+- **The blend state of a material that fades.**  The visibility and decal
+  wiring force `surface_render_method = BLENDED` so a fade renders at all,
+  which on an opaque material would otherwise read back as `MAT_TRANSLUCENT`.
+  The state from before the fade is recorded once in `dts_blend_before_fade`,
+  and *that* is what export reads — so on a faded material, switching the
+  render method by hand does not reach the file.  Delete the property to make
+  the current setting count.  `mapping/materials.py:286`,
+  `mapping/visibility.py:185`, `mapping/decals.py:242`
 
 ---
 
@@ -169,7 +226,7 @@ Subtle, because nothing errors and nothing warns.
 
 ## Coverage
 
-`tests/blender/test_operators.py` (41 tests) covers the round-trip of every
+`tests/blender/test_operators.py` (46 tests) covers the round-trip of every
 "opaque" item above, plus visibility and decal export/reimport.  The remaining
 "blind" items are tested at the file level only — no test asserts a preview
 exists, because none does.  The "dropped" items have no tests: they are known

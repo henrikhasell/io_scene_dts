@@ -20,6 +20,8 @@ import json
 
 import bpy
 
+from .materials import emission_of_add_shader, fade_emission, remember_blend_state
+
 VIS_PREFIX = "dts_vis_"
 
 
@@ -178,6 +180,13 @@ def _wire_material_alpha(mat) -> bool:
         return False
     if any(n.type == "OBJECT_INFO" for n in nt.nodes):
         return False  # already wired; re-import must not stack nodes
+    # export reads MAT_TRANSLUCENT off the material, and the fade below forces
+    # blending whatever the shape said
+    remember_blend_state(mat)
+    emission = emission_of_add_shader(nt)
+    if emission is not None:
+        # additive/subtractive: no Principled to fade, so scale the emission
+        return fade_emission(nt, emission)
     bsdf = next((n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"), None)
     if bsdf is None:
         return False

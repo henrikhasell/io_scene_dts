@@ -78,8 +78,12 @@ Disk.  For development, symlink this checkout into
   truth, so dragging a strip never changes the written file.
 - **Materials** are Principled BSDF with the texture found next to the .dts
   by material name; DTS flags are `dts_*` boolean custom props (the props are
-  the round-trip source of truth).  The exporter always writes a self-index
-  reflectance map (never `0xFFFFFFFF`, which crashes the engine).
+  the round-trip source of truth).  The three blend flags are the exception:
+  `MAT_TRANSLUCENT` is the material's `surface_render_method`, and
+  `MAT_ADDITIVE` / `MAT_SUBTRACTIVE` are a `Transparent BSDF + Emission ->
+  Add Shader` graph, so the shader is what export reads and editing it changes
+  the file.  The exporter always writes a self-index reflectance map (never
+  `0xFFFFFFFF`, which crashes the engine).
 - Export emits triangulated, indexed **Triangles** primitives grouped per
   material — the same policy as the engine's own `.mdl` exporter.
 

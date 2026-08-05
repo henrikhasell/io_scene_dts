@@ -380,6 +380,146 @@ def test_uv_and_alpha():
     assert ("TEX_IMAGE", "Alpha") in links, links
 
 
+def test_reflectance_map_only_survives_the_int_prop_limit():
+    """MAT_REFLECTANCE_MAP_ONLY is bit 31, past what a Blender int prop holds.
+
+    No corpus shape sets it, so the fixture is synthesised: assigning the raw
+    flags word used to raise OverflowError out of the import operator and leave
+    a half-built scene.  The bit now rides in dts_reflectance_map_only while
+    dts_flags keeps the low 31.
+    """
+    from io_scene_dts.dtslib.types import MAT_REFLECTANCE_MAP_ONLY
+    from io_scene_dts.dtslib.writer import write_shape_file
+
+    _reset()
+    src = read_shape_file(FIXTURES / "v24_shrub.dts")
+    src.materials[0].flags |= MAT_REFLECTANCE_MAP_ONLY
+    src_flags = src.materials[0].flags
+    assert src_flags > 0x7FFFFFFF, hex(src_flags)
+    seeded = _tmp(".dts")
+    write_shape_file(src, seeded, version=24)
+
+    res = bpy.ops.io_scene_dts.import_dts(filepath=seeded)
+    assert res == {"FINISHED"}, res
+
+    bmat = next(m for m in bpy.data.materials if m.get("dts_name") == src.materials[0].name)
+    assert bmat["dts_flags"] == src_flags & 0x7FFFFFFF, hex(bmat["dts_flags"])
+    assert bmat["dts_reflectance_map_only"], "bit 31 lost on import"
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
+    assert read_shape_file(out).materials[0].flags == src_flags, "bit 31 lost on export"
+
+
+def _mat_by_index(index):
+    return next(m for m in bpy.data.materials if m.get("dts_material_index") == index)
+
+
+def test_additive_flag_lives_in_the_shader():
+    """MAT_ADDITIVE imports as the EEVEE additive graph and exports from it.
+
+    Transparent BSDF + Emission -> Add Shader is both the preview and the
+    storage: no dts_additive prop is consulted on export.  The Principled node
+    is gone, so nothing downstream tries to fade a surface that is no longer
+    connected to the output.
+    """
+    from io_scene_dts.dtslib.types import MAT_ADDITIVE, MAT_TRANSLUCENT
+
+    _reset()
+    _import_dts("v22_energy_explosion.dts")
+    bmat = _mat_by_index(0)
+    types = {n.type for n in bmat.node_tree.nodes}
+    assert "ADD_SHADER" in types and "EMISSION" in types and "BSDF_TRANSPARENT" in types, types
+    assert "BSDF_PRINCIPLED" not in types, "Principled left dangling behind the Add Shader"
+    assert bmat.surface_render_method == "BLENDED"
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
+    flags = read_shape_file(out).materials[0].flags
+    assert flags & MAT_ADDITIVE, "additive lost"
+    assert flags & MAT_TRANSLUCENT, "additive material must still blend"
+
+
+def test_subtractive_round_trips_through_the_invert_node():
+    """No corpus shape is subtractive, so the fixture is synthesised.
+
+    The encoding -- the additive graph with the emission colour inverted -- is
+    this add-on's own convention; EEVEE cannot render subtractive blending.
+    """
+    from io_scene_dts.dtslib.types import MAT_SUBTRACTIVE
+    from io_scene_dts.dtslib.writer import write_shape_file
+
+    _reset()
+    src = read_shape_file(FIXTURES / "v24_shrub.dts")
+    src.materials[0].flags |= MAT_SUBTRACTIVE
+    seeded = _tmp(".dts")
+    write_shape_file(src, seeded, version=24)
+    assert bpy.ops.io_scene_dts.import_dts(filepath=seeded) == {"FINISHED"}
+
+    bmat = _mat_by_index(0)
+    emission = next(n for n in bmat.node_tree.nodes if n.type == "EMISSION")
+    color = emission.inputs["Color"]
+    assert color.is_linked and color.links[0].from_node.type == "INVERT", "no invert on emission"
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
+    assert read_shape_file(out).materials[0].flags & MAT_SUBTRACTIVE, "subtractive lost"
+
+
+def test_shader_edit_reaches_the_exported_blend_flag():
+    """The material wins over dts_translucent -- this used to be frozen."""
+    from io_scene_dts.dtslib.types import MAT_TRANSLUCENT
+
+    _reset()
+    _import_dts("v24_shrub.dts")
+    bmat = _mat_by_index(0)
+    assert bmat["dts_translucent"], "fixture is meant to start translucent"
+
+    bmat.surface_render_method = "DITHERED"  # the edit that used to do nothing
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
+    assert not read_shape_file(out).materials[0].flags & MAT_TRANSLUCENT, "shader edit ignored"
+    assert not bmat["dts_translucent"], "prop left contradicting the shader"
+
+    bmat.surface_render_method = "BLENDED"
+    out2 = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out2, version="24") == {"FINISHED"}
+    assert read_shape_file(out2).materials[0].flags & MAT_TRANSLUCENT, "not translucent again"
+    assert bmat["dts_translucent"], "prop not resynced"
+
+
+def test_fading_an_opaque_material_does_not_make_it_translucent():
+    """A visibility fade forces BLENDED; export must not read that as the flag.
+
+    'skins\\ShieldPackAmbient' is opaque in the file and fades, so the render
+    method alone would flip it to MAT_TRANSLUCENT -- dts_blend_before_fade is
+    what keeps the exported flags honest.
+    """
+    from io_scene_dts.dtslib.types import MAT_TRANSLUCENT
+
+    _reset()
+    _import_dts("v23_pack_upgrade_shield.dts")
+    src = read_shape_file(FIXTURES / "v23_pack_upgrade_shield.dts")
+    faded = [
+        m
+        for m in bpy.data.materials
+        if "dts_material_index" in m and any(n.type == "OBJECT_INFO" for n in m.node_tree.nodes)
+    ]
+    opaque_faded = [m for m in faded if not src.materials[int(m["dts_material_index"])].flags & MAT_TRANSLUCENT]
+    assert opaque_faded, "fixture no longer fades an opaque material; test is vacuous"
+    for m in opaque_faded:
+        assert m.surface_render_method == "BLENDED", "fade should have forced blending"
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
+    dst = read_shape_file(out)
+    for m in opaque_faded:
+        i = int(m["dts_material_index"])
+        assert not dst.materials[i].flags & MAT_TRANSLUCENT, (
+            f"{m['dts_name']!r} went translucent because it fades"
+        )
+
+
 def _decal_triangles(shape, decal, slot, mesh):
     """The decal's covered triangles as vertex *positions*.
 

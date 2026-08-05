@@ -43,6 +43,7 @@ from ..dtslib import (
     Primitive,
     Shape,
 )
+from .materials import emission_of_add_shader, fade_emission, remember_blend_state
 
 PROJECTOR_PREFIX = "decal_"
 # A decal is off when its state is negative (tsShapeInstance.cc: `if (decalMesh
@@ -237,6 +238,15 @@ def wire_decal_material(mat) -> bool:
     nt = getattr(mat, "node_tree", None)
     if nt is None:
         return False
+    # the blend forced below must not read back as MAT_TRANSLUCENT on export
+    remember_blend_state(mat)
+    emission = emission_of_add_shader(nt)
+    if emission is not None:
+        # additive/subtractive decal: fade the glow, there is no Principled
+        if not any(n.type == "OBJECT_INFO" for n in nt.nodes):
+            fade_emission(nt, emission)
+        _set_decal_blend(mat)
+        return True
     bsdf = next((n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"), None)
     if bsdf is None:
         return False
@@ -265,12 +275,16 @@ def wire_decal_material(mat) -> bool:
         else:
             nt.nodes.remove(info)
 
+    _set_decal_blend(mat)
+    return True
+
+
+def _set_decal_blend(mat) -> None:
     if hasattr(mat, "blend_method"):
         mat.blend_method = "BLEND"
     if hasattr(mat, "surface_render_method"):
         mat.surface_render_method = "BLENDED"
     mat.use_backface_culling = True  # the engine draws decals one-sided
-    return True
 
 
 def _vertex_lookup(verts, places: int = 5) -> dict:
