@@ -25,7 +25,6 @@ array[base + ordinal_in_matters_set * num_keyframes + keyframe].
 
 from __future__ import annotations
 
-import json
 
 import bpy
 from mathutils import Matrix, Quaternion, Vector

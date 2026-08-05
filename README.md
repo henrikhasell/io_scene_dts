@@ -48,11 +48,12 @@ Disk.  For development, symlink this checkout into
   modifier.  Rigid meshes are bone-parented.
 - **Sequences are Actions** (one per sequence).  Pose-bone fcurves carry node
   rotation/translation keyframes (keyframe *i* = Blender frame *i*+1).
-  Sequence metadata lives in action custom props: `dts_cyclic`, `dts_blend`,
-  `dts_priority`, `dts_duration`, `dts_tool_begin`, plus JSON blobs for
-  ground frames (`dts_ground`), triggers (`dts_triggers`), object
-  visibility/frame tracks (`dts_object_anim`) and scale animation
-  (`dts_scale_anim`).  Blend sequences store raw blend offsets in the pose.
+  Sequence metadata lives in action custom props (`dts_cyclic`, `dts_blend`,
+  `dts_priority`, `dts_duration`, `dts_tool_begin`) and, for ground frames and
+  triggers, in editable collections shown in the **DTS** tab of the Dope Sheet
+  and NLA sidebars.  Object-state and node-scale animation are keyframed
+  channels rather than stored tables — see below.  Blend sequences store raw
+  blend offsets in the pose.
 - **Sequences are NLA strips, always.**  Playback speed is not a scene
   property: a sequence stores its own `dts_duration`, and one shape's sequences
   disagree — across light_male and its DSQs, 13 are authored at 30 fps and 21
@@ -61,7 +62,7 @@ Disk.  For development, symlink this checkout into
   is wrong for all but the sequences that happen to match, so the importer
   never assigns one.  Each sequence gets a track with
 
-      strip.scale = dts_duration * fps / (dts_keyframes - 1)
+      strip.scale = dts_duration * fps / (keyframe_count - 1)
 
   so every strip spans its real duration whatever the scene is set to.  A
   sequence the armature can evaluate nothing from (a decal-only one) gets no
@@ -72,18 +73,29 @@ Disk.  For development, symlink this checkout into
   the hide flags.  One DTS object is one mesh *per detail level*, so the driver
   fans out across LODs — light_male's `Jetfire` is ten meshes.  Keeping the
   value on the armature means one animated ID and one strip, so retiming the
-  strip retimes visibility too.  Drivers are display only; export samples
-  `dts_object_anim` and never reads them, and `.dsq` cannot carry object states
-  at all, so this round-trips through DTS only.  Export is unaffected: `dts_duration` stays the single source of
-  truth, so dragging a strip never changes the written file.
+  strip retimes visibility too.  **Export samples those curves**, so editing a
+  key changes the file; the drivers are the preview, not the storage.  The same
+  goes for the `frame` and `matframe` tracks and for decal states.  `.dsq`
+  cannot carry object states at all, so they round-trip through DTS only.
+  Timing is unaffected: `dts_duration` stays the single source of truth, so
+  dragging a strip never changes the written file.
+- **Node scale animation** rides the pose bones' own `scale` channels, with
+  `Scale Mode` on the sequence panel saying which DTS form to write.  The
+  arbitrary form — per-axis factors plus an orientation — has no bone equivalent
+  and is refused on export.
+- **Shape tables** (name table, detail levels, material order, IFL entries) are
+  collections on the armature, under Object Properties → **DTS Shape**.  A
+  node's stored rest transform is on the bone, under Bone Properties → **DTS
+  Node**.
 - **Materials** are Principled BSDF with the texture found next to the .dts
   by material name; DTS flags are `dts_*` boolean custom props (the props are
   the round-trip source of truth).  The three blend flags are the exception:
   `MAT_TRANSLUCENT` is the material's `surface_render_method`, and
   `MAT_ADDITIVE` / `MAT_SUBTRACTIVE` are a `Transparent BSDF + Emission ->
   Add Shader` graph, so the shader is what export reads and editing it changes
-  the file.  The exporter always writes a self-index reflectance map (never
-  `0xFFFFFFFF`, which crashes the engine).
+  the file.  All fourteen flag bits have a checkbox, in Material Properties →
+  **DTS Material**.  The exporter always writes a self-index reflectance map
+  (never `0xFFFFFFFF`, which crashes the engine).
 - Export emits triangulated, indexed **Triangles** primitives grouped per
   material — the same policy as the engine's own `.mdl` exporter.
 
@@ -94,12 +106,19 @@ inventory, sorted by *how* a feature is unsupported — refused outright,
 round-trips but uneditable, correct in the file but invisible in the viewport,
 dropped outright, or frozen against Blender-side edits.
 
-- Decal meshes are preserved verbatim (armature JSON) but not editable in Blender.
-- Multi-frame (vertex-animated) meshes import as shape keys (`frame_NNN`).
-- Sorted and multi-matframe meshes import as frozen payloads
-  (`dts_frozen_payload`): they re-export verbatim, and export refuses with a
-  clear error if their geometry was edited.
-- IFL material entries are preserved (not editable in Blender).
+- Nothing is stored as a pickled payload any more, and every mesh is re-derived
+  from the Blender geometry on export, so an edit always reaches the file.
+  Strip packing and exact vertex order are not preserved (measured at ×1.00 in
+  file size); `parent_mesh` vertex sharing and sorted-mesh cluster trees are
+  regenerated rather than carried.
+- Decals import as projected UVs with a projector empty, and re-export from it.
+- Multi-frame (vertex-animated) meshes import as shape keys (`frame_NNN`);
+  nothing drives them from the sequence's `frame` track.
+- Extra material frames are `FLOAT2` mesh attributes; only frame 0 renders.
+- IFL material entries are editable but have no preview.
+- A `.blend` saved by v1.2 or earlier converts on load, but its mesh payloads
+  are discarded rather than unpickled — re-import the `.dts` to recover strip
+  packing, merge indices, material frames and cluster tables.
 - DTS versions below 17 (the keyframe-table era) are refused.
 
 ## Development
@@ -113,8 +132,15 @@ python -m venv .venv && .venv/bin/pip install pytest pytest-cov hypothesis
 # full suite incl. the on-disk corpus sweep, with coverage
 .venv/bin/python -m pytest --cov --cov-report=term-missing
 
-# headless Blender integration tests (writes .coverage.blender.*)
+# headless Blender integration tests (writes .coverage.blender.*).  Add
+# `-- <substring>` to run only the scenarios whose names match.
 blender --background --factory-startup --python tests/blender/run_blender_tests.py
+
+# break the export path on purpose and check the right test notices
+scripts/mutate.py            # --list shows what each one disables
+
+# every file:line citation in UNSUPPORTED.md still lands on a real line
+scripts/check_citations.py
 
 # combined coverage report across both runs (--append merges the Blender
 # data into the pytest data instead of replacing it)

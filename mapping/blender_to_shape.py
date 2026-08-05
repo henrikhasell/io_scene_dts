@@ -11,7 +11,6 @@ space with initialTransforms = inverse of each bone's rest matrix.
 
 from __future__ import annotations
 
-import json
 import math
 
 import bpy
