@@ -3,8 +3,8 @@
 Port of MaterialList::read/write (dgl/materialList.cc) and
 TSMaterialList::read/write (ts/tsMaterialList.cc).
 
-Names are preserved exactly as stored (including any legacy path prefix) so
-rewrites are byte-identical; Material.basename gives the engine's view.
+Names are preserved exactly as stored (including any legacy path prefix)
+rather than normalised; Material.basename gives the engine's view.
 """
 
 from __future__ import annotations

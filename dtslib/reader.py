@@ -89,7 +89,8 @@ def _read_shape(data: bytes) -> Shape:
     alloc = ReadAlloc(buf32, buf16, buf8)
     _assemble_shape(shape, alloc, version)
     # remaining bytes are the writer's dword padding (uninitialized memory in
-    # engine-written files) — keep them for byte-identical rewrites
+    # engine-written files) — kept so a write can reuse them rather than
+    # inventing padding of its own
     shape.pad16 = bytes(buf16[alloc.p16 :])
     shape.pad8 = bytes(buf8[alloc.p8 :])
     return shape

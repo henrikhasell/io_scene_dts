@@ -86,8 +86,8 @@ class Quat16:
 class TSIntegerSet:
     """Bitset over node/object indices (max 192 bits outside TORQUE_LIB).
 
-    File form: S32 legacy word (ignored by the engine but preserved here for
-    byte-identical rewrites), S32 dword count, then that many U32 words.
+    File form: S32 legacy word (ignored by the engine but carried through
+    rather than recomputed), S32 dword count, then that many U32 words.
     The engine's writer trims trailing zero dwords.
     """
 

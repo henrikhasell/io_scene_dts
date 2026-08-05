@@ -5,7 +5,7 @@ sections, pre-v22 ground-frames-in-node-arrays) into the v24-style layout on
 load, so a Shape always looks like a modern shape in memory.
 
 Fields marked "runtime" occupy space in the file but are recomputed by the
-engine at load; they are preserved verbatim so rewrites are byte-identical.
+engine at load; they are preserved verbatim rather than regenerated on write.
 """
 
 from __future__ import annotations
@@ -296,7 +296,7 @@ class Shape:
     source_version: int | None = None
     exporter_version: int = DTS_EXPORTER_CURRENT_VERSION
     # original files pad the 16-/8-bit buffers to dwords with uninitialized
-    # bytes; captured at read time so rewrites are byte-identical
+    # bytes; captured at read time so a write can reuse them
     pad16: bytes = b""
     pad8: bytes = b""
 

@@ -177,8 +177,8 @@ class WriteAlloc:
 
         The 16- and 8-bit buffers are padded up to whole dwords, exactly like
         TSShape::write (tsShape.cc:1252-1263).  The engine's pad bytes are
-        uninitialized memory; pass pad16/pad8 captured at read time to
-        reproduce them for byte-identical rewrites (zeros otherwise).
+        uninitialized memory; pass pad16/pad8 captured at read time to reuse
+        the source's bytes (zeros otherwise).
         """
         size32 = len(self.b32) // 4
         b16 = bytes(self.b16)
