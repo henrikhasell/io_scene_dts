@@ -169,7 +169,7 @@ Subtle, because nothing errors and nothing warns.
 
 ## Coverage
 
-`tests/blender/test_operators.py` (39 tests) covers the round-trip of every
+`tests/blender/test_operators.py` (41 tests) covers the round-trip of every
 "opaque" item above, plus visibility and decal export/reimport.  The remaining
 "blind" items are tested at the file level only — no test asserts a preview
 exists, because none does.  The "dropped" items have no tests: they are known

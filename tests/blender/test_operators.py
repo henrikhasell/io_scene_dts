@@ -492,21 +492,83 @@ def test_decals_import_as_projected_uvs():
     assert worst < 1e-3, worst
 
 
-def test_decals_rest_hidden_and_follow_their_state():
-    """Every Tribes 2 decal rests at state -1 (off) and a sequence switches it
-    on; the meshes read that state through a driver into alpha."""
+def test_decals_start_at_the_states_the_file_stores():
+    """A decal's rest state is per decal, not a constant.
+
+    Most Tribes 2 decals rest at -1 (off) and a Damage sequence switches them
+    on, but 357 of the corpus's 2194 rest at 0 — a wreck is already damaged.
+    station_teleport carries 13 of each.
+    """
+    from io_scene_dts.mapping.decals import decal_prop
+
+    _reset()
+    arm = _import_dts("v22_station_teleport.dts")
+    src = read_shape_file(FIXTURES / "v22_station_teleport.dts")
+    states = src.decal_states[: len(src.decals)]
+    assert {s < 0 for s in states} == {True, False}, "fixture must carry both"
+
+    for i, decal in enumerate(src.decals):
+        name = src.name(decal.raw[0])
+        assert decal_prop(i, name) in arm.keys(), (i, name)
+        assert arm[decal_prop(i, name)] == float(states[i]), (i, name)
+
+    # the ones resting on must actually be drawn, and the ones off must not
+    bpy.context.scene.frame_set(1)
+    bpy.context.view_layer.update()
+    dg = bpy.context.evaluated_depsgraph_get()
+    for o in bpy.data.objects:
+        if o.type != "MESH" or "dts_decal_name" not in o:
+            continue
+        want = 1.0 if states[int(o["dts_decal_index"])] >= 0 else 0.0
+        assert abs(o.evaluated_get(dg).color[3] - want) < 1e-6, (o.name, want)
+
+
+def test_decal_identity_is_the_index_not_the_name():
+    """Decal names repeat within a shape — station_teleport's 26 decals share
+    13 names, and turret_tank_base gives all fourteen of its decals one name.
+    Keying on the name would collapse them on export."""
+    from io_scene_dts.mapping.decals import decal_prop
+
+    _reset()
+    arm = _import_dts("v22_station_teleport.dts")
+    src = read_shape_file(FIXTURES / "v22_station_teleport.dts")
+    names = [src.name(d.raw[0]) for d in src.decals]
+    assert len(set(names)) < len(names), "fixture must have duplicate names"
+
+    # one property and one projector per decal, not per name
+    assert len([k for k in arm.keys() if k.startswith("dts_decal_")]) == len(src.decals)
+    empties = [o for o in bpy.data.objects if o.type == "EMPTY" and "dts_decal_name" in o]
+    assert len(empties) == len(src.decals), len(empties)
+    assert len({int(o["dts_decal_index"]) for o in empties}) == len(src.decals)
+
+    # each decal's meshes point at that decal's own projector
+    for o in bpy.data.objects:
+        if o.type != "MESH" or "dts_decal_name" not in o:
+            continue
+        uvp = next(m for m in o.modifiers if m.type == "UV_PROJECT")
+        assert int(uvp.projectors[0].object["dts_decal_index"]) == int(o["dts_decal_index"])
+
+    # and they all survive a round trip, distinctly
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
+    dst = read_shape_file(out)
+    assert len(dst.decals) == len(src.decals)
+    assert [dst.name(d.raw[0]) for d in dst.decals] == names
+    assert dst.decal_states[: len(dst.decals)] == src.decal_states[: len(src.decals)]
+    # distinct decals keep distinct owners
+    assert [d.raw[3] for d in dst.decals] == [d.raw[3] for d in src.decals]
+
+
+def test_decals_follow_their_state_through_a_sequence():
+    """The meshes read the state through a driver into alpha, so one strip
+    drives pose and damage together."""
     from io_scene_dts.mapping.decals import decal_prop
     from io_scene_dts.mapping.visibility import _do_refresh
 
     _reset()
     arm = _import_dts("v23_bioderm_light.dts")
     src = read_shape_file(FIXTURES / "v23_bioderm_light.dts")
-
     names = [src.name(d.raw[0]) for d in src.decals]
-    for i, name in enumerate(names):
-        assert decal_prop(name) in arm.keys(), name
-        assert arm[decal_prop(name)] == float(src.decal_states[i])
-    assert all(s < 0 for s in src.decal_states[: len(src.decals)]), "fixture tests nothing"
 
     meshes = [o for o in bpy.data.objects if o.type == "MESH" and "dts_decal_name" in o]
     for o in meshes:
@@ -526,7 +588,7 @@ def test_decals_rest_hidden_and_follow_their_state():
     for f in range(1, n + 1):
         bpy.context.scene.frame_set(f)
         bpy.context.view_layer.update()
-        counts.append(sum(1 for name in names if arm[decal_prop(name)] >= 0))
+        counts.append(sum(1 for i, nm in enumerate(names) if arm[decal_prop(i, nm)] >= 0))
     assert counts[0] == 0, counts
     assert counts[-1] > counts[0], counts
 

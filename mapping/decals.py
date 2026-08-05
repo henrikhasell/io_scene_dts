@@ -46,10 +46,11 @@ from ..dtslib import (
 
 PROJECTOR_PREFIX = "decal_"
 # A decal is off when its state is negative (tsShapeInstance.cc: `if (decalMesh
-# && frame>=0)`), and every Tribes 2 decal defaults to -1 — light_male's 58
-# damage overlays all start hidden and the Damage sequence switches them on.
-# The state rides on the armature in the bones' own slot, exactly like object
-# visibility, so one NLA strip drives pose and damage together.
+# && frame>=0)`).  Most Tribes 2 decals rest at -1 and a Damage sequence
+# switches them on, but 357 of the corpus's 2194 rest at 0 — a wreck shows its
+# damage from the start, and 15 shapes carry both kinds at once.  The state
+# rides on the armature in the bones' own slot, exactly like object visibility,
+# so one NLA strip drives pose and damage together.
 DECAL_PREFIX = "dts_decal_"
 # the engine draws decals with a polygon offset; Blender has no per-object
 # depth bias, so a Displace modifier lifts the preview off the target instead.
@@ -92,31 +93,36 @@ def projector_to_texgen(projector_matrix: Matrix, obj_matrix: Matrix):
     return s, t
 
 
-def decal_prop(decal_name: str) -> str:
-    return f"{DECAL_PREFIX}{decal_name}"
+def decal_prop(index: int, decal_name: str) -> str:
+    """Keyed by index, not name.
+
+    A decal's name is not unique within a shape: 18 of the 54 Tribes 2 shapes
+    with decals reuse one, and turret_tank_base gives all fourteen of its
+    decals the same name.  The index is the file's own identity for a decal —
+    decal_states[i] and the sequences' decal_matters bits both use it — so it
+    is what the property, the projector and the export grouping key on.  The
+    name rides along so the property is still readable.
+    """
+    return f"{DECAL_PREFIX}{index:03d}_{decal_name}"
 
 
-def decal_path(decal_name: str) -> str:
-    return f'["{decal_prop(decal_name)}"]'
+def decal_path(index: int, decal_name: str) -> str:
+    return f'["{decal_prop(index, decal_name)}"]'
 
 
 def decal_names_by_index(shape: Shape) -> dict:
-    """Sequence tracks name decals by index; the properties are keyed by name
-    so a user can tell which is which."""
     return {i: shape.name(d.raw[0]) for i, d in enumerate(shape.decals)}
 
 
 def apply_default_states(arm_obj, shape: Shape) -> None:
     """Seed each decal's state from the shape's own defaults.
 
-    Stored as a float even though a state is an integer frame index: Blender
-    builds no driver dependency on an integer ID property, so an int here
-    animates the property but never updates the meshes reading it.  Export
-    rounds back.
+    Stored as a float even though a state is an integer frame index, to match
+    the visibility properties; export rounds back.
     """
     for i, name in decal_names_by_index(shape).items():
         state = shape.decal_states[i] if i < len(shape.decal_states) else -1
-        arm_obj[decal_prop(name)] = float(state)
+        arm_obj[decal_prop(i, name)] = float(state)
 
 
 def write_decal_fcurves(bag, action, arm_obj, names_by_index: dict) -> set:
@@ -131,12 +137,13 @@ def write_decal_fcurves(bag, action, arm_obj, names_by_index: dict) -> set:
     tracks = json.loads(action.get("dts_decal_anim", "{}") or "{}")
     written = set()
     for key, track in tracks.items():
-        name = names_by_index.get(int(key))
+        index = int(key)
+        name = names_by_index.get(index)
         if name is None or not track:
             continue
-        if decal_prop(name) not in arm_obj.keys():
-            arm_obj[decal_prop(name)] = float(track[0])
-        fc = bag.fcurves.new(data_path=decal_path(name), index=0)
+        if decal_prop(index, name) not in arm_obj.keys():
+            arm_obj[decal_prop(index, name)] = float(track[0])
+        fc = bag.fcurves.new(data_path=decal_path(index, name), index=0)
         fc.keyframe_points.add(len(track))
         for i, v in enumerate(track):
             kp = fc.keyframe_points[i]
@@ -164,7 +171,8 @@ def wire_decal_drivers(arm_obj, warnings=None) -> int:
         if obj.type != "MESH" or name is None:
             continue
         touched.append(obj)
-        if decal_prop(name) not in arm_obj.keys():
+        index = int(obj.get("dts_decal_index", -1))
+        if decal_prop(index, name) not in arm_obj.keys():
             continue
         existing = obj.animation_data.drivers if obj.animation_data else []
         if any(d.data_path == "color" and d.array_index == 3 for d in existing):
@@ -175,7 +183,7 @@ def wire_decal_drivers(arm_obj, warnings=None) -> int:
         var.name = "state"
         var.type = "SINGLE_PROP"
         var.targets[0].id = arm_obj
-        var.targets[0].data_path = decal_path(name)
+        var.targets[0].data_path = decal_path(index, name)
         # a bare comparison, not "1.0 if state >= 0 else 0.0": Blender evaluates
         # simple expressions natively and falls back to full Python for anything
         # else, which silently yields 0.0 unless the user has enabled auto-run
@@ -332,17 +340,20 @@ def build_decals(shape: Shape, arm_obj, object_index_by_name, material_index_of,
     moving a projector or deleting a face changes the exported file.
     Returns the old decal index -> new index map the sequence exporter needs.
     """
-    by_name = {}
+    # grouped by index, never by name — turret_tank_base names all fourteen of
+    # its decals the same, and grouping by name would export one
+    by_index = {}
     projectors = {}
     for obj in bpy.data.objects:
         name = obj.get("dts_decal_name")
         if name is None:
             continue
+        index = int(obj.get("dts_decal_index", -1))
         if obj.type == "EMPTY":
-            projectors[name] = obj
+            projectors[index] = obj
         elif obj.type == "MESH":
-            by_name.setdefault(name, []).append(obj)
-    if not by_name:
+            by_index.setdefault(index, []).append(obj)
+    if not by_index:
         return {}
 
     def owner_subshape(obj_index: int) -> int:
@@ -353,7 +364,8 @@ def build_decals(shape: Shape, arm_obj, object_index_by_name, material_index_of,
         return 0
 
     placed = []
-    for name, meshes in by_name.items():
+    for index, meshes in by_index.items():
+        name = str(meshes[0].get("dts_decal_name", ""))
         owner = meshes[0].get("dts_decal_object", "")
         obj_index = object_index_by_name.get(str(owner))
         if obj_index is None:
@@ -361,13 +373,12 @@ def build_decals(shape: Shape, arm_obj, object_index_by_name, material_index_of,
                 f"decal {name!r}: owner object {owner!r} was not exported; decal dropped"
             )
             continue
-        if name not in projectors:
+        if index not in projectors:
             warnings.append(
-                f"decal {name!r}: no projector empty ({PROJECTOR_PREFIX}{name}); decal dropped"
+                f"decal {name!r} (#{index}): no projector empty; decal dropped"
             )
             continue
-        source_order = min(int(m.get("dts_decal_index", 0)) for m in meshes)
-        placed.append((owner_subshape(obj_index), source_order, name, obj_index, meshes))
+        placed.append((owner_subshape(obj_index), index, name, obj_index, meshes))
     placed.sort(key=lambda p: (p[0], p[1]))
 
     # subShapeFirstDecal ranges have to stay contiguous per subshape
@@ -381,10 +392,10 @@ def build_decals(shape: Shape, arm_obj, object_index_by_name, material_index_of,
         next_first += n
 
     decal_index_map = {}
-    for _sub, source_order, name, obj_index, meshes in placed:
+    for _sub, index, name, obj_index, meshes in placed:
         owner_obj = shape.objects[obj_index]
         by_slot = {int(m.get("dts_decal_slot", 0)): m for m in meshes}
-        projector = projectors[name]
+        projector = projectors[index]
 
         start = len(shape.meshes)
         for j in range(owner_obj.num_meshes):
@@ -404,11 +415,11 @@ def build_decals(shape: Shape, arm_obj, object_index_by_name, material_index_of,
                 _decal_mesh_from_blender(bobj, target, s, t, max(mat_index, 0), warnings)
             )
 
-        decal_index_map[source_order] = len(shape.decals)
+        decal_index_map[index] = len(shape.decals)
         shape.decals.append(
             Decal((shape.add_name(str(name)), owner_obj.num_meshes, start, obj_index, -1))
         )
-        state = arm_obj.get(decal_prop(name), -1.0)
+        state = arm_obj.get(decal_prop(index, name), -1.0)
         shape.decal_states.append(int(round(float(state))))
     return decal_index_map
 

@@ -210,8 +210,9 @@ def shape_to_blender(
             _parent_like,
             warnings,
         )
-        # every Tribes 2 decal rests at state -1 (off); the states must exist
-        # before import_sequences keyframes them and before the drivers resolve
+        # a decal's rest state is per decal — most rest at -1 (off) and a
+        # Damage sequence switches them on, but a wreck's rest at 0.  They must
+        # exist before import_sequences keyframes them.
         apply_default_states(arm_obj, shape)
         warnings.append(
             f"decals: {n_decals} projector(s) across {n_meshes} mesh(es)"
