@@ -83,9 +83,15 @@ MUTATIONS = {
     ),
     "sorted-mode": (
         "mapping/shape_to_blender.py",
-        '    bobj["dts_sorted_mode"] = "BSP"',
-        '    bobj["dts_sorted_mode"] = "NONE"',
+        '    bobj.dts_mesh.sorted_mode = "BSP"',
+        '    bobj.dts_mesh.sorted_mode = "NONE"',
         ["test_sorted_meshes_survive_an_edit"],
+    ),
+    "fresh-sorted": (
+        "mapping/blender_to_shape.py",
+        "        mesh.mesh_type = SORTED_MESH",
+        "        mesh.mesh_type = STANDARD_MESH",
+        ["test_a_sorted_mesh_is_authorable", "test_flat_sorted_mode_is_authorable"],
     ),
     "object-state-read": (
         "mapping/objectstate.py",
@@ -123,6 +129,43 @@ MUTATIONS = {
         "            for item in []",
         ["test_dsq_sequences_use_the_same_tables_as_dts_ones"],
     ),
+    # --- paths only the fresh-scene suite reaches -------------------------
+    "fresh-material-defaults": (
+        "mapping/materials.py",
+        "        flags = MAT_S_WRAP | MAT_T_WRAP",
+        "        flags = 0",
+        ["test_a_material_reaches_the_file"],
+    ),
+    "fresh-reflectance-selfindex": (
+        "mapping/materials.py",
+        "            mat.reflectance_map = i\n            mat.bump_map = NO_MAP",
+        "            mat.reflectance_map = NO_MAP\n            mat.bump_map = NO_MAP",
+        ["test_a_material_without_maps_gets_engine_safe_defaults"],
+    ),
+    "fresh-winding": (
+        "mapping/blender_to_shape.py",
+        "        a, b, c = (corner_index[li] for li in reversed(tri.loops))",
+        "        a, b, c = (corner_index[li] for li in tri.loops)",
+        ["test_triangle_winding_is_clockwise_front"],
+    ),
+    "fresh-skin": (
+        "mapping/blender_to_shape.py",
+        "    is_skin = bool(bobj.vertex_groups) and any(",
+        "    is_skin = False and any(",
+        ["test_a_skinned_mesh_is_authorable"],
+    ),
+    "fresh-decal": (
+        "mapping/decals.py",
+        "            by_index.setdefault(index, []).append(obj)",
+        "            pass",
+        ["test_a_decal_is_authorable"],
+    ),
+    "fresh-lod-sharing": (
+        "mapping/blender_to_shape.py",
+        "            and mesh.num_frames == 1",
+        "            and False",
+        ["test_lod_meshes_share_a_vertex_array"],
+    ),
     "mesh-flags": (
         "mapping/shape_to_blender.py",
         "def flags_from_blender(bobj, mesh_type: int) -> int:",
@@ -153,10 +196,17 @@ def _run_blender(work: Path, tests, blender: str) -> tuple[set, set]:
         text=True,
     )
     out = proc.stdout
-    return (
-        {line.split()[1] for line in out.splitlines() if line.startswith("FAIL ")},
-        {line.split()[1] for line in out.splitlines() if line.startswith("PASS ")},
-    )
+
+    def named(prefix):
+        # the runner labels results "module:test_name"; the module part is for
+        # the reader, not for matching
+        return {
+            line.split()[1].rpartition(":")[2]
+            for line in out.splitlines()
+            if line.startswith(prefix)
+        }
+
+    return named("FAIL "), named("PASS ")
 
 
 def _run_pytest(work: Path, tests) -> tuple[set, set]:

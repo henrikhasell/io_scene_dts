@@ -331,9 +331,17 @@ exist, so adding a bone channel marks its node instead of being ignored.
   rest (subshape indices, object detail numbers, default object states) are
   still raw entries in the N-panel's Custom Properties: a real place to edit
   them, but not a designed one.
-- No authoring path for a shape built from scratch: sub-shapes, detail
-  hierarchy and object states can only be *preserved*, not created, without
-  hand-setting custom properties.
+- **Decals are authorable in principle and not in practice.**  Building one in
+  a fresh scene means setting five exactly-named properties on the mesh
+  (`dts_decal_name`, `dts_decal_index`, `dts_decal_object`, `dts_decal_slot`,
+  `dts_decal_target`), three more on a projector empty, and a state property on
+  the armature — nine magic names, none discoverable.  The round trip is
+  complete and the export path is fully derived, but this wants an operator
+  ("add a decal from the selected faces") before it counts as something a user
+  can make.  `tests/blender/test_authoring.py::test_a_decal_is_authorable`
+  builds one the hard way and proves the format side works.
+- Sub-shapes have no authoring path: they can be preserved but not created
+  without hand-setting `dts_subshape`.
 - A scene saved by v1.2 or earlier converts on load (`props/migrate.py`), but
   its **mesh payloads are discarded rather than unpickled** — deliberately, since
   reading one would put `pickle.loads` back on a path fed by an arbitrary
@@ -345,17 +353,35 @@ exist, so adding a bone channel marks its node instead of being ignored.
 
 ## Coverage
 
-`tests/blender/test_operators.py` (74 tests) covers the round-trip of every
-"opaque" item above, plus visibility and decal export/reimport.  The remaining
-"blind" items are tested at the file level only — no test asserts a preview
-exists, because none does.  Most "dropped" items have no tests: they are known
-losses, not regressions to guard; the exception is the partial `merge_indices`
-loss, which is asserted exactly so it cannot quietly get worse.
+Two Blender suites, and the difference between them is the point.
 
-Several of those tests assert that an *edit* reaches the file — UVs, material
-frames, merge indices, both halves of the flags word, and the re-derived
-detail-level vertex sharing.  Each is paired with a
-mutation in `scripts/mutate.py` that disables the capability and checks the
-test notices, because import and export share property names and a round-trip
-test can otherwise pass without either end touching the file.  Run them with
-`scripts/mutate.py`; `--list` shows what each one breaks.
+`tests/blender/test_operators.py` (74 tests) imports real fixtures, edits them
+and exports.  That covers reading files the add-on did not write, and it is the
+only way to check a feature no fixture-free scene can produce.
+
+`tests/blender/test_authoring.py` (49 tests) never imports anything.  Every test
+builds a shape from nothing — armature, meshes, materials, actions — exports it,
+and reads the feature back out of the file.  This is the suite that answers
+"can a user *make* one of these", which a round-trip cannot: the exporter may be
+leaning on a table, property or payload that only the importer would have
+written, and the feature looks supported while being unauthorable.  Billboards
+were exactly that, and the flags being conditionally-present ID properties was
+invisible until a fresh scene tried to set one.
+
+Between them they cover detail levels and LOD vertex sharing, collision
+details, node hierarchies, materials and all fourteen flag bits, the three
+blend modes through the shader, map slots, billboards including the Z-axis
+variant no shipped shape uses, sorted meshes in both modes, skins, vertex
+animation, material frames, sequences, triggers, ground frames, object-state
+tracks, node scale, DSQ export, IFL entries, decals and both output versions.
+
+`scripts/mutate.py` (23 mutations) disables one capability at a time and checks
+the matching test notices.  It has caught its own drift three times — a
+mutation that stopped biting when the code moved, and two that were never
+testing what they claimed.  Run it when adding a feature; a test that survives
+its own mutation is not a test.
+
+The "blind" items are checked at the file level only — no test asserts a preview
+exists, because none does.  Most "dropped" items have no tests: they are known
+losses, not regressions to guard.  The exception is the partial `merge_indices`
+loss, which is asserted exactly so it cannot quietly get worse.

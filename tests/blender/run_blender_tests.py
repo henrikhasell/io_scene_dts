@@ -45,16 +45,24 @@ import io_scene_dts  # noqa: E402
 io_scene_dts.register()
 
 sys.path.insert(0, str(REPO / "tests" / "blender"))
+import test_authoring  # noqa: E402
 import test_operators  # noqa: E402
+
+# test_operators round-trips real files; test_authoring builds shapes from
+# nothing, which is the only check that a feature can actually be *created*
+# rather than merely preserved (see CLAUDE.md).
+MODULES = (test_operators, test_authoring)
 
 patterns = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
 
 failures = []
 tests = [
-    (name, fn)
-    for name, fn in vars(test_operators).items()
+    (f"{module.__name__.removeprefix('test_')}:{name}", fn)
+    for module in MODULES
+    for name, fn in vars(module).items()
     if name.startswith("test_")
     and callable(fn)
+    and getattr(fn, "__module__", None) == module.__name__
     and (not patterns or any(p in name for p in patterns))
 ]
 if patterns and not tests:
