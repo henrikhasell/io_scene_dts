@@ -158,13 +158,33 @@ MUTATIONS = {
         "mapping/decals.py",
         "            by_index.setdefault(index, []).append(obj)",
         "            pass",
-        ["test_a_decal_is_authorable"],
+        ["test_a_decal_is_authorable_by_hand"],
     ),
     "fresh-lod-sharing": (
         "mapping/blender_to_shape.py",
         "            and mesh.num_frames == 1",
         "            and False",
         ["test_lod_meshes_share_a_vertex_array"],
+    ),
+    # the UV Project modifier is preview only -- export reads the empty's
+    # matrix -- so this mutates the read-back, not the modifier
+    "decal-texgen": (
+        "mapping/decals.py",
+        "            s, t = projector_to_texgen(projector.matrix_world, bobj.matrix_world)",
+        "            s, t = projector_to_texgen(Matrix.Identity(4), bobj.matrix_world)",
+        ["test_moving_the_projector_moves_the_decal"],
+    ),
+    "decal-all-details": (
+        "mapping/decals.py",
+        "            faces = faces_under_projector(other, projector_matrix)",
+        "            faces = []",
+        ["test_an_operator_decal_covers_every_detail_level"],
+    ),
+    "decal-projector-fit": (
+        "mapping/decals.py",
+        "    scale = 2.0 * half",
+        "    scale = 0.5 * half",
+        ["test_an_operator_decal_projects_inside_its_texture"],
     ),
     "mesh-flags": (
         "mapping/shape_to_blender.py",

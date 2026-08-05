@@ -630,3 +630,193 @@ def import_decals(
     if not n_meshes:
         bpy.data.collections.remove(coll)
     return n_decals, n_meshes
+
+
+# ----------------------------------------------------------------------
+# authoring: build a decal the way the importer would have
+# ----------------------------------------------------------------------
+
+
+def next_decal_index() -> int:
+    """A free decal index for the scene.
+
+    The index, not the name, is a decal's identity -- decal_states[i] and the
+    sequences' decal_matters bits both use it, and turret_tank_base gives all
+    fourteen of its decals the same name.
+    """
+    used = {
+        int(obj.get("dts_decal_index", -1))
+        for obj in bpy.data.objects
+        if "dts_decal_index" in obj
+    }
+    return max(used, default=-1) + 1
+
+
+def selected_face_triangles(bobj, faces=None):
+    """(a, b, c, 0) triangles for the chosen faces, indexing the mesh's verts.
+
+    A decal is a subset of its target's faces, so this is what a user picks in
+    edit mode.  ``faces`` overrides the selection, for projecting the same
+    decal onto another detail level.
+    """
+    mesh = bobj.data
+    mesh.calc_loop_triangles()
+    wanted = (
+        {p.index for p in mesh.polygons if p.select} if faces is None else set(faces)
+    )
+    return [
+        (tri.vertices[0], tri.vertices[1], tri.vertices[2], 0)
+        for tri in mesh.loop_triangles
+        if tri.polygon_index in wanted
+    ]
+
+
+def projector_for(bobj, tris) -> Matrix:
+    """A world matrix that projects square-on onto the given triangles.
+
+    Blender's UV Project maps local (+-0.5, +-0.5) to UV 0..1, so the
+    projector is scaled to twice the footprint's half-extent and aimed down
+    the faces' average normal.
+    """
+    mesh = bobj.data
+    used = sorted({i for tri in tris for i in tri[:3]})
+    points = [bobj.matrix_world @ mesh.vertices[i].co for i in used]
+    centre = sum(points, Vector((0.0, 0.0, 0.0))) / len(points)
+
+    normal = Vector((0.0, 0.0, 0.0))
+    by_index = {p.index: p for p in mesh.polygons}
+    seen = set()
+    for tri in tris:
+        key = tuple(sorted(tri[:3]))
+        if key in seen:
+            continue
+        seen.add(key)
+        a, b, c = (bobj.matrix_world @ mesh.vertices[i].co for i in tri[:3])
+        normal += (b - a).cross(c - a)
+    del by_index
+    if normal.length < 1e-9:
+        normal = Vector((0.0, 0.0, 1.0))
+    normal.normalize()
+
+    # any two axes orthogonal to the normal will do; pick the more stable one
+    helper = Vector((0.0, 0.0, 1.0)) if abs(normal.z) < 0.9 else Vector((1.0, 0.0, 0.0))
+    x_axis = helper.cross(normal)
+    x_axis.normalize()
+    y_axis = normal.cross(x_axis)
+
+    half = max(
+        (max(abs((p - centre).dot(axis)) for p in points) for axis in (x_axis, y_axis)),
+        default=0.5,
+    ) or 0.5
+    scale = 2.0 * half
+
+    matrix = Matrix.Identity(4)
+    for column, axis in enumerate((x_axis, y_axis, normal)):
+        for row in range(3):
+            matrix[row][column] = axis[row] * scale
+    matrix.translation = centre + normal * half
+    return matrix
+
+
+def faces_under_projector(bobj, projector_matrix: Matrix, depth: float = 4.0):
+    """Face indices of ``bobj`` that fall inside the projector's square.
+
+    How a decal reaches the other detail levels of its object: the same
+    projection, applied to whatever geometry that level happens to have.
+    """
+    to_projector = projector_matrix.inverted() @ bobj.matrix_world
+    hits = []
+    for polygon in bobj.data.polygons:
+        local = to_projector @ polygon.center
+        if abs(local.x) <= 0.5 and abs(local.y) <= 0.5 and abs(local.z) <= depth:
+            hits.append(polygon.index)
+    return hits
+
+
+def create_decal(arm_obj, target_obj, *, name, material=None, index=None,
+                 all_details=True, collection_of=None, parent_like=None):
+    """Build a decal over the selected faces of ``target_obj``.
+
+    The inverse of import_decals, and deliberately the same shape of data: a
+    copy of the covered faces plus one projector empty, wired with the
+    properties the exporter reads.  Returns (index, [decal objects]).
+    """
+    from .naming import dts_object_and_size
+
+    if parent_like is None:
+        from .shape_to_blender import _parent_like as parent_like
+    if collection_of is None:
+        def collection_of(obj):
+            return obj.users_collection[0] if obj.users_collection else None
+
+    index = next_decal_index() if index is None else index
+    owner, _size = dts_object_and_size(target_obj)
+
+    tris = selected_face_triangles(target_obj)
+    if not tris:
+        raise ValueError(f"{target_obj.name!r} has no selected faces to cover")
+
+    projector_matrix = projector_for(target_obj, tris)
+
+    # every detail level of the same DTS object, so the decal does not vanish
+    # as the engine drops LOD -- which is what every shipped decal does
+    targets = [(target_obj, tris)]
+    if all_details:
+        for other in bpy.data.objects:
+            if other is target_obj or other.type != "MESH":
+                continue
+            if dts_object_and_size(other)[0] != owner:
+                continue
+            faces = faces_under_projector(other, projector_matrix)
+            if faces:
+                targets.append((other, selected_face_triangles(other, faces)))
+
+    if material is not None:
+        wire_decal_material(material)
+
+    made = []
+    projector = None
+    for slot, (host, host_tris) in enumerate(targets):
+        _owner, size = dts_object_and_size(host)
+        verts = [tuple(v.co) for v in host.data.vertices]
+        bobj = _build_decal_mesh(f"{name}{size}", host_tris, verts, material)
+        coll = collection_of(host)
+        if coll is not None:
+            coll.objects.link(bobj)
+        parent_like(bobj, host)
+
+        bobj["dts_decal_name"] = name
+        bobj["dts_decal_index"] = index
+        bobj["dts_decal_object"] = owner
+        bobj["dts_decal_slot"] = slot
+        bobj["dts_decal_target"] = host.name
+        bobj["dts_detail_size"] = size
+        bobj["dts_subshape"] = host.get("dts_subshape", 0)
+
+        if projector is None:
+            projector = bpy.data.objects.new(f"{PROJECTOR_PREFIX}{name}", None)
+            projector.empty_display_type = "IMAGE"
+            projector.empty_display_size = 0.15
+            projector.matrix_world = projector_matrix
+            if coll is not None:
+                coll.objects.link(projector)
+            parent_like(projector, host, keep_transform=True)
+            projector["dts_decal_name"] = name
+            projector["dts_decal_object"] = owner
+            projector["dts_decal_index"] = index
+
+        mod = bobj.modifiers.new("Decal Projection", "UV_PROJECT")
+        mod.uv_layer = "UVMap"
+        mod.projector_count = 1
+        mod.projectors[0].object = projector
+        mod.aspect_x = mod.aspect_y = mod.scale_x = mod.scale_y = 1.0
+
+        lift = bobj.modifiers.new("Decal Lift", "DISPLACE")
+        lift.strength = DECAL_LIFT
+        lift.mid_level = 0.0
+        made.append(bobj)
+
+    # the state the decal rests at.  0 is on; -1 would be off, which is what a
+    # damage decal wants, but a decal you just made should be visible.
+    arm_obj[decal_prop(index, name)] = 0.0
+    return index, made

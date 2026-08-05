@@ -8,7 +8,7 @@ collection through a data path rather than hard-coding one per table.
 from __future__ import annotations
 
 import bpy
-from bpy.props import EnumProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, StringProperty
 from bpy.types import Operator
 
 
@@ -103,6 +103,92 @@ class DTS_OT_list_move(Operator):
         return {"FINISHED"}
 
 
+def _armature_of(obj):
+    """The shape's armature: a mesh is parented to it, or skinned to it."""
+    parent = obj.parent
+    while parent is not None and parent.type != "ARMATURE":
+        parent = parent.parent
+    if parent is not None:
+        return parent
+    return next(
+        (m.object for m in obj.modifiers if m.type == "ARMATURE" and m.object), None
+    )
+
+
+class DTS_OT_add_decal(Operator):
+    """Make a decal from the faces selected on a DTS mesh.
+
+    Nine exactly-named properties across three datablocks, none of them
+    discoverable, is not something a user can be asked to type.  Decals are the
+    add-on's showcase mapping -- projections in Blender, mesh data in the file
+    -- and until this existed they could be imported and edited but not made.
+    """
+
+    bl_idname = "io_scene_dts.add_decal"
+    bl_label = "Add DTS Decal"
+    bl_description = (
+        "Cover the selected faces with a decal: a copy of those faces plus a "
+        "projector empty.  Move the empty to move the decal"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    name: StringProperty(
+        name="Name",
+        description="The decal's name.  Not unique in real shapes; the index is its identity",
+        default="decal",
+    )
+    all_details: BoolProperty(
+        name="All Detail Levels",
+        description=(
+            "Project onto every detail level of the same object, so the decal does "
+            "not vanish as the engine drops LOD.  Every shipped decal does this"
+        ),
+        default=True,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.object
+        # deliberately not "dts_object_name in obj": that is written by the
+        # importer, and requiring it would make this work only on shapes that
+        # came from a file -- which is the thing decals could not do before.
+        return (
+            obj is not None
+            and obj.type == "MESH"
+            and "dts_decal_name" not in obj
+            and _armature_of(obj) is not None
+        )
+
+    def execute(self, context):
+        from ..mapping.decals import create_decal
+
+        target = context.object
+        # face selection only exists on the mesh once edit mode has flushed it
+        if target.mode == "EDIT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+
+        arm = _armature_of(target)
+        if arm is None:
+            self.report({"ERROR"}, "the decal's target must hang off the shape's armature")
+            return {"CANCELLED"}
+
+        material = target.active_material
+        try:
+            index, made = create_decal(
+                arm, target, name=self.name, material=material,
+                all_details=self.all_details,
+            )
+        except ValueError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+
+        self.report(
+            {"INFO"},
+            f"decal {self.name!r} (#{index}) over {len(made)} detail level(s)",
+        )
+        return {"FINISHED"}
+
+
 class DTS_OT_migrate_scene(Operator):
     bl_idname = "io_scene_dts.migrate_scene"
     bl_label = "Convert DTS Data From an Older Version"
@@ -152,6 +238,7 @@ def list_buttons(layout, path: str, *, move: bool = False) -> None:
 
 
 CLASSES = (
+    DTS_OT_add_decal,
     DTS_OT_list_add,
     DTS_OT_list_remove,
     DTS_OT_list_move,

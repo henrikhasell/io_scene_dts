@@ -15,6 +15,7 @@ import bpy
 from bpy.types import Panel
 
 from .operators import (
+    DTS_OT_add_decal,
     DTS_OT_dismiss_migration_note,
     DTS_OT_migrate_scene,
     list_buttons,
@@ -236,6 +237,11 @@ class OBJECT_PT_dts_mesh(Panel):
             box.label(text="Each level doubles the index buffer", icon="INFO")
         if props.sorted_mode != "NONE":
             box.prop(props, "always_write_depth")
+
+        box = layout.box()
+        box.label(text="Decals")
+        box.operator(DTS_OT_add_decal.bl_idname, icon="MOD_UVPROJECT")
+        box.label(text="Select the faces to cover first", icon="INFO")
 
         from ..mapping import matframes
 

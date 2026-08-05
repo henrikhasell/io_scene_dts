@@ -666,10 +666,128 @@ def test_detail_metrics_are_authorable():
     assert match.poly_count == 12
 
 
-def test_a_decal_is_authorable():
-    """Decals are the worked example in CLAUDE.md: a face subset plus a
-    projector empty in Blender, TSDecalMesh indices and texgen planes in the
-    file.  Building one from scratch is the whole test of that mapping."""
+def test_a_decal_is_made_by_an_operator():
+    """The way a user actually makes one: select faces, press the button.
+
+    Everything below this used to require nine exactly-named properties across
+    three datablocks.  A feature that can only be built by typing magic strings
+    is not creatable in the sense CLAUDE.md means.
+    """
+    A.reset()
+    arm = A.armature("Wall")
+    verts, faces = A.quad_geometry()
+    target = A.mesh_object("wall2", arm, bone="root", verts=verts, faces=faces)
+    target.data.materials.append(A.principled_material("scorch"))
+    for polygon in target.data.polygons:
+        polygon.select = True
+    bpy.context.view_layer.objects.active = target
+
+    result = bpy.ops.io_scene_dts.add_decal(name="scorch")
+    assert result == {"FINISHED"}, result
+
+    shape = A.read(A.export_dts())
+    assert len(shape.decals) == 1, "the operator's decal did not reach the file"
+    assert shape.name(shape.decals[0].raw[0]) == "scorch"
+    decal = shape.decals[0]
+    covered = [
+        shape.meshes[decal.raw[2] + i]
+        for i in range(decal.raw[1])
+        if shape.meshes[decal.raw[2] + i] is not None
+    ]
+    assert covered and covered[0].decal_data.indices
+    # and it is not also exported as a shape object
+    assert A.object_names(shape) == ["wall"], A.object_names(shape)
+
+
+def test_an_operator_decal_projects_inside_its_texture():
+    """The texgen planes have to land the covered faces inside the 0..1 square,
+    or the decal samples outside its own texture."""
+    A.reset()
+    arm = A.armature("Wall")
+    verts, faces = A.quad_geometry()
+    target = A.mesh_object("wall2", arm, bone="root", verts=verts, faces=faces)
+    for polygon in target.data.polygons:
+        polygon.select = True
+    bpy.context.view_layer.objects.active = target
+    assert bpy.ops.io_scene_dts.add_decal(name="mark") == {"FINISHED"}
+
+    shape = A.read(A.export_dts())
+    decal = shape.decals[0]
+    mesh = next(
+        shape.meshes[decal.raw[2] + i]
+        for i in range(decal.raw[1])
+        if shape.meshes[decal.raw[2] + i] is not None
+    )
+    target_mesh = shape.meshes[shape.objects[decal.raw[3]].start_mesh_index]
+    s_plane = mesh.decal_data.texgen_s[0]
+    t_plane = mesh.decal_data.texgen_t[0]
+    for index in set(mesh.decal_data.indices):
+        v = target_mesh.verts[index]
+        u = v[0] * s_plane[0] + v[1] * s_plane[1] + v[2] * s_plane[2] + s_plane[3]
+        w = v[0] * t_plane[0] + v[1] * t_plane[1] + v[2] * t_plane[2] + t_plane[3]
+        assert -0.01 <= u <= 1.01, u
+        assert -0.01 <= w <= 1.01, w
+
+
+def test_an_operator_decal_covers_every_detail_level():
+    """A decal that only covers the highest LOD vanishes as the engine drops
+    detail, which is why every shipped decal spans all of them."""
+    A.reset()
+    arm = A.armature("Hull")
+    verts, faces = A.quad_geometry()
+    high = A.mesh_object("hull32", arm, bone="root", verts=verts, faces=faces)
+    A.mesh_object("hull2", arm, bone="root", verts=verts, faces=faces)
+    for polygon in high.data.polygons:
+        polygon.select = True
+    bpy.context.view_layer.objects.active = high
+    assert bpy.ops.io_scene_dts.add_decal(name="stripe") == {"FINISHED"}
+
+    shape = A.read(A.export_dts())
+    decal = shape.decals[0]
+    covered = [
+        shape.meshes[decal.raw[2] + i]
+        for i in range(decal.raw[1])
+        if shape.meshes[decal.raw[2] + i] is not None
+        and shape.meshes[decal.raw[2] + i].decal_data is not None
+    ]
+    assert len(covered) == 2, f"covered {len(covered)} of 2 detail levels"
+
+
+def test_moving_the_projector_moves_the_decal():
+    """The empty is the authored form: the texgen planes are read back off it,
+    so dragging it changes the file."""
+    from io_scene_dts.mapping.decals import PROJECTOR_PREFIX
+
+    A.reset()
+    arm = A.armature("Wall")
+    verts, faces = A.quad_geometry()
+    target = A.mesh_object("wall2", arm, bone="root", verts=verts, faces=faces)
+    for polygon in target.data.polygons:
+        polygon.select = True
+    bpy.context.view_layer.objects.active = target
+    assert bpy.ops.io_scene_dts.add_decal(name="mark") == {"FINISHED"}
+
+    def texgen_of(path):
+        shape = A.read(path)
+        decal = shape.decals[0]
+        mesh = next(
+            shape.meshes[decal.raw[2] + i]
+            for i in range(decal.raw[1])
+            if shape.meshes[decal.raw[2] + i] is not None
+        )
+        return mesh.decal_data.texgen_s[0]
+
+    before = texgen_of(A.export_dts())
+    projector = next(o for o in bpy.data.objects if o.name.startswith(PROJECTOR_PREFIX))
+    projector.matrix_world.translation.x += 0.35
+    after = texgen_of(A.export_dts())
+    assert any(abs(a - b) > 1e-4 for a, b in zip(before, after)), (before, after)
+
+
+def test_a_decal_is_authorable_by_hand():
+    """The long way round, which the operator now wraps -- kept because it is
+    what the exporter actually reads, and a change to those property names
+    should fail here rather than silently at export time."""
     from io_scene_dts.mapping.decals import PROJECTOR_PREFIX, decal_prop
 
     A.reset()

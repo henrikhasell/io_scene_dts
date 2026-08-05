@@ -42,7 +42,12 @@ from ..props import migrate
 from . import matframes
 from .decals import blender_lookup_of, build_decals
 from .materials import materials_from_blender
-from .naming import detail_name_for_size, split_detail_suffix, strip_blender_dedup
+from .naming import (
+    detail_name_for_size,
+    dts_object_and_size,
+    split_detail_suffix,
+    strip_blender_dedup,
+)
 from .sequences import blender_quat_to_dts, export_sequences
 from .shape_to_blender import flags_from_blender
 from .vertex_pool import VertexPool
@@ -135,13 +140,7 @@ def blender_to_shape(
     source_order: dict[tuple[int, str], int] = {}  # key -> index in the source shape
     detail_odn_hint: dict[tuple[int, str, int], int] = {}  # (sub, name, size) -> stored odn
     for bobj in mesh_objs:
-        base = bobj.get("dts_object_name") or None
-        size = bobj.get("dts_detail_size")
-        if base is None or size is None:
-            parsed_base, parsed_size = split_detail_suffix(strip_blender_dedup(bobj.name))
-            base = base or parsed_base
-            size = size if size is not None else (parsed_size if parsed_size is not None else 2)
-        size = int(size)
+        base, size = dts_object_and_size(bobj)
         detail_name = str(bobj.get("dts_detail_name") or detail_name_for_size(size))
         sub = int(bobj.get("dts_subshape", 0))
         key = (sub, str(base))

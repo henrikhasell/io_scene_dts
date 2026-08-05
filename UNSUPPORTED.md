@@ -28,7 +28,7 @@ These stop with a clear error.  None of them corrupt a file.
 | DTS version 25+ | Same error.  Torque 3D–era shapes are not read. | `dtslib/reader.py:71` |
 | Writing any version but 23/24 | `only 24 (Torque) and 23 (Tribes 2) are supported — older versions keep skins in a separate section`.  You cannot import a v19 shape and write a v19 shape. | `dtslib/writer.py:22` |
 | Ground frames in a v23 export | Refused unless **Strip Ground Frames** is checked, which discards them (movement animations lose their ground speed). v23 has nowhere to store them. | `dtslib/writer.py:27`, `ops/export_dts.py:37` |
-| More than 192 nodes or objects | `TSIntegerSet` is 6 dwords wide, so a shape cannot name a 193rd node in a matters set. | `mapping/blender_to_shape.py:76,276`, `dtslib/primitives.py:14` |
+| More than 192 nodes or objects | `TSIntegerSet` is 6 dwords wide, so a shape cannot name a 193rd node in a matters set. | `mapping/blender_to_shape.py:94,275`, `dtslib/primitives.py:14` |
 | More than 65535 unique vertices in one mesh | 16-bit index buffer. | `mapping/blender_to_shape.py:563` |
 | Exporting without an armature | `select an armature (the DTS shape root)` — the armature *is* the shape. | `mapping/blender_to_shape.py:62` |
 | Arbitrary node scale | Per-axis factors *plus* an orientation quaternion for the axes to be measured along, which a bone's scale cannot express.  Refused rather than half-written.  No sequence in the 630-shape corpus uses it. | `mapping/sequences.py:502` |
@@ -258,14 +258,14 @@ or changes what renders:
   DSQ path alone.
 - **`frame_*` shape keys on a skinned mesh.**  `'X': frame_* shape keys on a
   skin are not supported; ignored` — DTS cannot combine vertex animation with
-  skinning. `mapping/blender_to_shape.py:650`
+  skinning. `mapping/blender_to_shape.py:648`
 - **DSQ channels for nodes the armature lacks.**  `DSQ node 'X' not found in
   armature; its channels are dropped` — expected when applying a sequence to a
   different skeleton. `mapping/dsq.py:60`
 - **Bone channels with no DTS node.**  A bone you add in Blender animates
   nothing on export. `mapping/sequences.py:297`, `mapping/dsq.py:179`
 - **Duplicate detail sizes for one object.**  `duplicate detail 'X' for object
-  'Y'; 'Z' skipped`. `mapping/blender_to_shape.py:155`
+  'Y'; 'Z' skipped`. `mapping/blender_to_shape.py:154`
 - **`dts_bump_map` and `dts_detail_map` on a material created in Blender.**
   The export path decides whether a material carries map references by testing
   for `dts_reflectance_map` *alone* — `has_refs = _MAP_PROPS[0] in bmat` — and
@@ -331,15 +331,6 @@ exist, so adding a bone channel marks its node instead of being ignored.
   rest (subshape indices, object detail numbers, default object states) are
   still raw entries in the N-panel's Custom Properties: a real place to edit
   them, but not a designed one.
-- **Decals are authorable in principle and not in practice.**  Building one in
-  a fresh scene means setting five exactly-named properties on the mesh
-  (`dts_decal_name`, `dts_decal_index`, `dts_decal_object`, `dts_decal_slot`,
-  `dts_decal_target`), three more on a projector empty, and a state property on
-  the armature — nine magic names, none discoverable.  The round trip is
-  complete and the export path is fully derived, but this wants an operator
-  ("add a decal from the selected faces") before it counts as something a user
-  can make.  `tests/blender/test_authoring.py::test_a_decal_is_authorable`
-  builds one the hard way and proves the format side works.
 - Sub-shapes have no authoring path: they can be preserved but not created
   without hand-setting `dts_subshape`.
 - A scene saved by v1.2 or earlier converts on load (`props/migrate.py`), but
@@ -359,7 +350,7 @@ Two Blender suites, and the difference between them is the point.
 and exports.  That covers reading files the add-on did not write, and it is the
 only way to check a feature no fixture-free scene can produce.
 
-`tests/blender/test_authoring.py` (49 tests) never imports anything.  Every test
+`tests/blender/test_authoring.py` (53 tests) never imports anything.  Every test
 builds a shape from nothing — armature, meshes, materials, actions — exports it,
 and reads the feature back out of the file.  This is the suite that answers
 "can a user *make* one of these", which a round-trip cannot: the exporter may be
@@ -375,7 +366,7 @@ variant no shipped shape uses, sorted meshes in both modes, skins, vertex
 animation, material frames, sequences, triggers, ground frames, object-state
 tracks, node scale, DSQ export, IFL entries, decals and both output versions.
 
-`scripts/mutate.py` (23 mutations) disables one capability at a time and checks
+`scripts/mutate.py` (27 mutations) disables one capability at a time and checks
 the matching test notices.  It has caught its own drift three times — a
 mutation that stopped biting when the code moved, and two that were never
 testing what they claimed.  Run it when adding a feature; a test that survives

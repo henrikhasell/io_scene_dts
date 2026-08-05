@@ -36,3 +36,23 @@ def detail_name_for_size(size: int) -> str:
 def strip_blender_dedup(name: str) -> str:
     """Remove Blender's ".001"-style duplicate suffix."""
     return re.sub(r"\.\d{3,}$", "", name)
+
+
+def dts_object_and_size(bobj) -> tuple[str, int]:
+    """The DTS object name and detail size a mesh object belongs to.
+
+    Imported meshes carry both as properties; a mesh made in Blender says so
+    with its name instead ("hull32" is the hull object at detail 32), which is
+    Torque's own convention and the only thing a user has to know.
+
+    Shared so the exporter's grouping and the decal authoring path cannot
+    disagree about which object a mesh is part of -- they did, and a decal
+    built on a fresh mesh was attributed to an object with no name.
+    """
+    base = bobj.get("dts_object_name") or None
+    size = bobj.get("dts_detail_size")
+    if base is None or size is None:
+        parsed_base, parsed_size = split_detail_suffix(strip_blender_dedup(bobj.name))
+        base = base or parsed_base
+        size = size if size is not None else (parsed_size if parsed_size is not None else 2)
+    return str(base), int(size)

@@ -112,6 +112,8 @@ dropped outright, or frozen against Blender-side edits.
   file size); `parent_mesh` vertex sharing and sorted-mesh cluster trees are
   regenerated rather than carried.
 - Decals import as projected UVs with a projector empty, and re-export from it.
+  **Add DTS Decal** (Object Properties → DTS Mesh) makes one from the faces you
+  have selected, across every detail level of the object.
 - Multi-frame (vertex-animated) meshes import as shape keys (`frame_NNN`);
   nothing drives them from the sequence's `frame` track.
 - Extra material frames are `FLOAT2` mesh attributes; only frame 0 renders.
