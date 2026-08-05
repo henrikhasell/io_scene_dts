@@ -93,6 +93,18 @@ MUTATIONS = {
         "        parsed = None\n        if parsed is None:\n            continue",
         ["test_keyframed_visibility_reaches_the_exported_file"],
     ),
+    "scale-export": (
+        "mapping/sequences.py",
+        '            if "scale" in props and bone in node_index_by_bone',
+        "            if False",
+        ["test_editing_a_scale_key_reaches_the_file"],
+    ),
+    "keyframe-count": (
+        "mapping/sequences.py",
+        "            last = max(last, fc.keyframe_points[-1].co[0])\n    return int(round(last))",
+        "            last = max(last, fc.keyframe_points[-1].co[0])\n    return int(round(last)) + 1",
+        ["test_removing_a_keyframe_shortens_the_sequence"],
+    ),
     "mesh-flags": (
         "mapping/shape_to_blender.py",
         "def flags_from_blender(bobj, mesh_type: int) -> int:",

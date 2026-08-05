@@ -16,6 +16,14 @@ sys.path.insert(0, str(REPO.parent))
 from io_scene_dts.dtslib import SKIN_MESH, read_dsq, read_shape_file  # noqa: E402
 
 
+def _keyframes_of(action):
+    """A sequence's length is the keys it has -- dts_keyframes is gone, so that
+    adding or removing one changes the exported length."""
+    from io_scene_dts.mapping.sequences import _keyframe_count
+
+    return _keyframe_count(action)
+
+
 def _reset():
     bpy.ops.wm.read_homefile(use_empty=True)
 
@@ -740,7 +748,7 @@ def test_decals_follow_their_state_through_a_sequence():
     for t in arm.animation_data.nla_tracks:
         t.mute = t.name != "Damage"
 
-    n = int(damage["dts_keyframes"])
+    n = _keyframes_of(damage)
     counts = []
     for f in range(1, n + 1):
         bpy.context.scene.frame_set(f)
@@ -1412,7 +1420,7 @@ def test_dts_import_stacks_sequences_as_nla_strips():
         action = strip.action
         assert not strip.use_sync_length, track.name
         assert abs(strip.scale - strip_scale(action, fps)) < 1e-5, track.name
-        n = int(action.get("dts_keyframes") or 0)
+        n = _keyframes_of(action)
         duration = float(action.get("dts_duration") or 0.0)
         if n > 1 and duration > 0.0:
             seconds = (strip.frame_end - strip.frame_start) / fps
@@ -1464,7 +1472,7 @@ def test_object_visibility_animates_through_the_strip():
     # and it must actually move
     for t in arm.animation_data.nla_tracks:
         t.mute = t.name != "ambient"
-    n = int(bpy.data.actions["ambient"]["dts_keyframes"])
+    n = _keyframes_of(bpy.data.actions["ambient"])
     seen = set()
     for f in range(1, n + 1):
         bpy.context.scene.frame_set(f)
@@ -1669,6 +1677,107 @@ def test_keyframed_visibility_reaches_the_exported_file():
     ]
     assert states, "no object states written"
     assert all(abs(v - 0.375) < 1e-4 for v in states), states
+
+
+def test_removing_a_keyframe_shortens_the_sequence():
+    """Sequence length used to come from a stored dts_keyframes, which an
+    imported sequence always had — so adding or removing keys in Blender
+    changed nothing about the exported file."""
+    from io_scene_dts.mapping.sequences import _iter_fcurves
+
+    _reset()
+    _import_dts("v24_woodDoor01.dts")
+    action = next(a for a in bpy.data.actions if a.get("dts_sequence"))
+    before = _keyframes_of(action)
+    assert before > 2, before
+
+    # drop the last key from every curve in the action
+    for fcurve in _iter_fcurves(action):
+        while fcurve.keyframe_points and fcurve.keyframe_points[-1].co[0] >= before:
+            fcurve.keyframe_points.remove(fcurve.keyframe_points[-1])
+        fcurve.update()
+    assert _keyframes_of(action) == before - 1
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
+    dst = read_shape_file(out)
+    seq = next(s for s in dst.sequences if dst.name(s.name_index) == action.name)
+    assert seq.num_keyframes == before - 1, (seq.num_keyframes, before)
+
+
+def test_matters_sets_are_inferred_from_the_channels_that_exist():
+    """The rotation/translation sets used to be stored by node name.  Inferring
+    them reproduces the file exactly, and means a bone channel added in Blender
+    marks its node instead of being ignored."""
+    _reset()
+    _import_dts("v24_woodDoor01.dts")
+    src = read_shape_file(FIXTURES / "v24_woodDoor01.dts")
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
+    dst = read_shape_file(out)
+
+    for a, b in zip(src.sequences, dst.sequences):
+        assert sorted(a.rotation_matters.indices()) == sorted(b.rotation_matters.indices()), (
+            src.name(a.name_index)
+        )
+        assert sorted(a.translation_matters.indices()) == sorted(
+            b.translation_matters.indices()
+        ), src.name(a.name_index)
+
+
+def test_scale_animation_rides_the_bone_scale_channels():
+    """Node scale used to be a dts_scale_anim blob, so scaling a pose bone in
+    Blender produced nothing and the blob was the only truth."""
+    from io_scene_dts.mapping.sequences import _iter_fcurves
+
+    _reset()
+    _import_dts("v22_disc.dts")
+    src = read_shape_file(FIXTURES / "v22_disc.dts")
+    src_seq = next(s for s in src.sequences if s.flags & 0x7)
+    assert src_seq.animates_aligned_scale()
+
+    action = next(a for a in bpy.data.actions if a.name == src.name(src_seq.name_index))
+    assert action.get("dts_scale_mode") == "ALIGNED"
+    scale_curves = [fc for fc in _iter_fcurves(action) if fc.data_path.endswith(".scale")]
+    assert len(scale_curves) == 3, len(scale_curves)
+    assert "dts_scale_anim" not in action.keys()
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
+    dst = read_shape_file(out)
+    dst_seq = next(s for s in dst.sequences if s.flags & 0x7)
+    assert dst_seq.animates_aligned_scale()
+    assert sorted(dst_seq.scale_matters.indices()) == sorted(src_seq.scale_matters.indices())
+
+    n = src_seq.num_keyframes
+    count = src_seq.scale_matters.count()
+    src_vals = src.node_aligned_scales[src_seq.base_scale : src_seq.base_scale + count * n]
+    dst_vals = dst.node_aligned_scales[dst_seq.base_scale : dst_seq.base_scale + count * n]
+    assert len(dst_vals) == len(src_vals) == count * n
+    for a, b in zip(src_vals, dst_vals):
+        assert all(abs(x - y) < 1e-4 for x, y in zip(a, b)), (a, b)
+
+
+def test_editing_a_scale_key_reaches_the_file():
+    from io_scene_dts.mapping.sequences import _iter_fcurves
+
+    _reset()
+    _import_dts("v22_disc.dts")
+    action = next(a for a in bpy.data.actions if a.get("dts_scale_mode"))
+    for fcurve in _iter_fcurves(action):
+        if fcurve.data_path.endswith(".scale") and fcurve.array_index == 0:
+            for point in fcurve.keyframe_points:
+                point.co = (point.co[0], 2.75)
+            fcurve.update()
+            break
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
+    dst = read_shape_file(out)
+    seq = next(s for s in dst.sequences if s.flags & 0x7)
+    n, count = seq.num_keyframes, seq.scale_matters.count()
+    vals = dst.node_aligned_scales[seq.base_scale : seq.base_scale + count * n]
+    assert vals and all(abs(v[0] - 2.75) < 1e-4 for v in vals), vals[:3]
 
 
 def test_object_state_blobs_are_gone():

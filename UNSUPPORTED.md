@@ -31,6 +31,7 @@ These stop with a clear error.  None of them corrupt a file.
 | More than 192 nodes or objects | `TSIntegerSet` is 6 dwords wide, so a shape cannot name a 193rd node in a matters set. | `mapping/blender_to_shape.py:77,287`, `dtslib/primitives.py:14` |
 | More than 65535 unique vertices in one mesh | 16-bit index buffer. | `mapping/blender_to_shape.py:565` |
 | Exporting without an armature | `select an armature (the DTS shape root)` — the armature *is* the shape. | `mapping/blender_to_shape.py:62` |
+| Arbitrary node scale | Per-axis factors *plus* an orientation quaternion for the axes to be measured along, which a bone's scale cannot express.  Refused rather than half-written.  No sequence in the 630-shape corpus uses it. | `mapping/sequences.py:502` |
 
 ---
 
@@ -43,9 +44,6 @@ and re-export; impossible to author or modify.  Nothing is pickled any more.
   `dts_ifl_materials` JSON on the armature; per-sequence membership as
   `dts_ifl_matters`.  You cannot add, remove or preview one.
   `mapping/shape_to_blender.py:203`, `mapping/sequences.py:248`
-- **Node scale animation** (uniform, aligned and arbitrary).  Preserved as a
-  `dts_scale_anim` JSON blob on the action.  Scaling a pose bone in Blender
-  does **not** produce scale animation. `mapping/sequences.py:271`
 
 ### What used to be here: the mesh payload
 
@@ -135,7 +133,15 @@ way to check your work short of re-reading the exported file.
   motion.
 - **Blend sequences.**  Import stores raw blend offsets in the pose, which is
   correct for export but does not look like the additive result the engine
-  produces.
+  produces.  They are also the one case where both a rotation and a location
+  curve are written for every animated node: a blend pose is an absolute
+  offset, so a missing channel is not the same as an identity one.
+- **Node scale animation** rides the pose bones' own `scale` channels, and
+  `dts_scale_mode` on the action says which of the DTS forms to write.
+  Scaling a pose bone now produces scale animation; it used to be a
+  `dts_scale_anim` blob that the bone had no connection to.  Nothing shows you
+  that a scale channel means *node* scale rather than object scale.
+  `mapping/sequences.py:162`
 - **Material maps beyond the diffuse texture** — bump, detail and
   reflectance/environment maps, plus `detail_scale` and `reflection_amount`.
   Round-trip as `dts_*` custom props on the material; the Principled BSDF the
@@ -228,8 +234,9 @@ or changes what renders:
   `mapping/decals.py` (`_decal_mesh_from_blender`)
 - **Scale animation in a DSQ, both directions.**  `dtslib` reads and writes
   the DSQ scale tables, but `mapping/dsq.py` never touches them, so importing
-  a scale-animated DSQ loses the scale and exporting one never writes it.
-  (The DTS path preserves it as a blob — §2.)
+  a scale-animated DSQ loses the scale and exporting one never writes it.  The
+  DTS path keyframes it onto the bones — see §3 — so this is now a gap in the
+  DSQ path alone.
 - **`frame_*` shape keys on a skinned mesh.**  `'X': frame_* shape keys on a
   skin are not supported; ignored` — DTS cannot combine vertex animation with
   skinning. `mapping/blender_to_shape.py:645`
@@ -237,7 +244,7 @@ or changes what renders:
   armature; its channels are dropped` — expected when applying a sequence to a
   different skeleton. `mapping/dsq.py:59`
 - **Bone channels with no DTS node.**  A bone you add in Blender animates
-  nothing on export. `mapping/sequences.py:303`, `mapping/dsq.py:180`
+  nothing on export. `mapping/sequences.py:303`, `mapping/dsq.py:179`
 - **Duplicate detail sizes for one object.**  `duplicate detail 'X' for object
   'Y'; 'Z' skipped`. `mapping/blender_to_shape.py:156`
 - **`dts_bump_map` and `dts_detail_map` on a material created in Blender.**
@@ -264,15 +271,11 @@ or changes what renders:
 
 ## 5. Frozen — the file wins over your edit
 
-Subtle, because nothing errors and nothing warns.
+Subtle, because nothing errors and nothing warns.  Two entries left this tier:
+**sequence length** now comes from the keys the action actually has, and the
+**rotation/translation matters sets** are inferred from the channels that
+exist, so adding a bone channel marks its node instead of being ignored.
 
-- **Sequence length.**  Export uses the stored `dts_keyframes`, falling back to
-  the real key count only when the property is absent:
-  `n = int(action.get("dts_keyframes", 0)) or _keyframe_count(action)`.  An
-  imported sequence always has the property, so **adding or removing keyframes
-  in Blender does not change the exported length** — keys are sampled at frames
-  `1..n` regardless.  Changing a key's *value* inside that range does export.
-  `mapping/sequences.py:293`, `mapping/dsq.py:155`
 - **Sequence timing.**  `dts_duration` is the single source of truth.  NLA
   strip scale is display-only by design, so retiming a strip cannot change the
   file — you must edit `dts_duration` on the action.
@@ -310,7 +313,7 @@ Subtle, because nothing errors and nothing warns.
 
 ## Coverage
 
-`tests/blender/test_operators.py` (58 tests) covers the round-trip of every
+`tests/blender/test_operators.py` (62 tests) covers the round-trip of every
 "opaque" item above, plus visibility and decal export/reimport.  The remaining
 "blind" items are tested at the file level only — no test asserts a preview
 exists, because none does.  Most "dropped" items have no tests: they are known

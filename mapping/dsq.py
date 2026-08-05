@@ -78,7 +78,6 @@ def dsq_to_actions(dsq: DsqFile, arm_obj) -> tuple[list[bpy.types.Action], list[
         action["dts_priority"] = seq.priority
         action["dts_duration"] = seq.duration
         action["dts_tool_begin"] = seq.tool_begin
-        action["dts_keyframes"] = seq.num_keyframes
 
         n = seq.num_keyframes
         blend = bool(seq.flags & SEQ_BLEND)
@@ -152,7 +151,7 @@ def actions_to_dsq(arm_obj, actions: list[bpy.types.Action], version: int = 24) 
     rest = bone_rest_locals(arm_obj)
 
     for action in actions:
-        n = int(action.get("dts_keyframes", 0)) or _keyframe_count(action)
+        n = _keyframe_count(action)
         if n <= 0:
             warnings.append(f"action {action.name!r} has no keyframes; skipped")
             continue

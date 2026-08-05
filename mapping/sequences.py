@@ -5,12 +5,16 @@ keyframes (keyframe i lives on Blender frame i+1).  Everything Blender has no
 natural home for rides on action custom properties:
 
 - dts_cyclic / dts_blend / dts_makepath / dts_priority / dts_duration /
-  dts_tool_begin / dts_keyframes / dts_flags
+  dts_tool_begin / dts_flags
 - dts_ground:  JSON [[x,y,z],[qx,qy,qz,qw]] pairs (raw Quat16 ints, lossless)
 - dts_triggers: JSON [[state, pos], ...]
-- dts_object_anim: JSON {object_name: {"vis": [...], "frame": [...],
-  "matframe": [...]}} — per-keyframe object-state tracks
-- dts_scale_anim: JSON preserving scale animation raw arrays (rare)
+- dts_scale_mode: which of the three DTS scale forms this sequence uses
+
+Object-state and decal-state tracks are keyframed on the armature and read
+back off those curves (mapping/objectstate.py); node scale animation is
+keyframed as pose-bone scale.  The sequence's length and its rotation and
+translation matters sets are likewise read off the curves that exist rather
+than stored beside them.
 
 For Blend sequences the pose values are the raw blend offsets (the engine
 post-multiplies them onto the node's local transform), not absolute poses.
@@ -27,7 +31,15 @@ import bpy
 from mathutils import Matrix, Quaternion, Vector
 
 from ..dtslib import ObjectState, Quat16, Sequence, Shape, Trigger, TSIntegerSet
-from ..dtslib.types import SEQ_BLEND, SEQ_CYCLIC, SEQ_MAKE_PATH
+from ..dtslib.types import (
+    SEQ_ALIGNED_SCALE,
+    SEQ_ANY_SCALE,
+    SEQ_ARBITRARY_SCALE,
+    SEQ_BLEND,
+    SEQ_CYCLIC,
+    SEQ_MAKE_PATH,
+    SEQ_UNIFORM_SCALE,
+)
 from .decals import decal_names_by_index, read_decal_tracks, write_decal_fcurves
 from .objectstate import read_tracks, write_tracks
 
@@ -124,13 +136,29 @@ def import_sequences(shape: Shape, arm_obj: bpy.types.Object, bone_name_by_node:
             for i in range(1, n):
                 if quats[i].dot(quats[i - 1]) < 0:
                     quats[i].negate()
+            # Only the channels the sequence actually animates.  A sequence can
+            # rotate a node without translating it -- woodDoor01's `open` does
+            # exactly that for two of its four nodes -- and since export infers
+            # the matters sets from the curves that exist, writing both here
+            # would tell it every node is translated too.  A node left without
+            # a location curve stays at its rest translation, which is what the
+            # zero basis would have produced anyway.
+            #
+            # Blend sequences are the exception: their poses are raw offsets
+            # rather than deltas from rest, so a missing channel is not the
+            # same as an identity one and both are written.
             base = f'pose.bones["{bone}"]'
-            _write_fcurves(bag, f"{base}.rotation_quaternion", 4, [[q.w, q.x, q.y, q.z] for q in quats])
-            _write_fcurves(bag, f"{base}.location", 3, [list(v) for v in locs])
+            if blend or node in rot_members:
+                _write_fcurves(
+                    bag, f"{base}.rotation_quaternion", 4, [[q.w, q.x, q.y, q.z] for q in quats]
+                )
+            if blend or node in trans_members:
+                _write_fcurves(bag, f"{base}.location", 3, [list(v) for v in locs])
 
         # object states and decal states ride in the same slot as the bones, so
         # one strip drives pose, visibility and damage together.  These curves
         # are what export reads back -- there is no stored copy beside them.
+        _write_scale_fcurves(bag, shape, seq, bone_name_by_node, n)
         write_tracks(bag, arm_obj, _object_state_tracks(shape, seq))
         write_decal_fcurves(bag, action, arm_obj, _decal_tracks(shape, seq), decal_names)
 
@@ -141,6 +169,54 @@ def import_sequences(shape: Shape, arm_obj: bpy.types.Object, bone_name_by_node:
             marker.frame = 1 + round(trig.pos * max(n - 1, 0))
         actions.append(action)
     return actions
+
+
+def _write_scale_fcurves(bag, shape: Shape, seq: Sequence, bone_name_by_node, n: int) -> None:
+    """Node scale animation as pose-bone scale channels.
+
+    It used to ride as a dts_scale_anim JSON blob, so scaling a pose bone in
+    Blender produced nothing and the stored arrays were the only truth.  Two
+    of the three DTS forms map straight onto a bone's scale:
+
+    - uniform: one factor, written to all three components
+    - aligned: three factors along the node's own axes
+
+    The third, arbitrary, is per-axis factors *plus* an orientation quaternion
+    for the axes to be measured along, which a bone's scale cannot express.  No
+    sequence in the 630-shape corpus uses it; it is dropped here with a warning
+    and refused on export rather than half-represented.
+    """
+    if not (seq.flags & SEQ_ANY_SCALE):
+        return
+    count = seq.scale_matters.count()
+    for node in sorted(seq.scale_matters.indices()):
+        bone = bone_name_by_node.get(node)
+        if bone is None:
+            continue
+        ordinal = seq.scale_matters.ordinal_of(node)
+        samples = []
+        for kf in range(n):
+            i = seq.base_scale + ordinal * n + kf
+            if seq.animates_uniform_scale():
+                f = shape.node_uniform_scales[i] if i < len(shape.node_uniform_scales) else 1.0
+                samples.append([f, f, f])
+            elif seq.animates_aligned_scale():
+                v = (
+                    shape.node_aligned_scales[i]
+                    if i < len(shape.node_aligned_scales)
+                    else (1.0, 1.0, 1.0)
+                )
+                samples.append(list(v))
+            else:
+                v = (
+                    shape.node_arbitrary_scale_factors[i]
+                    if i < len(shape.node_arbitrary_scale_factors)
+                    else (1.0, 1.0, 1.0)
+                )
+                samples.append(list(v))
+        if samples:
+            _write_fcurves(bag, f'pose.bones["{bone}"].scale', 3, samples)
+    del count
 
 
 def _write_fcurves(bag, data_path: str, channels: int, samples) -> None:
@@ -213,7 +289,6 @@ def _store_sequence_props(action: bpy.types.Action, seq: Sequence, shape: Shape)
     action["dts_priority"] = seq.priority
     action["dts_duration"] = seq.duration
     action["dts_tool_begin"] = seq.tool_begin
-    action["dts_keyframes"] = seq.num_keyframes
 
     n = seq.num_keyframes
     ground = []
@@ -234,41 +309,16 @@ def _store_sequence_props(action: bpy.types.Action, seq: Sequence, shape: Shape)
     if trigs:
         action["dts_triggers"] = json.dumps(trigs)
 
-    # A sequence can animate a node's rotation without its translation and vice
-    # versa; both sets are stored by node name so the export does not have to
-    # infer them from which fcurves happen to exist.
-    action["dts_rot_matters"] = json.dumps(
-        [shape.node_name(i) for i in sorted(seq.rotation_matters.indices())]
-    )
-    action["dts_trans_matters"] = json.dumps(
-        [shape.node_name(i) for i in sorted(seq.translation_matters.indices())]
-    )
-
     if seq.ifl_matters.count():
         action["dts_ifl_matters"] = json.dumps(sorted(seq.ifl_matters.indices()))
 
-    if seq.flags & 0x7:  # any scale
-        scale = {
-            "flags": seq.flags & 0x7,
-            "base": seq.base_scale,
-            "nodes": [shape.node_name(i) for i in seq.scale_matters.indices()],
-            "uniform": shape.node_uniform_scales[seq.base_scale : seq.base_scale + seq.scale_matters.count() * n]
-            if seq.animates_uniform_scale()
-            else [],
-            "aligned": [list(v) for v in shape.node_aligned_scales[seq.base_scale : seq.base_scale + seq.scale_matters.count() * n]]
-            if seq.animates_aligned_scale()
-            else [],
-            "arbitrary_factors": [list(v) for v in shape.node_arbitrary_scale_factors[seq.base_scale : seq.base_scale + seq.scale_matters.count() * n]]
-            if seq.animates_arbitrary_scale()
-            else [],
-            "arbitrary_rots": [
-                [q.x, q.y, q.z, q.w]
-                for q in shape.node_arbitrary_scale_rots[seq.base_scale : seq.base_scale + seq.scale_matters.count() * n]
-            ]
-            if seq.animates_arbitrary_scale()
-            else [],
-        }
-        action["dts_scale_anim"] = json.dumps(scale)
+    if seq.flags & SEQ_ANY_SCALE:
+        # only the mode; the factors themselves become pose-bone scale curves
+        action["dts_scale_mode"] = (
+            "UNIFORM" if seq.animates_uniform_scale()
+            else "ALIGNED" if seq.animates_aligned_scale()
+            else "ARBITRARY"
+        )
 
 
 # ----------------------------------------------------------------------
@@ -290,7 +340,10 @@ def export_sequences(
     rest_local = _rest_local_matrices(shape)
 
     for action in actions:
-        n = int(action.get("dts_keyframes", 0)) or _keyframe_count(action)
+        # The keys in the action are the length.  This used to prefer a stored
+        # dts_keyframes, which meant adding or removing a keyframe in Blender
+        # changed nothing: an imported sequence always had the property.
+        n = _keyframe_count(action)
         if n <= 0:
             warnings.append(f"action {action.name!r} has no keyframes; skipped")
             continue
@@ -325,40 +378,25 @@ def export_sequences(
         members = sorted(
             (node_index_by_bone[b] for b in bone_channels),
         )
+        # Which nodes a sequence animates is read off the channels that exist,
+        # not from a stored copy.  The importer writes a curve for every member
+        # of both sets, so inference reproduces them exactly -- and once it is
+        # the only path, adding a bone channel in Blender marks that node
+        # instead of being ignored.
         rot_set, trans_set = TSIntegerSet(), TSIntegerSet()
-        stored_rot = json.loads(action.get("dts_rot_matters", "null") or "null")
-        stored_trans = json.loads(action.get("dts_trans_matters", "null") or "null")
-        if stored_rot is None or stored_trans is None:
-            # hand-authored action: infer from the channels each bone actually
-            # has rather than marking every animated bone for both
-            for bone, props in bone_channels.items():
-                node = node_index_by_bone[bone]
-                if any(p.startswith("rotation_") for p in props):
-                    rot_set.set(node)
-                if "location" in props:
-                    trans_set.set(node)
-                if not any(p.startswith("rotation_") for p in props) and "location" not in props:
-                    rot_set.set(node)
-                    trans_set.set(node)
-        else:
-            # the stored sets name DTS nodes, which are not always spelled the
-            # same as the Blender bones, so resolve through the node table
-            node_by_dts_name = {shape.node_name(i): i for i in range(len(shape.nodes))}
-            stored_nodes = set()
-            for name in stored_rot:
-                if name in node_by_dts_name:
-                    rot_set.set(node_by_dts_name[name])
-                    stored_nodes.add(node_by_dts_name[name])
-            for name in stored_trans:
-                if name in node_by_dts_name:
-                    trans_set.set(node_by_dts_name[name])
-                    stored_nodes.add(node_by_dts_name[name])
-            # a bone animated in Blender but absent from the stored sets was
-            # added after import, so it still has to be marked
-            for node in members:
-                if node not in stored_nodes:
-                    rot_set.set(node)
-                    trans_set.set(node)
+        for bone, props in bone_channels.items():
+            node = node_index_by_bone[bone]
+            has_rot = any(p.startswith("rotation_") for p in props)
+            has_loc = "location" in props
+            if has_rot:
+                rot_set.set(node)
+            if has_loc:
+                trans_set.set(node)
+            if not has_rot and not has_loc:
+                # a scale-only channel still needs the node in the tables the
+                # engine indexes by ordinal
+                rot_set.set(node)
+                trans_set.set(node)
         seq.rotation_matters = rot_set
         seq.translation_matters = trans_set
 
@@ -450,26 +488,43 @@ def export_sequences(
             padded = list(track[:n]) + [0] * max(0, n - len(track))
             shape.decal_states.extend(int(x) for x in padded)
 
-        # scale animation (preserved blob)
-        scale = json.loads(action.get("dts_scale_anim", "{}") or "{}")
-        if scale:
-            seq.flags |= scale["flags"]
-            sset = TSIntegerSet()
-            for node_name in scale["nodes"]:
-                idx = shape.find_node(node_name)
-                if idx >= 0:
-                    sset.set(idx)
-            seq.scale_matters = sset
-            if scale["flags"] & 1:
-                seq.base_scale = len(shape.node_uniform_scales)
-                shape.node_uniform_scales.extend(scale["uniform"])
-            elif scale["flags"] & 2:
-                seq.base_scale = len(shape.node_aligned_scales)
-                shape.node_aligned_scales.extend(tuple(v) for v in scale["aligned"])
-            else:
-                seq.base_scale = len(shape.node_arbitrary_scale_factors)
-                shape.node_arbitrary_scale_factors.extend(tuple(v) for v in scale["arbitrary_factors"])
-                shape.node_arbitrary_scale_rots.extend(Quat16(*q) for q in scale["arbitrary_rots"])
+        # scale animation, read off the pose-bone scale channels
+        scale_mode = str(action.get("dts_scale_mode", "") or "").upper()
+        scaled = {
+            node_index_by_bone[bone]: props["scale"]
+            for bone, props in bone_channels.items()
+            if "scale" in props and bone in node_index_by_bone
+        }
+        if scaled and scale_mode == "ARBITRARY":
+            from .blender_to_shape import ExportError
+
+            raise ExportError(
+                f"sequence {action.name!r} animates arbitrary node scale, which is per-axis "
+                f"factors plus an orientation a bone's scale cannot express — set "
+                f"dts_scale_mode to UNIFORM or ALIGNED on the action, or remove the "
+                f"scale channels"
+            )
+        if scaled:
+            scale_set = TSIntegerSet()
+            for node in scaled:
+                scale_set.set(node)
+            seq.scale_matters = scale_set
+            uniform = scale_mode != "ALIGNED"
+            seq.flags |= SEQ_UNIFORM_SCALE if uniform else SEQ_ALIGNED_SCALE
+            seq.base_scale = (
+                len(shape.node_uniform_scales) if uniform else len(shape.node_aligned_scales)
+            )
+            for node in sorted(scaled):
+                chans = scaled[node]
+                for kf in range(n):
+                    axes = [
+                        chans[i].evaluate(kf + 1) if i in chans else 1.0
+                        for i in range(3)
+                    ]
+                    if uniform:
+                        shape.node_uniform_scales.append(axes[0])
+                    else:
+                        shape.node_aligned_scales.append(tuple(axes))
 
         shape.sequences.append(seq)
     return warnings

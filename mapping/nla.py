@@ -13,7 +13,7 @@ source of truth for export, and dragging a strip cannot change the file.
 
 import bpy
 
-from .sequences import _iter_fcurves
+from .sequences import _iter_fcurves, _keyframe_count
 
 
 def strip_scale(action: bpy.types.Action, fps: float) -> float:
@@ -22,7 +22,7 @@ def strip_scale(action: bpy.types.Action, fps: float) -> float:
     Keyframe *i* sits on Blender frame *i*+1, so the action spans
     ``num_keyframes - 1`` frames; it should span ``duration * fps``.
     """
-    n = int(action.get("dts_keyframes") or 0)
+    n = _keyframe_count(action)
     duration = float(action.get("dts_duration") or 0.0)
     if n > 1 and duration > 0.0:
         return duration * fps / (n - 1)
