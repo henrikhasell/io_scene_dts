@@ -1,0 +1,160 @@
+"""Add, remove and reorder entries in the DTS tables, plus scene migration.
+
+A CollectionProperty has no built-in add/remove buttons; every UIList needs
+operators beside it.  One generic pair covers all of them by naming the
+collection through a data path rather than hard-coding one per table.
+"""
+
+from __future__ import annotations
+
+import bpy
+from bpy.props import EnumProperty, StringProperty
+from bpy.types import Operator
+
+
+def _resolve(context, path: str):
+    """(collection, active-index property owner, index attribute name).
+
+    ``path`` is like "object.dts_shape.details": everything up to the last
+    component names the group, the last names the collection, and the active
+    index is that name plus "_index" by convention.
+
+    "action." is a special root, because an Action is not reachable from
+    ``context`` by attribute at all -- which is the same reason its properties
+    need panels in the animation editors rather than a Properties tab.
+    """
+    owner_path, _, name = path.rpartition(".")
+    if owner_path == "action":
+        from .panels import _action_in_context
+
+        action = _action_in_context(context)
+        if action is None:
+            return None, None, None
+        owner = action.dts_sequence_props
+    else:
+        owner = context
+        for part in owner_path.split("."):
+            owner = getattr(owner, part, None)
+            if owner is None:
+                return None, None, None
+    collection = getattr(owner, name, None)
+    if collection is None:
+        return None, None, None
+    return collection, owner, f"{name}_index"
+
+
+class DTS_OT_list_add(Operator):
+    bl_idname = "io_scene_dts.list_add"
+    bl_label = "Add Entry"
+    bl_description = "Add an entry to this DTS table"
+    bl_options = {"REGISTER", "UNDO"}
+
+    path: StringProperty()
+
+    def execute(self, context):
+        collection, owner, index_attr = _resolve(context, self.path)
+        if collection is None:
+            self.report({"ERROR"}, f"no collection at {self.path!r}")
+            return {"CANCELLED"}
+        collection.add()
+        setattr(owner, index_attr, len(collection) - 1)
+        return {"FINISHED"}
+
+
+class DTS_OT_list_remove(Operator):
+    bl_idname = "io_scene_dts.list_remove"
+    bl_label = "Remove Entry"
+    bl_description = "Remove the selected entry from this DTS table"
+    bl_options = {"REGISTER", "UNDO"}
+
+    path: StringProperty()
+
+    def execute(self, context):
+        collection, owner, index_attr = _resolve(context, self.path)
+        if collection is None:
+            return {"CANCELLED"}
+        index = getattr(owner, index_attr)
+        if not 0 <= index < len(collection):
+            return {"CANCELLED"}
+        collection.remove(index)
+        setattr(owner, index_attr, min(index, len(collection) - 1))
+        return {"FINISHED"}
+
+
+class DTS_OT_list_move(Operator):
+    bl_idname = "io_scene_dts.list_move"
+    bl_label = "Move Entry"
+    bl_description = "Move the selected entry.  Order is load-bearing in these tables"
+    bl_options = {"REGISTER", "UNDO"}
+
+    path: StringProperty()
+    direction: EnumProperty(items=[("UP", "Up", ""), ("DOWN", "Down", "")])
+
+    def execute(self, context):
+        collection, owner, index_attr = _resolve(context, self.path)
+        if collection is None:
+            return {"CANCELLED"}
+        index = getattr(owner, index_attr)
+        target = index - 1 if self.direction == "UP" else index + 1
+        if not (0 <= index < len(collection) and 0 <= target < len(collection)):
+            return {"CANCELLED"}
+        collection.move(index, target)
+        setattr(owner, index_attr, target)
+        return {"FINISHED"}
+
+
+class DTS_OT_migrate_scene(Operator):
+    bl_idname = "io_scene_dts.migrate_scene"
+    bl_label = "Convert DTS Data From an Older Version"
+    bl_description = (
+        "Convert the JSON blobs an earlier version of this add-on wrote into the "
+        "editable tables, and discard any pickled mesh payloads.  Runs automatically "
+        "when a file is opened with the add-on already enabled"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        from ..props import migrate
+
+        report = migrate.migrate_all()
+        if not report:
+            self.report({"INFO"}, "nothing to convert")
+        else:
+            for line in report:
+                self.report({"WARNING"}, line)
+        return {"FINISHED"}
+
+
+class DTS_OT_dismiss_migration_note(Operator):
+    bl_idname = "io_scene_dts.dismiss_migration_note"
+    bl_label = "Dismiss"
+    bl_description = "Hide the note about what conversion dropped"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = context.object
+        if obj is not None:
+            obj.dts_shape.migration_note = ""
+        return {"FINISHED"}
+
+
+def list_buttons(layout, path: str, *, move: bool = False) -> None:
+    """The add/remove (and optionally reorder) column beside a UIList."""
+    column = layout.column(align=True)
+    column.operator(DTS_OT_list_add.bl_idname, icon="ADD", text="").path = path
+    column.operator(DTS_OT_list_remove.bl_idname, icon="REMOVE", text="").path = path
+    if move:
+        column.separator()
+        up = column.operator(DTS_OT_list_move.bl_idname, icon="TRIA_UP", text="")
+        up.path, up.direction = path, "UP"
+        down = column.operator(DTS_OT_list_move.bl_idname, icon="TRIA_DOWN", text="")
+        down.path, down.direction = path, "DOWN"
+
+
+CLASSES = (
+    DTS_OT_list_add,
+    DTS_OT_list_remove,
+    DTS_OT_list_move,
+    DTS_OT_migrate_scene,
+    DTS_OT_dismiss_migration_note,
+)

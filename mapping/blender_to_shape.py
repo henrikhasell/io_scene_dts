@@ -68,14 +68,12 @@ def blender_to_shape(
     # seed the name table in its original order so every add_name() below
     # resolves to the source index; names for anything added in Blender still
     # append at the end
-    stored_names = json.loads(arm_obj.get("dts_names_order", "[]") or "[]")
-    shape.names = [str(n) for n in stored_names]
+    shape.names = [item.name for item in arm_obj.dts_shape.names]
 
     # -- nodes --------------------------------------------------------
     bones = _ordered_bones(arm_obj)
     if len(bones) > MAX_TS_SET_SIZE:
         raise ExportError(f"{len(bones)} bones exceed the DTS limit of {MAX_TS_SET_SIZE} nodes")
-    stored_transforms = json.loads(arm_obj.get("dts_node_transforms", "{}") or "{}")
     node_index_by_bone: dict[str, int] = {}
     node_arm_matrix: list[Matrix] = []
     for i, bone in enumerate(bones):
@@ -90,9 +88,10 @@ def blender_to_shape(
         local = (bones[parent].matrix_local.inverted() @ arm_mat) if parent >= 0 else arm_mat
         rot = blender_quat_to_dts(local.to_quaternion())
         trans = tuple(local.to_translation())
-        stored = stored_transforms.get(dts_name)
-        if stored is not None:
-            rot, trans = _prefer_stored_transform(rot, trans, stored)
+        if bone.dts_node.use_stored:
+            rot, trans = _prefer_stored_transform(
+                rot, trans, (list(bone.dts_node.stored_rotation), list(bone.dts_node.stored_translation))
+            )
         shape.default_rotations.append(rot)
         shape.default_translations.append(trans)
 
@@ -103,30 +102,17 @@ def blender_to_shape(
 
     # seed the material list in the original order — map slots and IFL
     # entries index into it, so unused materials must survive too
-    stored_mat_order = json.loads(arm_obj.get("dts_materials_order", "[]") or "[]")
-    if stored_mat_order:
-        pool = {}
-        for o in mesh_objs:
-            for slot in o.material_slots:
-                if slot.material is not None and "dts_name" in slot.material:
-                    pool.setdefault(str(slot.material["dts_name"]).lower(), slot.material)
-        for bm in bpy.data.materials:
-            if "dts_name" in bm:
-                pool.setdefault(str(bm["dts_name"]).lower(), bm)
-        # prefer the recorded index: two entries can share a name
-        by_index = {}
-        for bm in bpy.data.materials:
-            if "dts_material_index" in bm:
-                by_index.setdefault(int(bm["dts_material_index"]), bm)
-        for slot_index, mat_name in enumerate(stored_mat_order):
-            bm = by_index.get(slot_index) or pool.get(str(mat_name).lower())
-            if bm is not None:
-                _material_slot_index(bm)
-            else:
-                warnings.append(
-                    f"material {mat_name!r} from the original list no longer exists; "
-                    f"material indices may shift"
-                )
+    # A real pointer per slot, so a deleted material shows up as an empty slot
+    # rather than as a name that silently resolves to a different material --
+    # names are not unique in real shapes.
+    for slot_index, ref in enumerate(arm_obj.dts_shape.material_order):
+        if ref.material is not None:
+            _material_slot_index(ref.material)
+        else:
+            warnings.append(
+                f"material slot {slot_index} of the original list is empty; "
+                f"material indices may shift"
+            )
 
     # group by (subshape, object base name) preserving discovery order; each
     # object's meshes are keyed by detail identity (name, size) — size alone
@@ -167,7 +153,11 @@ def blender_to_shape(
 
     # the armature may carry the full imported detail table — details can
     # exist with no geometry at all (e.g. an empty collision detail)
-    stored_details = json.loads(arm_obj.get("dts_details", "[]") or "[]")
+    stored_details = [
+        (d.name, d.sub_shape_num, d.object_detail_num, d.size,
+         d.average_error, d.max_error, d.poly_count)
+        for d in arm_obj.dts_shape.details
+    ]
 
     subshapes = sorted({k[0] for k in order} | {int(d[1]) for d in stored_details}) or [0]
     sub_remap = {s: i for i, s in enumerate(subshapes)}
@@ -299,10 +289,18 @@ def blender_to_shape(
     warnings += mat_warnings
 
     # -- IFL materials (preserved shape-level) ------------------------
-    for entry in json.loads(arm_obj.get("dts_ifl_materials", "[]") or "[]"):
-        raw = list(entry["raw"])
-        raw[0] = shape.add_name(str(entry["name"]))
-        shape.ifl_materials.append(IflMaterial(tuple(raw)))
+    for entry in arm_obj.dts_shape.ifl_materials:
+        shape.ifl_materials.append(
+            IflMaterial(
+                (
+                    shape.add_name(entry.name),
+                    entry.material_slot,
+                    entry.first_frame,
+                    entry.first_frame_off_time,
+                    entry.num_frames,
+                )
+            )
+        )
 
 
     # engine scratch links, derivable from the hierarchy we just built

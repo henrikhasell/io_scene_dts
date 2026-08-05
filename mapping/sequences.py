@@ -41,6 +41,8 @@ from ..dtslib.types import (
     SEQ_UNIFORM_SCALE,
 )
 from .decals import decal_names_by_index, read_decal_tracks, write_decal_fcurves
+from ..props.legacy import pack_trigger, parse_trigger_state
+from ..props.sequence import SCHEMA_VERSION
 from .objectstate import read_tracks, write_tracks
 
 
@@ -290,8 +292,9 @@ def _store_sequence_props(action: bpy.types.Action, seq: Sequence, shape: Shape)
     action["dts_duration"] = seq.duration
     action["dts_tool_begin"] = seq.tool_begin
 
-    n = seq.num_keyframes
-    ground = []
+    props = action.dts_sequence_props
+    props.schema_version = SCHEMA_VERSION
+    props.ground.clear()
     for i in range(seq.num_ground_frames):
         idx = seq.first_ground_frame + i
         if idx >= len(shape.ground_translations):
@@ -299,22 +302,27 @@ def _store_sequence_props(action: bpy.types.Action, seq: Sequence, shape: Shape)
             # accidentally had no ground transforms"); the engine guards this
             # in TSThread::getGround, so do we
             break
-        t = shape.ground_translations[idx]
         q = shape.ground_rotations[idx]
-        ground.append([list(t), [q.x, q.y, q.z, q.w]])
-    if ground:
-        action["dts_ground"] = json.dumps(ground)
+        item = props.ground.add()
+        item.translation = tuple(shape.ground_translations[idx])
+        item.rotation = (q.x, q.y, q.z, q.w)
 
-    trigs = [[t.state, t.pos] for t in _seq_triggers(shape, seq)]
-    if trigs:
-        action["dts_triggers"] = json.dumps(trigs)
+    props.triggers.clear()
+    for trigger in _seq_triggers(shape, seq):
+        fields = parse_trigger_state(trigger.state)
+        item = props.triggers.add()
+        item.state = fields["state"]
+        item.on = fields["on"]
+        item.invert_on_reverse = fields["invert_on_reverse"]
+        item.pos = trigger.pos
 
-    if seq.ifl_matters.count():
-        action["dts_ifl_matters"] = json.dumps(sorted(seq.ifl_matters.indices()))
+    props.ifl_matters.clear()
+    for index in sorted(seq.ifl_matters.indices()):
+        props.ifl_matters.add().index = index
 
     if seq.flags & SEQ_ANY_SCALE:
         # only the mode; the factors themselves become pose-bone scale curves
-        action["dts_scale_mode"] = (
+        props.scale_mode = (
             "UNIFORM" if seq.animates_uniform_scale()
             else "ALIGNED" if seq.animates_aligned_scale()
             else "ARBITRARY"
@@ -420,7 +428,10 @@ def export_sequences(
                 shape.node_translations.append(tuple(local.to_translation()))
 
         # ground frames
-        ground = json.loads(action.get("dts_ground", "[]") or "[]")
+        ground = [
+            (list(item.translation), list(item.rotation))
+            for item in action.dts_sequence_props.ground
+        ]
         seq.first_ground_frame = len(shape.ground_translations)
         seq.num_ground_frames = len(ground)
         for t, q in ground:
@@ -428,7 +439,10 @@ def export_sequences(
             shape.ground_rotations.append(Quat16(*q))
 
         # triggers
-        trigs = json.loads(action.get("dts_triggers", "[]") or "[]")
+        trigs = [
+            (pack_trigger(item.state, item.on, item.invert_on_reverse), item.pos)
+            for item in action.dts_sequence_props.triggers
+        ]
         seq.first_trigger = len(shape.triggers)
         seq.num_triggers = len(trigs)
         for state, pos in trigs:
@@ -462,7 +476,7 @@ def export_sequences(
                 )
 
         # ifl membership (entries preserved shape-level in armature JSON)
-        ifl_indices = json.loads(action.get("dts_ifl_matters", "[]") or "[]")
+        ifl_indices = [item.index for item in action.dts_sequence_props.ifl_matters]
         iset = TSIntegerSet()
         for i in ifl_indices:
             if i < len(shape.ifl_materials):
@@ -489,7 +503,7 @@ def export_sequences(
             shape.decal_states.extend(int(x) for x in padded)
 
         # scale animation, read off the pose-bone scale channels
-        scale_mode = str(action.get("dts_scale_mode", "") or "").upper()
+        scale_mode = action.dts_sequence_props.scale_mode
         scaled = {
             node_index_by_bone[bone]: props["scale"]
             for bone, props in bone_channels.items()

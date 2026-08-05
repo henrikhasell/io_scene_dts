@@ -10,6 +10,7 @@ except ModuleNotFoundError:  # imported outside Blender (pytest, tooling)
     bpy = None
 
 if bpy is not None:
+    from . import props, ui
     from .ops import export_dsq, export_dts, import_dsq, import_dts
 
     _CLASSES = (
@@ -20,8 +21,12 @@ if bpy is not None:
     )
 
     def register():
+        # properties first: the operators and panels below both reference the
+        # groups they define
+        props.register()
         for cls in _CLASSES:
             bpy.utils.register_class(cls)
+        ui.register()
         bpy.types.TOPBAR_MT_file_import.append(import_dts.menu_func)
         bpy.types.TOPBAR_MT_file_import.append(import_dsq.menu_func)
         bpy.types.TOPBAR_MT_file_export.append(export_dts.menu_func)
@@ -32,5 +37,7 @@ if bpy is not None:
         bpy.types.TOPBAR_MT_file_import.remove(import_dsq.menu_func)
         bpy.types.TOPBAR_MT_file_export.remove(export_dts.menu_func)
         bpy.types.TOPBAR_MT_file_export.remove(export_dsq.menu_func)
+        ui.unregister()
         for cls in reversed(_CLASSES):
             bpy.utils.unregister_class(cls)
+        props.unregister()

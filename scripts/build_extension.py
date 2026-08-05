@@ -26,7 +26,7 @@ REPO = Path(__file__).resolve().parent.parent
 
 # runtime files only — mirrors [build] paths_exclude_pattern in the manifest
 INCLUDE_FILES = ["blender_manifest.toml", "__init__.py", "README.md"]
-INCLUDE_DIRS = ["dtslib", "mapping", "ops"]
+INCLUDE_DIRS = ["dtslib", "mapping", "ops", "props", "ui"]
 
 SEMVER_RE = re.compile(
     r"^v?(?P<core>\d+\.\d+\.\d+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$"

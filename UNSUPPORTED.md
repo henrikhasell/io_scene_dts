@@ -28,8 +28,8 @@ These stop with a clear error.  None of them corrupt a file.
 | DTS version 25+ | Same error.  Torque 3D–era shapes are not read. | `dtslib/reader.py:71` |
 | Writing any version but 23/24 | `only 24 (Torque) and 23 (Tribes 2) are supported — older versions keep skins in a separate section`.  You cannot import a v19 shape and write a v19 shape. | `dtslib/writer.py:22` |
 | Ground frames in a v23 export | Refused unless **Strip Ground Frames** is checked, which discards them (movement animations lose their ground speed). v23 has nowhere to store them. | `dtslib/writer.py:27`, `ops/export_dts.py:37` |
-| More than 192 nodes or objects | `TSIntegerSet` is 6 dwords wide, so a shape cannot name a 193rd node in a matters set. | `mapping/blender_to_shape.py:77,287`, `dtslib/primitives.py:14` |
-| More than 65535 unique vertices in one mesh | 16-bit index buffer. | `mapping/blender_to_shape.py:565` |
+| More than 192 nodes or objects | `TSIntegerSet` is 6 dwords wide, so a shape cannot name a 193rd node in a matters set. | `mapping/blender_to_shape.py:77,263`, `dtslib/primitives.py:14` |
+| More than 65535 unique vertices in one mesh | 16-bit index buffer. | `mapping/blender_to_shape.py:563` |
 | Exporting without an armature | `select an armature (the DTS shape root)` — the armature *is* the shape. | `mapping/blender_to_shape.py:62` |
 | Arbitrary node scale | Per-axis factors *plus* an orientation quaternion for the axes to be measured along, which a bone's scale cannot express.  Refused rather than half-written.  No sequence in the 630-shape corpus uses it. | `mapping/sequences.py:502` |
 
@@ -37,13 +37,12 @@ These stop with a clear error.  None of them corrupt a file.
 
 ## 2. Opaque — round-trips, but you cannot see or edit it
 
-Preserved as a JSON custom property and re-emitted verbatim.  Safe to import
-and re-export; impossible to author or modify.  Nothing is pickled any more.
+**This tier is empty.**  Nothing is pickled and nothing rides as a JSON string
+any more.  The tables that used to live here — the name table, the detail
+table, the material ordering, IFL entries, ground frames, triggers and node
+rest transforms — are typed collections with UILists on them; see §3 for which
+of them you still cannot *preview*, which is a different complaint.
 
-- **IFL material entries** (animated texture flipbooks).  Stored as
-  `dts_ifl_materials` JSON on the armature; per-sequence membership as
-  `dts_ifl_matters`.  You cannot add, remove or preview one.
-  `mapping/shape_to_blender.py:203`, `mapping/sequences.py:248`
 
 ### What used to be here: the mesh payload
 
@@ -127,10 +126,27 @@ way to check your work short of re-reading the exported file.
   a named boolean, so nothing hides in a packed word.  Only `dts_billboard`
   changes anything you can see.  Undocumented bits are dropped with a warning;
   no corpus mesh has one. `mapping/shape_to_blender.py:354`
-- **Triggers** (footstep sounds, effect hooks).  `dts_triggers` JSON on the
-  action.  No timeline markers, no UI.
-- **Ground frames** (root-motion speed).  `dts_ground` JSON.  Not shown as
-  motion.
+- **Triggers** (footstep sounds, effect hooks).  A collection on the action,
+  edited in the DTS tab of the Dope Sheet or NLA sidebar: a state number 1..30
+  and two flags rather than the packed U32 the file holds.  Pose markers show
+  where they fire, but nothing plays a sound.  `props/sequence.py`
+- **Ground frames** (root-motion speed).  A collection on the action, in the
+  same panel.  Editable as numbers; nothing shows them as motion.
+- **IFL material entries** (animated texture flipbooks).  A collection on the
+  armature with a UIList, and per-sequence membership in the sequence panel.
+  You can add and remove them; nothing previews one.
+  `props/shape.py`, `mapping/shape_to_blender.py:219`
+- **The name table, detail table and material ordering.**  Collections on the
+  armature under Object Properties → DTS Shape.  The name table's *order* is
+  load-bearing — every name index in the file is an offset into it — which the
+  panel says and the reorder buttons respect.  Material slots are real
+  pointers rather than names, which also fixes the aliasing in §4: two
+  materials sharing a name can no longer be confused for each other.
+- **A node's stored rest transform.**  On the bone, under Bone Properties →
+  DTS Node, as the raw `Quat16` int16s the file holds.  It was a JSON dict on
+  the armature keyed by DTS node name, so a bone's own rest data lived
+  somewhere else under a name that is not always the bone's.  Clear
+  **Keep Imported Rest Transform** and the bone's matrix wins.  `props/node.py`
 - **Blend sequences.**  Import stores raw blend offsets in the pose, which is
   correct for export but does not look like the additive result the engine
   produces.  They are also the one case where both a rotation and a location
@@ -141,7 +157,7 @@ way to check your work short of re-reading the exported file.
   Scaling a pose bone now produces scale animation; it used to be a
   `dts_scale_anim` blob that the bone had no connection to.  Nothing shows you
   that a scale channel means *node* scale rather than object scale.
-  `mapping/sequences.py:162`
+  `mapping/sequences.py:176`
 - **Material maps beyond the diffuse texture** — bump, detail and
   reflectance/environment maps, plus `detail_scale` and `reflection_amount`.
   Round-trip as `dts_*` custom props on the material; the Principled BSDF the
@@ -227,7 +243,7 @@ or changes what renders:
   so a merge entry pointing at one has nothing left to name and is dropped with
   a warning — 15 of 61 entries on `weapon_energy_vehicle`'s first mesh.  The
   entries that survive are remapped exactly.  An unedited mesh still round-trips
-  the whole table through the payload. `mapping/blender_to_shape.py:638`
+  the whole table through the payload. `mapping/blender_to_shape.py:636`
 - **Decal faces that do not sit on the target mesh.**  A decal can only cover
   its target's own geometry, since the engine indexes the target's vertex
   array; a face moved off it is dropped with a warning.
@@ -244,7 +260,7 @@ or changes what renders:
   armature; its channels are dropped` — expected when applying a sequence to a
   different skeleton. `mapping/dsq.py:59`
 - **Bone channels with no DTS node.**  A bone you add in Blender animates
-  nothing on export. `mapping/sequences.py:303`, `mapping/dsq.py:179`
+  nothing on export. `mapping/sequences.py:297`, `mapping/dsq.py:179`
 - **Duplicate detail sizes for one object.**  `duplicate detail 'X' for object
   'Y'; 'Z' skipped`. `mapping/blender_to_shape.py:156`
 - **`dts_bump_map` and `dts_detail_map` on a material created in Blender.**
@@ -301,19 +317,29 @@ exist, so adding a bone channel marks its node instead of being ignored.
 
 ## 6. Not a DTS feature, but missing
 
-- No warning when a sequence carrying `dts_object_anim` is exported to `.dsq`
-  and loses it (§4).
-- No UI for any of the `dts_*` custom properties — they are edited through the
-  N-panel's Custom Properties, or Python.
+- No warning when a sequence's object-state tracks are exported to `.dsq` and
+  lost (§4).
+- **The scalar `dts_*` custom properties still have no panel.**  Detail sizes,
+  object names, billboard flags, material maps and the rest are edited through
+  the N-panel's Custom Properties.  That is a real place to edit them — which
+  the JSON tables never were — but it is not a designed one: no labels, no
+  ranges, no grouping.  The tables that needed a widget got one; these need a
+  layout, which is a smaller and separate job.
 - No authoring path for a shape built from scratch: sub-shapes, detail
   hierarchy and object states can only be *preserved*, not created, without
   hand-setting custom properties.
+- A scene saved by v1.2 or earlier converts on load (`props/migrate.py`), but
+  its **mesh payloads are discarded rather than unpickled** — deliberately, since
+  reading one would put `pickle.loads` back on a path fed by an arbitrary
+  `.blend`.  Strip packing, merge indices, material frames and cluster tables
+  are lost with it; re-import the `.dts` to recover them.  A note on the
+  armature says so, and export refuses while a legacy key is still present.
 
 ---
 
 ## Coverage
 
-`tests/blender/test_operators.py` (62 tests) covers the round-trip of every
+`tests/blender/test_operators.py` (69 tests) covers the round-trip of every
 "opaque" item above, plus visibility and decal export/reimport.  The remaining
 "blind" items are tested at the file level only — no test asserts a preview
 exists, because none does.  Most "dropped" items have no tests: they are known

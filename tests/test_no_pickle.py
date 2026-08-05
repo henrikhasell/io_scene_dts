@@ -14,14 +14,16 @@ Modelled on test_no_bpy.py, and scoped the same way: the files the manifest
 actually ships, not the analysis scripts or the tests.
 """
 
+import io
+import tokenize
 import tomllib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-SHIPPED_DIRS = ("dtslib", "mapping", "ops")
+SHIPPED_DIRS = ("dtslib", "mapping", "ops", "props", "ui")
 SHIPPED_FILES = ("__init__.py",)
 
-BANNED = ("import pickle", "from pickle", "pickle.loads", "pickle.dumps", "b64decode")
+BANNED = ("pickle", "b64decode")
 
 
 def shipped_python_files():
@@ -31,15 +33,38 @@ def shipped_python_files():
         yield from sorted((REPO / directory).rglob("*.py"))
 
 
+def code_names(path):
+    """(line, name) for every identifier in the file, skipping strings.
+
+    Tokenized rather than grepped so that prose can say the word: the migration
+    code explains at length why it does *not* unpickle the old payload, and a
+    substring scan would flag the explanation.
+    """
+    source = path.read_text()
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.NAME:
+            yield token.start[0], token.string
+
+
 def test_the_shipped_add_on_does_not_unpickle():
     for path in shipped_python_files():
-        for number, line in enumerate(path.read_text().splitlines(), 1):
-            code = line.split("#")[0]
-            for banned in BANNED:
-                assert banned not in code, (
-                    f"{path.relative_to(REPO)}:{number} uses {banned!r} -- "
-                    f"mesh data belongs in Blender data, not in a payload"
-                )
+        for number, name in code_names(path):
+            assert name not in BANNED, (
+                f"{path.relative_to(REPO)}:{number} refers to {name!r} in code -- "
+                f"mesh data belongs in Blender data, not in a payload"
+            )
+
+
+def test_the_scan_reads_code_and_not_prose(tmp_path):
+    """The scan has to be able to tell the two apart, or the guarantee it gives
+    is only that nobody mentioned pickling."""
+    prose = tmp_path / "prose.py"
+    prose.write_text('"""We deliberately never call pickle.loads here."""\nX = 1\n')
+    assert all(name not in BANNED for _, name in code_names(prose))
+
+    code = tmp_path / "code.py"
+    code.write_text("import pickle\n")
+    assert any(name in BANNED for _, name in code_names(code))
 
 
 def test_the_scan_covers_what_the_manifest_ships():

@@ -1034,6 +1034,222 @@ def test_lod_sharing_degrades_when_a_level_stops_nesting():
         assert parent.verts[: len(child.verts)] == child.verts, (parent_index, child_index)
 
 
+def test_shape_tables_are_editable_collections():
+    """Four shape tables were JSON strings on the armature — present in the UI
+    and unusable from it."""
+    _reset()
+    arm = _import_dts("v22_energy_explosion.dts")
+    src = read_shape_file(FIXTURES / "v22_energy_explosion.dts")
+    props = arm.dts_shape
+
+    assert props.is_shape
+    assert [n.name for n in props.names] == list(src.names)
+    assert len(props.details) == len(src.details)
+    assert [d.name for d in props.details] == [src.name(d.name_index) for d in src.details]
+    assert len(props.ifl_materials) == len(src.ifl_materials) == 1
+    assert props.ifl_materials[0].name == src.name(src.ifl_materials[0].raw[0])
+    assert props.ifl_materials[0].num_frames == src.ifl_materials[0].raw[4]
+    assert len(props.material_order) == len(src.materials)
+    # pointers, not names: a name is not unique in a real shape
+    assert all(ref.material is not None for ref in props.material_order)
+
+    for key in ("dts_names_order", "dts_details", "dts_materials_order",
+                "dts_ifl_materials", "dts_node_transforms"):
+        assert key not in arm.keys(), key
+
+
+def test_editing_a_detail_size_reaches_the_file():
+    _reset()
+    arm = _import_dts("v24_ammo.dts")
+    details = arm.dts_shape.details
+    target = next(d for d in details if d.size > 0)
+    target.size = 77.0
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
+    dst = read_shape_file(out)
+    assert 77.0 in [d.size for d in dst.details], [d.size for d in dst.details]
+
+
+def test_sequence_tables_are_editable_collections():
+    _reset()
+    _import_dts("v23_pack_upgrade_shield.dts")
+    src = read_shape_file(FIXTURES / "v23_pack_upgrade_shield.dts")
+
+    checked = 0
+    for seq in src.sequences:
+        action = bpy.data.actions.get(src.name(seq.name_index))
+        if action is None:
+            continue
+        props = action.dts_sequence_props
+        assert len(props.ground) == min(
+            seq.num_ground_frames, max(0, len(src.ground_translations) - seq.first_ground_frame)
+        )
+        assert len(props.triggers) == seq.num_triggers
+        checked += 1
+        for key in ("dts_ground", "dts_triggers", "dts_ifl_matters"):
+            assert key not in action.keys(), key
+    assert checked
+
+
+def test_a_trigger_can_be_authored():
+    """Exactly one sequence in the 630-shape corpus has a trigger, so adding
+    one is the case that matters.  The packed U32 comes apart into a state
+    number and two flags, so the numbers in the UI are the format's own."""
+    _reset()
+    _import_dts("v24_woodDoor01.dts")
+    action = next(a for a in bpy.data.actions if a.get("dts_sequence"))
+    assert len(action.dts_sequence_props.triggers) == 0
+
+    trigger = action.dts_sequence_props.triggers.add()
+    trigger.state = 7
+    trigger.on = True
+    trigger.invert_on_reverse = True
+    trigger.pos = 0.25
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
+    dst = read_shape_file(out)
+    assert dst.triggers
+    state = dst.triggers[0].state
+    assert state & 0x3FFFFFFF == 1 << 6, hex(state)  # state 7 is bit 6
+    assert state & (1 << 31), "on bit lost"
+    assert state & (1 << 30), "invert-on-reverse bit lost"
+    assert abs(dst.triggers[0].pos - 0.25) < 1e-6
+
+
+def test_legacy_blend_migrates():
+    """A scene saved by an older version keeps working: the blobs convert and
+    the pickled payload is discarded rather than unpickled."""
+    from io_scene_dts.props import migrate
+
+    _reset()
+    bpy.ops.object.armature_add()
+    arm = bpy.context.object
+    arm["dts_names_order"] = json.dumps(["base", "detail2"])
+    arm["dts_details"] = json.dumps([["detail2", 0, 0, 2.0, -1.0, -1.0, 8]])
+    arm["dts_materials_order"] = json.dumps([])
+    arm["dts_ifl_materials"] = json.dumps(
+        [{"name": "flame.ifl", "raw": [0, 1, 2, 0, 5]}]
+    )
+    bone = arm.data.bones[0]
+    bone["dts_name"] = "Bone"
+    arm["dts_node_transforms"] = json.dumps({"Bone": [[1, 2, 3, 32767], [0.0, 1.0, 0.0]]})
+
+    action = bpy.data.actions.new("Legacy")
+    action["dts_sequence"] = True
+    action["dts_triggers"] = json.dumps([[(1 << 3) | (1 << 31), 0.5]])
+    action["dts_ground"] = json.dumps([[[1.0, 0.0, 0.0], [0, 0, 0, 32767]]])
+    action["dts_keyframes"] = 4
+
+    bpy.ops.mesh.primitive_cube_add()
+    mesh_obj = bpy.context.object
+    mesh_obj["dts_source_payload"] = "not-actually-a-pickle"
+    mesh_obj["dts_strict_freeze"] = True
+
+    report = migrate.migrate_all()
+    assert report
+
+    props = arm.dts_shape
+    assert props.is_shape
+    assert [n.name for n in props.names] == ["base", "detail2"]
+    assert len(props.details) == 1 and props.details[0].poly_count == 8
+    assert props.ifl_materials[0].name == "flame.ifl"
+    assert bone.dts_node.use_stored
+    assert tuple(bone.dts_node.stored_rotation) == (1, 2, 3, 32767)
+
+    seq_props = action.dts_sequence_props
+    assert len(seq_props.triggers) == 1
+    assert seq_props.triggers[0].state == 4  # bit 3
+    assert seq_props.triggers[0].on
+    assert len(seq_props.ground) == 1
+
+    # every legacy key is consumed, so the two forms cannot disagree
+    assert not migrate.legacy_keys_present(), migrate.legacy_keys_present()
+    # and the payload went without being read
+    assert "dts_source_payload" not in mesh_obj.keys()
+    assert any("discarded rather than unpickled" in line for line in report)
+
+    # idempotent
+    assert migrate.migrate_all() == []
+
+
+def _dts_panels():
+    from io_scene_dts.ui import panels
+
+    return panels.CLASSES
+
+
+def test_every_panel_polls_and_draws():
+    """A panel that raises in draw() is worse than no panel: Blender swallows
+    the error into the console and leaves a blank region.  Nothing here checks
+    the layout is *good*, only that it runs against the states it will meet."""
+
+    class _Layout:
+        """Records calls instead of drawing, so draw() can run headless."""
+
+        def __getattr__(self, name):
+            def call(*args, **kwargs):
+                return _Layout()
+
+            return call
+
+        def __setattr__(self, name, value):
+            pass
+
+    class _Context:
+        def __init__(self, obj=None, bone=None):
+            self.object = obj
+            self.bone = bone
+            self.active_nla_strip = None
+
+    _reset()
+    empty = _Context()
+    for panel in _dts_panels():
+        assert panel.poll(empty) in (True, False)
+
+    arm = _import_dts("v23_pack_upgrade_shield.dts")
+    bone = arm.data.bones[0]
+    ctx = _Context(arm, bone)
+    class _Self:
+        """A Panel subclass cannot be instantiated outside Blender's own
+        registration, but draw() is a plain function; it only wants a `layout`."""
+
+        layout = _Layout()
+
+    drawn = 0
+    for panel in _dts_panels():
+        if not panel.poll(ctx):
+            continue
+        panel.draw(_Self(), ctx)
+        drawn += 1
+    assert drawn >= 5, drawn
+
+
+def test_the_list_operators_reach_their_collections():
+    _reset()
+    arm = _import_dts("v24_ammo.dts")
+    bpy.context.view_layer.objects.active = arm
+    before = len(arm.dts_shape.details)
+
+    assert bpy.ops.io_scene_dts.list_add(path="object.dts_shape.details") == {"FINISHED"}
+    assert len(arm.dts_shape.details) == before + 1
+    assert bpy.ops.io_scene_dts.list_remove(path="object.dts_shape.details") == {"FINISHED"}
+    assert len(arm.dts_shape.details) == before
+
+    # order is load-bearing in the name table, so moving has to work
+    arm.dts_shape.names_index = 1
+    first = [n.name for n in arm.dts_shape.names]
+    assert bpy.ops.io_scene_dts.list_move(
+        path="object.dts_shape.names", direction="UP"
+    ) == {"FINISHED"}
+    after = [n.name for n in arm.dts_shape.names]
+    assert after[0] == first[1] and after[1] == first[0], (first[:3], after[:3])
+
+    # a path that names nothing is refused rather than raising
+    assert bpy.ops.io_scene_dts.list_remove(path="object.dts_shape.nope") == {"CANCELLED"}
+
+
 def test_ifl_preserved():
     _reset()
     _import_dts("v22_energy_explosion.dts")
@@ -1737,7 +1953,7 @@ def test_scale_animation_rides_the_bone_scale_channels():
     assert src_seq.animates_aligned_scale()
 
     action = next(a for a in bpy.data.actions if a.name == src.name(src_seq.name_index))
-    assert action.get("dts_scale_mode") == "ALIGNED"
+    assert action.dts_sequence_props.scale_mode == "ALIGNED"
     scale_curves = [fc for fc in _iter_fcurves(action) if fc.data_path.endswith(".scale")]
     assert len(scale_curves) == 3, len(scale_curves)
     assert "dts_scale_anim" not in action.keys()
@@ -1763,7 +1979,9 @@ def test_editing_a_scale_key_reaches_the_file():
 
     _reset()
     _import_dts("v22_disc.dts")
-    action = next(a for a in bpy.data.actions if a.get("dts_scale_mode"))
+    action = next(
+        a for a in bpy.data.actions if a.dts_sequence_props.scale_mode != "NONE"
+    )
     for fcurve in _iter_fcurves(action):
         if fcurve.data_path.endswith(".scale") and fcurve.array_index == 0:
             for point in fcurve.keyframe_points:

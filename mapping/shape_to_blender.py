@@ -25,6 +25,7 @@ import bpy
 from mathutils import Matrix, Vector
 
 from ..dtslib import Shape
+from ..props.shape import SCHEMA_VERSION
 from ..dtslib.types import (
     DECAL_MESH,
     MESH_BILLBOARD,
@@ -74,6 +75,7 @@ def shape_to_blender(
     scene_coll.objects.link(arm_obj)
     context.view_layer.objects.active = arm_obj
     _fill_armature_bones(shape, arm_obj)
+    _store_node_transforms(shape, arm_obj)
 
     bone_name_by_node = {
         int(b["dts_node_index"]): b.name for b in arm_obj.data.bones if "dts_node_index" in b
@@ -157,47 +159,12 @@ def shape_to_blender(
     # the name table order is load-bearing: every name_index in the file is an
     # offset into it, and the source order (details, then nodes, then objects)
     # is not the order the exporter would rebuild it in
-    arm_obj["dts_names_order"] = json.dumps(list(shape.names))
-    # Node rest transforms as stored, keyed by DTS node name.  A quaternion and
-    # its negation are the same rotation, and the bone-matrix round-trip picks
-    # a sign freely, so re-deriving these rewrites bits without changing the
-    # pose; the export prefers these whenever the bone still agrees with them.
-    arm_obj["dts_node_transforms"] = json.dumps(
-        {
-            shape.node_name(i): [
-                [q.x, q.y, q.z, q.w],
-                list(shape.default_translations[i]),
-            ]
-            for i, q in enumerate(shape.default_rotations)
-        }
-    )
+    _store_shape_tables(arm_obj, shape)
+    _store_material_order(arm_obj, bmats)
     arm_obj["dts_smallest_visible_size"] = shape.smallest_visible_size
     arm_obj["dts_smallest_visible_dl"] = shape.smallest_visible_dl
     arm_obj["dts_exporter_version"] = shape.exporter_version
-    # full detail table (details can exist with no geometry at all).  The
-    # trailing error/poly-count fields are LOD selection metadata the add-on
-    # cannot recompute, so they ride along; readers of the 4-element form
-    # written by earlier versions still work.
-    arm_obj["dts_details"] = json.dumps(
-        [
-            [
-                shape.name(d.name_index),
-                d.sub_shape_num,
-                d.object_detail_num,
-                d.size,
-                d.average_error,
-                d.max_error,
-                d.poly_count,
-            ]
-            for d in shape.details
-        ]
-    )
-    # material list order — map slots and IFL entries index into it
-    arm_obj["dts_materials_order"] = json.dumps([m.name for m in shape.materials])
-    if shape.ifl_materials:
-        arm_obj["dts_ifl_materials"] = json.dumps(
-            [{"name": shape.name(m.raw[0]), "raw": list(m.raw)} for m in shape.ifl_materials]
-        )
+
     if shape.decals:
         n_decals, n_meshes = import_decals(
             shape,
@@ -249,6 +216,61 @@ def shape_to_blender(
     return arm_obj, warnings
 
 
+def _store_shape_tables(arm_obj, shape: Shape) -> None:
+    """The shape-wide tables, as editable collections on the armature.
+
+    All four used to be JSON strings.  They are lists of records, which is what
+    a CollectionProperty is for; ui/panels.py puts a UIList on each.
+    """
+    props = arm_obj.dts_shape
+    props.is_shape = True
+    props.schema_version = SCHEMA_VERSION
+
+    # the name table order is load-bearing: every name_index in the file is an
+    # offset into it, and the source order (details, then nodes, then objects)
+    # is not the order the exporter would rebuild it in
+    props.names.clear()
+    for name in shape.names:
+        props.names.add().name = name
+
+    # details can exist with no geometry at all (an empty collision level), so
+    # the table is kept rather than derived from the objects.  The trailing
+    # error/poly-count fields are LOD selection metadata the add-on cannot
+    # recompute, so they ride along.
+    props.details.clear()
+    for detail in shape.details:
+        item = props.details.add()
+        item.name = shape.name(detail.name_index)
+        item.sub_shape_num = detail.sub_shape_num
+        item.object_detail_num = detail.object_detail_num
+        item.size = detail.size
+        item.average_error = detail.average_error
+        item.max_error = detail.max_error
+        item.poly_count = detail.poly_count
+
+    props.ifl_materials.clear()
+    for ifl in shape.ifl_materials:
+        item = props.ifl_materials.add()
+        item.name = shape.name(ifl.raw[0])
+        item.material_slot = ifl.raw[1]
+        item.first_frame = ifl.raw[2]
+        item.first_frame_off_time = ifl.raw[3]
+        item.num_frames = ifl.raw[4]
+
+
+def _store_material_order(arm_obj, bmats) -> None:
+    """Material list order, as real pointers.
+
+    Map slots and IFL entries index into this list, so unused materials have to
+    survive too.  Pointers rather than names because names are not unique in
+    real shapes -- 104 of the 630 corpus files reuse one.
+    """
+    props = arm_obj.dts_shape
+    props.material_order.clear()
+    for bmat in bmats:
+        props.material_order.add().material = bmat
+
+
 def _parent_like(bobj, target_obj, keep_transform: bool = False) -> None:
     """Hang a decal object off whatever its target hangs off.
 
@@ -289,6 +311,23 @@ def _build_armature(shape: Shape, name: str, context) -> bpy.types.Object:
     arm = bpy.data.armatures.new(name)
     arm_obj = bpy.data.objects.new(name, arm)
     return arm_obj
+
+
+def _store_node_transforms(shape: Shape, arm_obj) -> None:
+    """The quantized rest transform, on the bone it describes.
+
+    A quaternion and its negation are the same rotation, and the bone-matrix
+    round trip picks a sign freely, so re-deriving these rewrites bits without
+    changing the pose.  Export prefers them while the bone still agrees.
+    """
+    for bone in arm_obj.data.bones:
+        index = bone.get("dts_node_index")
+        if index is None or not 0 <= int(index) < len(shape.default_rotations):
+            continue
+        q = shape.default_rotations[int(index)]
+        bone.dts_node.use_stored = True
+        bone.dts_node.stored_rotation = (q.x, q.y, q.z, q.w)
+        bone.dts_node.stored_translation = tuple(shape.default_translations[int(index)])
 
 
 def _fill_armature_bones(shape: Shape, arm_obj: bpy.types.Object) -> None:
