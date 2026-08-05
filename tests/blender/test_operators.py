@@ -893,6 +893,99 @@ def test_only_fractional_tracks_get_alpha_materials():
                                 f"{name} is binary; {slot.material.name} should stay opaque"
 
 
+def _file_default_vis(shape):
+    """{object name: resting vis} — the first len(objects) states are defaults."""
+    return {
+        shape.name(obj.name_index): shape.object_states[i].vis
+        for i, obj in enumerate(shape.objects)
+        if i < len(shape.object_states)
+    }
+
+
+def _file_vis_tracks(shape):
+    """{sequence name: {object name: [vis per keyframe]}} as the file stores it."""
+    out = {}
+    for seq in shape.sequences:
+        n = seq.num_keyframes
+        tracks = {}
+        for oi in seq.vis_matters.indices():
+            if oi >= len(shape.objects):
+                continue
+            base = seq.base_object_state + seq.vis_matters.ordinal_of(oi) * n
+            tracks[shape.name(shape.objects[oi].name_index)] = [
+                shape.object_states[base + kf].vis for kf in range(n)
+            ]
+        if tracks:
+            out[shape.name(seq.name_index).lower()] = tracks
+    return out
+
+
+def _vis_keyframes(action, dts_object_name):
+    from io_scene_dts.mapping.visibility import vis_path
+
+    path = vis_path(dts_object_name)
+    fc = next((f for f in _fcurves(action) if f.data_path == path), None)
+    return None if fc is None else [kp.co[1] for kp in fc.keyframe_points]
+
+
+def test_visibility_survives_export_and_reimport():
+    """Resting object states and animated vis tracks must round-trip.
+
+    The importer only previews what the file already said; the file is what
+    has to come back.  v22_disc hides four of its five objects at rest and
+    fades them in, and the cloaking pack fades four objects over 40 keyframes.
+    """
+    from io_scene_dts.mapping.visibility import vis_prop
+
+    for fixture in ("v22_disc.dts", "v23_pack_upgrade_cloaking.dts"):
+        _reset()
+        _import_dts(fixture)
+        out = _tmp(".dts")
+        res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="24")
+        assert res == {"FINISHED"}, (fixture, res)
+
+        src = read_shape_file(FIXTURES / fixture)
+        dst = read_shape_file(out)
+
+        # resting state: defaulting these to 1.0 would draw every hidden mesh
+        src_def, dst_def = _file_default_vis(src), _file_default_vis(dst)
+        assert set(dst_def) == set(src_def), fixture
+        for name, vis in src_def.items():
+            assert abs(dst_def[name] - vis) < 1e-6, (fixture, name, dst_def[name], vis)
+        assert any(v == 0.0 for v in src_def.values()), f"{fixture} tests nothing"
+
+        # animated tracks, keyframe for keyframe
+        src_tracks, dst_tracks = _file_vis_tracks(src), _file_vis_tracks(dst)
+        assert set(dst_tracks) == set(src_tracks), fixture
+        for seq_name, objects in src_tracks.items():
+            assert set(dst_tracks[seq_name]) == set(objects), (fixture, seq_name)
+            for obj_name, track in objects.items():
+                got = dst_tracks[seq_name][obj_name]
+                assert len(got) == len(track), (fixture, seq_name, obj_name)
+                for kf, (a, b) in enumerate(zip(track, got)):
+                    assert abs(a - b) < 1e-6, (fixture, seq_name, obj_name, kf, a, b)
+        assert src_tracks, f"{fixture} has no vis tracks"
+
+        # and the exported file must import back into a working preview
+        _reset()
+        assert bpy.ops.io_scene_dts.import_dts(filepath=out) == {"FINISHED"}
+        arm = _armature()
+        # the scene was reset, so no action needed a dedup suffix
+        actions = {a.name.lower(): a for a in bpy.data.actions if a.get("dts_sequence")}
+        for seq_name, objects in src_tracks.items():
+            action = actions.get(seq_name)
+            assert action is not None, (fixture, seq_name, sorted(actions))
+            for obj_name, track in objects.items():
+                keys = _vis_keyframes(action, obj_name)
+                assert keys is not None, (fixture, seq_name, obj_name)
+                assert len(keys) == len(track)
+                for kf, (a, b) in enumerate(zip(track, keys)):
+                    assert abs(a - b) < 1e-5, (fixture, seq_name, obj_name, kf, a, b)
+        for name, vis in src_def.items():
+            if name in {o for objs in src_tracks.values() for o in objs}:
+                assert abs(arm[vis_prop(name)] - vis) < 1e-6, (fixture, name)
+
+
 def test_visibility_drivers_are_not_duplicated_on_reimport():
     _reset()
     arm = _import_dts("v23_pack_upgrade_shield.dts")
