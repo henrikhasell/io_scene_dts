@@ -39,6 +39,7 @@ from ..dtslib.types import (
     STANDARD_MESH,
 )
 
+from ..props import migrate
 from . import matframes
 from .decals import blender_lookup_of, build_decals
 from .materials import materials_from_blender
@@ -64,6 +65,19 @@ def blender_to_shape(
     reset_material_cache()
     warnings: list[str] = []
     shape = Shape()
+
+    # A scene from v1.2 or earlier converts on load, but the handler only fires
+    # when a file is *opened* with the add-on already enabled.  Enable it
+    # afterwards and the old keys are still there, unread -- which would export
+    # a shape missing its name table, details and IFL entries without saying so.
+    stale = migrate.legacy_keys_present()
+    if stale:
+        raise ExportError(
+            f"this scene still holds data from an older version of the add-on "
+            f"({', '.join(stale[:3])}{'...' if len(stale) > 3 else ''}). Run "
+            f"Object > DTS > Convert DTS Data From an Older Version "
+            f"(io_scene_dts.migrate_scene) first"
+        )
 
     # seed the name table in its original order so every add_name() below
     # resolves to the source index; names for anything added in Blender still

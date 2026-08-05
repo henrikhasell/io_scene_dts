@@ -17,7 +17,11 @@ import bpy
 
 from ..dtslib.types import (
     MAT_ADDITIVE,
+    MAT_BUMP_MAP_ONLY,
+    MAT_DETAIL_MAP_ONLY,
+    MAT_IFL_FRAME,
     MAT_IFL_MATERIAL,
+    MAT_MIP_MAP_ZERO_BORDER,
     MAT_NEVER_ENV_MAP,
     MAT_NO_MIP_MAP,
     MAT_REFLECTANCE_MAP_ONLY,
@@ -32,6 +36,14 @@ from ..dtslib.types import (
 
 _TEXTURE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tga", ".dds")
 
+# Every defined bit of the material flags word, each with its own checkbox.
+#
+# There used to be a packed `dts_flags` beside these holding whatever had no
+# named property -- four bits nobody had named, plus a copy of the ten that
+# were.  That is two sources for one value, and it came with its own bug:
+# Blender's integer ID-properties are a C int, so MAT_REFLECTANCE_MAP_ONLY
+# (1 << 31) could not be stored in it at all and needed a special case.  With
+# every bit named, the word is assembled on export and nothing is packed.
 _FLAG_PROPS = {
     "dts_s_wrap": MAT_S_WRAP,
     "dts_t_wrap": MAT_T_WRAP,
@@ -41,16 +53,13 @@ _FLAG_PROPS = {
     "dts_self_illuminating": MAT_SELF_ILLUMINATING,
     "dts_never_env_map": MAT_NEVER_ENV_MAP,
     "dts_no_mip_map": MAT_NO_MIP_MAP,
+    "dts_mip_map_zero_border": MAT_MIP_MAP_ZERO_BORDER,
     "dts_ifl_material": MAT_IFL_MATERIAL,
-    # bit 31, and the only flag that cannot live in dts_flags -- see below
+    "dts_ifl_frame": MAT_IFL_FRAME,
+    "dts_detail_map_only": MAT_DETAIL_MAP_ONLY,
+    "dts_bump_map_only": MAT_BUMP_MAP_ONLY,
     "dts_reflectance_map_only": MAT_REFLECTANCE_MAP_ONLY,
 }
-
-# Blender's integer ID-properties are a C int, so anything past INT_MAX raises
-# OverflowError on assignment.  MAT_REFLECTANCE_MAP_ONLY (1 << 31) is the only
-# material flag above that line; it is masked out of the stored word and
-# carried by its checkbox instead, which _flags_from_blender ORs back in.
-_FLAGS_PROP_MASK = 0x7FFFFFFF
 
 # derived from the shader, not the props -- see blend_flags_from_material
 _BLEND_BITS = MAT_TRANSLUCENT | MAT_ADDITIVE | MAT_SUBTRACTIVE
@@ -345,7 +354,6 @@ def material_to_blender(
     # names are not unique in real shapes (the same texture can appear twice
     # with different flags), so the index is the only reliable identity
     bmat["dts_material_index"] = index
-    bmat["dts_flags"] = mat.flags & _FLAGS_PROP_MASK
     for prop, bit in _FLAG_PROPS.items():
         bmat[prop] = bool(mat.flags & bit)
     bmat["dts_detail_scale"] = mat.detail_scale
@@ -379,13 +387,12 @@ def material_to_blender(
 
 
 def _flags_from_blender(bmat: bpy.types.Material) -> int:
-    if "dts_flags" in bmat:
-        flags = int(bmat["dts_flags"])
-        for prop, bit in _FLAG_PROPS.items():
-            if prop in bmat:  # checkbox props override the packed word
-                flags = (flags | bit) if bmat[prop] else (flags & ~bit)
-    else:
+    # a material created in Blender rather than imported has no flag props at
+    # all; wrapping in both directions is the engine-safe default
+    if not any(prop in bmat for prop in _FLAG_PROPS):
         flags = MAT_S_WRAP | MAT_T_WRAP
+    else:
+        flags = 0
         for prop, bit in _FLAG_PROPS.items():
             if bmat.get(prop):
                 flags |= bit
@@ -402,8 +409,6 @@ def _sync_blend_props(bmat, flags: int) -> None:
         ("dts_subtractive", MAT_SUBTRACTIVE),
     ):
         bmat[prop] = bool(flags & bit)
-    if "dts_flags" in bmat:
-        bmat["dts_flags"] = flags & _FLAGS_PROP_MASK
 
 
 def materials_from_blender(bmats: list[bpy.types.Material]) -> tuple[list[Material], list[str]]:

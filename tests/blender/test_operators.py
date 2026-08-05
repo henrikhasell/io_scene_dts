@@ -393,8 +393,9 @@ def test_reflectance_map_only_survives_the_int_prop_limit():
 
     No corpus shape sets it, so the fixture is synthesised: assigning the raw
     flags word used to raise OverflowError out of the import operator and leave
-    a half-built scene.  The bit now rides in dts_reflectance_map_only while
-    dts_flags keeps the low 31.
+    a half-built scene.  With every flag bit named, there is no packed word for
+    it to overflow -- the checkbox is the only storage, and the limit is gone
+    rather than worked around.
     """
     from io_scene_dts.dtslib.types import MAT_REFLECTANCE_MAP_ONLY
     from io_scene_dts.dtslib.writer import write_shape_file
@@ -411,12 +412,73 @@ def test_reflectance_map_only_survives_the_int_prop_limit():
     assert res == {"FINISHED"}, res
 
     bmat = next(m for m in bpy.data.materials if m.get("dts_name") == src.materials[0].name)
-    assert bmat["dts_flags"] == src_flags & 0x7FFFFFFF, hex(bmat["dts_flags"])
     assert bmat["dts_reflectance_map_only"], "bit 31 lost on import"
+    assert "dts_flags" not in bmat.keys(), "the packed word is gone"
 
     out = _tmp(".dts")
     assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
     assert read_shape_file(out).materials[0].flags == src_flags, "bit 31 lost on export"
+
+
+def test_every_material_flag_bit_has_a_checkbox():
+    """Four bits used to survive only inside the packed dts_flags word:
+    MIP_MAP_ZERO_BORDER, IFL_FRAME, DETAIL_MAP_ONLY and BUMP_MAP_ONLY.  None
+    occurs in the corpus, so setting one meant computing an integer by hand."""
+    from io_scene_dts.dtslib.types import (
+        MAT_BUMP_MAP_ONLY,
+        MAT_DETAIL_MAP_ONLY,
+        MAT_IFL_FRAME,
+        MAT_MIP_MAP_ZERO_BORDER,
+    )
+    from io_scene_dts.dtslib.writer import write_shape_file
+
+    bits = {
+        "dts_mip_map_zero_border": MAT_MIP_MAP_ZERO_BORDER,
+        "dts_ifl_frame": MAT_IFL_FRAME,
+        "dts_detail_map_only": MAT_DETAIL_MAP_ONLY,
+        "dts_bump_map_only": MAT_BUMP_MAP_ONLY,
+    }
+
+    _reset()
+    src = read_shape_file(FIXTURES / "v24_shrub.dts")
+    for bit in bits.values():
+        src.materials[0].flags |= bit
+    want = src.materials[0].flags
+    seeded = _tmp(".dts")
+    write_shape_file(src, seeded, version=24)
+
+    assert bpy.ops.io_scene_dts.import_dts(filepath=seeded) == {"FINISHED"}
+    bmat = next(m for m in bpy.data.materials if m.get("dts_name") == src.materials[0].name)
+    for prop in bits:
+        assert bmat.get(prop), f"{prop} lost on import"
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
+    got = read_shape_file(out).materials[0].flags
+    for prop, bit in bits.items():
+        assert got & bit, f"{prop} lost on export"
+    assert got == want, (hex(want), hex(got))
+
+
+def test_export_refuses_a_scene_that_has_not_been_converted():
+    """The load_post handler only fires when a file is opened with the add-on
+    already enabled.  Enable it afterwards and the legacy keys are still there,
+    unread -- exporting then would drop the name table and details silently."""
+    _reset()
+    arm = _import_dts("v24_ammo.dts")
+    arm["dts_names_order"] = json.dumps(["stale"])
+
+    out = _tmp(".dts")
+    try:
+        res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="24")
+        assert res == {"CANCELLED"}, res
+    except RuntimeError as exc:
+        assert "older version of the add-on" in str(exc), str(exc)
+
+    from io_scene_dts.props import migrate
+
+    migrate.migrate_all()
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
 
 
 def _mat_by_index(index):
@@ -1198,9 +1260,10 @@ def test_every_panel_polls_and_draws():
             pass
 
     class _Context:
-        def __init__(self, obj=None, bone=None):
+        def __init__(self, obj=None, bone=None, material=None):
             self.object = obj
             self.bone = bone
+            self.material = material
             self.active_nla_strip = None
 
     _reset()
@@ -1210,7 +1273,10 @@ def test_every_panel_polls_and_draws():
 
     arm = _import_dts("v23_pack_upgrade_shield.dts")
     bone = arm.data.bones[0]
-    ctx = _Context(arm, bone)
+    mesh = next(o for o in bpy.context.scene.objects if "dts_object_name" in o)
+    material = next(m for m in bpy.data.materials if "dts_name" in m)
+    contexts = [_Context(arm, bone), _Context(mesh), _Context(mesh, material=material)]
+
     class _Self:
         """A Panel subclass cannot be instantiated outside Blender's own
         registration, but draw() is a plain function; it only wants a `layout`."""
@@ -1218,12 +1284,13 @@ def test_every_panel_polls_and_draws():
         layout = _Layout()
 
     drawn = 0
-    for panel in _dts_panels():
-        if not panel.poll(ctx):
-            continue
-        panel.draw(_Self(), ctx)
-        drawn += 1
-    assert drawn >= 5, drawn
+    for ctx in contexts:
+        for panel in _dts_panels():
+            if not panel.poll(ctx):
+                continue
+            panel.draw(_Self(), ctx)
+            drawn += 1
+    assert drawn >= 8, drawn
 
 
 def test_the_list_operators_reach_their_collections():

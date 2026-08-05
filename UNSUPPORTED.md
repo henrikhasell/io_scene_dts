@@ -164,12 +164,13 @@ way to check your work short of re-reading the exported file.
   importer builds ignores all of them.  A map referencing a material that was
   not exported is dropped with a warning. `mapping/materials.py:351,437`
   Two further ways a map slot can be lost or silently retargeted are in §4.
-- **Four material flag bits have no named property.**  `_FLAG_PROPS` gives a
-  boolean checkbox to ten of the fourteen flags; `MAT_MIP_MAP_ZERO_BORDER` (8),
-  `MAT_IFL_FRAME` (28), `MAT_DETAIL_MAP_ONLY` (29) and `MAT_BUMP_MAP_ONLY` (30)
-  survive only inside the packed `dts_flags` word.  They import and export
-  correctly, but setting one means computing an integer by hand.  None of the
-  four occurs anywhere in the 630-file corpus. `mapping/materials.py:35`
+- **Material flags.**  All fourteen bits have a checkbox, in Material
+  Properties → DTS Material.  Four of them —`MAT_MIP_MAP_ZERO_BORDER` (8),
+  `MAT_IFL_FRAME` (28), `MAT_DETAIL_MAP_ONLY` (29) and `MAT_BUMP_MAP_ONLY`
+  (30) — used to survive only inside a packed `dts_flags` word, so setting one
+  meant computing an integer by hand.  None of the four occurs anywhere in the
+  630-file corpus.  Nothing previews what any of them does.
+  `mapping/materials.py:47`
 - **Subtractive materials preview only approximately.**  EEVEE has no
   subtractive blend mode.  `MAT_SUBTRACTIVE` is encoded as the additive graph
   with the emission colour inverted — this add-on's own convention, chosen so
@@ -177,13 +178,7 @@ way to check your work short of re-reading the exported file.
   does not render the way the engine draws it.  No shape in the 630-file corpus
   is subtractive, so the encoding has never been checked against real art.
   `mapping/materials.py:226`
-- **`dts_flags` holds the low 31 bits only.**  Blender's integer
-  ID-properties are a C `int`, so a word past `INT_MAX` cannot be assigned at
-  all.  `MAT_REFLECTANCE_MAP_ONLY` (1 << 31) is the one material flag above
-  that line: it is masked out of the stored word and carried by its
-  `dts_reflectance_map_only` checkbox, which `_flags_from_blender` ORs back in.
-  Read `dts_flags` as the full word and you will be wrong about that one bit.
-  `mapping/materials.py:53,348`
+
 
 All three object-state channels — `vis`, `frame` and `matframe` — plus decal
 states are keyframed on the armature and **read back off those curves on
@@ -200,7 +195,7 @@ see the README.  Both are still blind in one direction: see §4.
 carried by the shader the importer builds — `surface_render_method` for
 translucency, `Transparent BSDF + Emission -> Add Shader` for additive — and
 export reads the flags back out of it, so editing the material in the node
-editor changes the file. `mapping/materials.py:309`
+editor changes the file. `mapping/materials.py:318`
 
 Two caveats specific to decals, neither of which occurs in the Tribes 2 corpus
 or changes what renders:
@@ -255,7 +250,7 @@ or changes what renders:
   DSQ path alone.
 - **`frame_*` shape keys on a skinned mesh.**  `'X': frame_* shape keys on a
   skin are not supported; ignored` — DTS cannot combine vertex animation with
-  skinning. `mapping/blender_to_shape.py:645`
+  skinning. `mapping/blender_to_shape.py:650`
 - **DSQ channels for nodes the armature lacks.**  `DSQ node 'X' not found in
   armature; its channels are dropped` — expected when applying a sequence to a
   different skeleton. `mapping/dsq.py:59`
@@ -271,13 +266,13 @@ or changes what renders:
   exports as `bump=NO_MAP, detail=NO_MAP`, with no warning.  Adding
   `dts_reflectance_map` as well makes all three take effect; imported materials
   always carry all three, so they are unaffected.
-  `mapping/materials.py:445`
+  `mapping/materials.py:450`
 - **The identity of a map target whose name is not unique.**  Map slots are
   stored as material *names* so they survive reordering, and resolved back
   through `index_by_name = {m.name.lower(): i ...}`, where a later entry
   overwrites an earlier one.  Material names are not unique in real shapes —
   the importer says so itself, and keys material identity on
-  `dts_material_index` for that reason (`mapping/materials.py:347`) — so a slot
+  `dts_material_index` for that reason (`mapping/materials.py:356`) — so a slot
   pointing at the *first* of two materials named `glass` comes back pointing at
   the last, silently.  104 of the 630 corpus shapes have duplicate material
   names, but none of them has a map slot targeting a duplicated name, so no
@@ -298,12 +293,14 @@ exist, so adding a bone channel marks its node instead of being ignored.
 - **Detail sizes.**  Taken from the object-name suffix (`shape2`, `shape32`,
   `collision-1`), with `dts_*` custom props overriding.  Renaming a collection
   does nothing.
-- **Material flags, except the three blend bits.**  The `dts_*` boolean props
-  are authoritative for wrapping, self-illumination, env-mapping, mip-mapping
-  and the IFL bits; the Blender shader has no bearing on them.
-  `MAT_TRANSLUCENT`, `MAT_ADDITIVE` and `MAT_SUBTRACTIVE` are no longer on this
-  list — they are read off the material, and their props are rewritten to match
-  on export. `mapping/materials.py:393`
+- **Material flags, except the three blend bits.**  The checkboxes are
+  authoritative for wrapping, self-illumination, env-mapping, mip-mapping and
+  the IFL bits; the Blender shader has no bearing on them, so a material that
+  looks unlit still exports as self-illuminating if the box is ticked.
+  `MAT_TRANSLUCENT`, `MAT_ADDITIVE` and `MAT_SUBTRACTIVE` are not on this list
+  — they are read off the shader, and the boxes are rewritten to match on
+  export, which is why the panel shows those three greyed out.
+  `mapping/materials.py:389`
 - **The blend state of a material that fades.**  The visibility and decal
   wiring force `surface_render_method = BLENDED` so a fade renders at all,
   which on an opaque material would otherwise read back as `MAT_TRANSLUCENT`.
@@ -319,12 +316,13 @@ exist, so adding a bone channel marks its node instead of being ignored.
 
 - No warning when a sequence's object-state tracks are exported to `.dsq` and
   lost (§4).
-- **The scalar `dts_*` custom properties still have no panel.**  Detail sizes,
-  object names, billboard flags, material maps and the rest are edited through
-  the N-panel's Custom Properties.  That is a real place to edit them — which
-  the JSON tables never were — but it is not a designed one: no labels, no
-  ranges, no grouping.  The tables that needed a widget got one; these need a
-  layout, which is a smaller and separate job.
+- **Some scalar `dts_*` properties still have no panel.**  The ones with a
+  decision behind them are laid out — mesh flags and sorted mode in Object
+  Properties → DTS Mesh, the material flags and map slots in Material
+  Properties → DTS Material, sequence timing in the Dope Sheet's DTS tab.  The
+  rest (subshape indices, object detail numbers, default object states) are
+  still raw entries in the N-panel's Custom Properties: a real place to edit
+  them, but not a designed one.
 - No authoring path for a shape built from scratch: sub-shapes, detail
   hierarchy and object states can only be *preserved*, not created, without
   hand-setting custom properties.
@@ -339,7 +337,7 @@ exist, so adding a bone channel marks its node instead of being ignored.
 
 ## Coverage
 
-`tests/blender/test_operators.py` (69 tests) covers the round-trip of every
+`tests/blender/test_operators.py` (71 tests) covers the round-trip of every
 "opaque" item above, plus visibility and decal export/reimport.  The remaining
 "blind" items are tested at the file level only — no test asserts a preview
 exists, because none does.  Most "dropped" items have no tests: they are known

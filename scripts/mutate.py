@@ -105,6 +105,18 @@ MUTATIONS = {
         "            last = max(last, fc.keyframe_points[-1].co[0])\n    return int(round(last)) + 1",
         ["test_removing_a_keyframe_shortens_the_sequence"],
     ),
+    "material-flag-bits": (
+        "mapping/materials.py",
+        '    "dts_bump_map_only": MAT_BUMP_MAP_ONLY,',
+        "",
+        ["test_every_material_flag_bit_has_a_checkbox"],
+    ),
+    "legacy-guard": (
+        "mapping/blender_to_shape.py",
+        "    stale = migrate.legacy_keys_present()",
+        "    stale = []",
+        ["test_export_refuses_a_scene_that_has_not_been_converted"],
+    ),
     "mesh-flags": (
         "mapping/shape_to_blender.py",
         "def flags_from_blender(bobj, mesh_type: int) -> int:",

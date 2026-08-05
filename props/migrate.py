@@ -45,10 +45,20 @@ def _fill(collection, records) -> None:
 
 def migrate_armature(obj, report: list) -> bool:
     props = obj.dts_shape
-    if props.schema_version >= SCHEMA_VERSION and props.is_shape:
+    present = [key for key in LEGACY_SHAPE_KEYS if key in obj]
+    if not present:
         return False
-    if not any(key in obj for key in LEGACY_SHAPE_KEYS):
-        return False
+    if props.schema_version >= SCHEMA_VERSION:
+        # The tables are already the current form, so a legacy key beside them
+        # is a leftover rather than the source of truth -- converting from it
+        # would overwrite good data with older data.  Drop it and say so.
+        for key in present:
+            del obj[key]
+        report.append(
+            f"{obj.name}: discarded {len(present)} stale key(s) beside the converted "
+            f"tables ({', '.join(present)})"
+        )
+        return True
 
     props.is_shape = True
     _fill(props.names, [{"name": n} for n in _loads(obj.get("dts_names_order"), [])])
@@ -86,11 +96,18 @@ def migrate_armature(obj, report: list) -> bool:
 
 def migrate_action(action, report: list) -> bool:
     props = action.dts_sequence_props
-    if props.schema_version >= SCHEMA_VERSION:
-        return False
-    if not any(key in action for key in LEGACY_ACTION_KEYS):
+    present = [key for key in LEGACY_ACTION_KEYS if key in action]
+    if not present:
         props.schema_version = SCHEMA_VERSION
         return False
+    if props.schema_version >= SCHEMA_VERSION:
+        for key in present:
+            del action[key]
+        report.append(
+            f"{action.name}: discarded {len(present)} stale key(s) beside the "
+            f"converted tables"
+        )
+        return True
 
     _fill(props.ground, parse_ground(action.get("dts_ground")))
     _fill(props.triggers, parse_triggers(action.get("dts_triggers")))
