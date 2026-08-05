@@ -15,6 +15,10 @@ rather than re-made by hand.
 
 ``--export DIR`` also writes each example's .dts and its textures, which is
 what gets loaded into the game.
+
+``--lifts`` then rewrites the ``$DtsShowcaseLift`` table in the showcase script
+from those .dts files, so the shapes keep standing on the terrain when a model
+changes height.
 """
 
 from __future__ import annotations
@@ -158,21 +162,28 @@ def build_detail_levels():
 
 @example("02_billboards")
 def build_billboards():
-    """A camera-facing flare and an upright, spinning trunk card."""
+    """A camera-facing flare and an upright, spinning trunk card.
+
+    Both cards stand in the XZ plane, matching every billboard in the shipped
+    Tribes 2 art (see ``A.upright_quad_geometry``).  The flags are correct in
+    the file and a stock billboard shape round-tripped through this add-on
+    still billboards in Tribes 2, but these two cards do not -- the difference
+    has not been isolated.  UNSUPPORTED.md carries the measurements.
+    """
     arm = A.armature("Billboards", bones=(("root", None), ("high", "root")))
     flare_mat = textured_material("flare", glow)
-    verts, faces = A.quad_geometry()
+    verts, faces = A.upright_quad_geometry(size=1.5)
     flare = A.mesh_object("flare2", arm, bone="root", verts=verts, faces=faces,
                           material=flare_mat)
     flare.dts_mesh.billboard = True
 
     trunk_mat = textured_material("trunkcard", stripes)
-    verts, faces = A.quad_geometry()
+    verts, faces = A.upright_quad_geometry(size=1.5)
     trunk = A.mesh_object("trunk2", arm, bone="high", verts=verts, faces=faces,
                           material=trunk_mat)
     trunk.dts_mesh.billboard = True
     trunk.dts_mesh.billboard_z = True
-    trunk.location = Vector((1.5, 0.0, 0.0))
+    trunk.location = Vector((4.0, 0.0, 0.0))
     return arm
 
 
@@ -679,13 +690,54 @@ def build(name, out_dir: Path, export_dir: Path | None):
     return blend
 
 
+SHOWCASE_CS = REPO / "examples/mod/DtsExamples/scripts/dtsShowcase.cs"
+LIFT_LINE = "$DtsShowcaseLift["
+
+
+def update_lifts(shapes_dir: Path, script: Path = SHOWCASE_CS) -> int:
+    """Rewrite the ``$DtsShowcaseLift`` table from the exported shapes.
+
+    The lift is how far a shape's lowest point sits below its origin, which is
+    what the showcase adds to the terrain height to set the shape down on the
+    ground instead of half into it.  Nothing in the console reads a shape's
+    bounding box, so the table has to be baked here.
+    """
+    from io_scene_dts.dtslib.reader import read_shape_file
+
+    shapes = sorted(shapes_dir.glob("*.dts"))
+    if not shapes:
+        raise SystemExit(f"no .dts files in {shapes_dir}")
+
+    table = []
+    for i, path in enumerate(shapes):
+        lift = -read_shape_file(path).bounds[2]
+        name = f"$DtsShowcaseLift[{i}]"
+        # `+ 0.0` so a shape whose base is exactly at the origin reads 0.00
+        # rather than -0.00
+        table.append(f"{name:<21}= {lift + 0.0:.2f};".ljust(32) + f"// {path.stem}")
+
+    lines = script.read_text().splitlines(keepends=True)
+    first = next(i for i, ln in enumerate(lines) if ln.startswith(LIFT_LINE))
+    last = max(i for i, ln in enumerate(lines) if ln.startswith(LIFT_LINE))
+    lines[first : last + 1] = [ln + "\n" for ln in table]
+    script.write_text("".join(lines))
+    return len(table)
+
+
 def main():
     argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default=str(REPO / "examples"))
     parser.add_argument("--export", default=None, help="also write .dts and textures here")
+    parser.add_argument(
+        "--lifts",
+        action="store_true",
+        help="rewrite the showcase script's lift table from the exported .dts files",
+    )
     parser.add_argument("names", nargs="*", help="examples to build (default: all)")
     args = parser.parse_args(argv)
+    if args.lifts and not args.export:
+        parser.error("--lifts needs --export: the table is read off the exported .dts")
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -699,6 +751,8 @@ def main():
         path = build(name, out_dir, export_dir)
         print(f"built {path.name}")
     print(f"\n{len(names)} example(s)")
+    if args.lifts:
+        print(f"lift table: {update_lifts(export_dir)} entries")
     return 0
 
 

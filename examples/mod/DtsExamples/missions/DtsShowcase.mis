@@ -1,0 +1,125 @@
+// MissionTypes = SinglePlayer
+// PlanetName = DTS Showcase
+// DisplayName = DTS Add-on Showcase
+
+//--- MISSION BRIEFING BEGIN ---
+//Every feature the Blender DTS add-on implements, one shape each, with a
+//waypoint over it naming what it tests.
+//
+//Built on Flatland (the-construct.net): flat ground puts the whole row at
+//one height, and no interiors means the client lighting pass finishes --
+//it never does over interiors under software rendering.
+//--- MISSION BRIEFING END ---
+
+//--- MISSION STRING BEGIN ---
+//[SinglePlayer]Fifteen shapes in three rows, each labelled by a waypoint
+//[SinglePlayer]Animated examples start their sequences automatically
+//--- MISSION STRING END ---
+
+//--- OBJECT WRITE BEGIN ---
+new SimGroup(MissionGroup) {
+		musicTrack = "desert";
+		cdTrack = "6";
+	new MissionArea(MissionArea) {
+		area = "-1024 -1024 2048 2048";
+		flightCeiling = "4000";
+		flightCeilingRange = "20";
+		locked = "true";
+	};
+	new SimGroup(Teams) {
+		new SimGroup(Team1) {
+			new SimGroup(spawnspheres) {
+				new SpawnSphere() {
+					position = "0 0 100";
+					rotation = "1 0 0 0";
+					scale = "1 1 1";
+					dataBlock = "SpawnSphereMarker";
+					radius = "100";
+					sphereWeight = "100";
+					indoorWeight = "100";
+					outdoorWeight = "100";
+					locked = "1";
+				};
+			};
+		};
+		new SimGroup(team0) {
+				providesPower = "1";
+		};
+	};
+	new Sun(Sun) {
+		position = "0 0 0";
+		rotation = "1 0 0 0";
+		scale = "1 1 1";
+		direction = "0.57735 0.57735 -0.57735";
+		color = "1.000000 1.000000 1.000000 1.000000";
+		ambient = "0.500000 0.500000 0.500000 1.000000";
+		texture[0] = "special/sunFlare";
+		texture[1] = "special/sunFlare02";
+		texture[2] = "special/LensFlare/flare01";
+		texture[3] = "special/LensFlare/flare02";
+		texture[4] = "special/LensFlare/flare03";
+		lensFlareScale = "0.7";
+		lensFlareIntensity = "1";
+		frontFlareSize = "300";
+		backFlareSize = "450";
+		flareColor = "1.000000 1.000000 1.000000 1.000000";
+		locked = "true";
+	};
+	new TerrainBlock(Terrain) {
+		rotation = "1 0 0 0";
+		scale = "1 1 1";
+		detailTexture = "details/desertdet1";
+		terrainFile = "Flatland.ter";
+		squareSize = "8";
+		position = "-1024 -1024 0";
+		locked = "true";
+	};
+	new SimGroup(ObserverDropPoints) {
+		new Camera() {
+			position = "0 0 200";
+			rotation = "1 0 0 0";
+			scale = "1 1 1";
+			dataBlock = "Observer";
+			team = "0";
+			locked = "true";
+		};
+	};
+	new Sky(Sky) {
+		position = "0 0 0";
+		rotation = "1 0 0 0";
+		scale = "1 1 1";
+		cloudHeightPer[0] = "0.349971";
+		cloudHeightPer[1] = "0.25";
+		cloudHeightPer[2] = "0.199973";
+		cloudSpeed1 = "0.0001";
+		cloudSpeed2 = "0.0002";
+		cloudSpeed3 = "0.0003";
+		visibleDistance = "800";
+		useSkyTextures = "0";
+		renderBottomTexture = "0";
+		SkySolidColor = "0.250000 0.750000 1.000000 1.000000";
+		fogDistance = "750";
+		fogColor = "0.600000 0.600000 0.600000 1.000000";
+		fogVolume1 = "200 99 101";
+		fogVolume2 = "0 0 0";
+		fogVolume3 = "0 0 0";
+		materialList = "sky_desert_blue.dml";
+		windVelocity = "1 0 0";
+		windEffectPrecipitation = "0";
+		fogVolumeColor1 = "128.000000 128.000000 128.000000 0.000000";
+		fogVolumeColor2 = "128.000000 128.000000 128.000000 0.000000";
+		fogVolumeColor3 = "128.000000 128.000000 128.000000 0.000000";
+		high_visibleDistance = "-1";
+		high_fogDistance = "-1";
+		high_fogVolume1 = "-1 2.33105e-09 6.40969e-10";
+		high_fogVolume2 = "-1 1.07461e-38 0";
+		high_fogVolume3 = "-1 7.9874e-44 5.9061e-32";
+		cloudSpeed0 = "0.000503 0.000020";
+		locked = "true";
+	};
+};
+//--- OBJECT WRITE END ---
+
+// After the object block, so CreateServer has finished rebuilding server
+// state -- and before any client joins, which is when datablocks are sent.
+exec("scripts/dtsShowcase.cs");

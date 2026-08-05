@@ -108,6 +108,23 @@ def quad_geometry(z=0.0, size=0.5):
     return ([(-s, -s, z), (s, -s, z), (s, s, z), (-s, s, z)], [(0, 1, 2), (0, 2, 3)])
 
 
+def upright_quad_geometry(y=0.0, size=0.5):
+    """One quad standing in the XZ plane, the way shipped billboards are built.
+
+    This matches the shipped art rather than a derived rule: every billboard
+    mesh in the Tribes 2 corpus spans x and z with y flat -- all four in
+    ``grenade_flare.dts`` are x -2.9..2.9, y 0, z -2.9..2.9 -- and none is
+    built in XY.  A card built in XY exports with correct flags and draws in
+    Tribes 2 as a smear on the ground.
+
+    Matching the convention is *not* on its own sufficient to get a
+    camera-facing card out of Tribes 2; see the billboard note in
+    UNSUPPORTED.md for what is and is not established.
+    """
+    s = size
+    return ([(-s, y, -s), (s, y, -s), (s, y, s), (-s, y, s)], [(0, 1, 2), (0, 2, 3)])
+
+
 def cards_geometry(count=8):
     """Quads at varied angles: geometry a BSP can actually split."""
     verts, faces = [], []

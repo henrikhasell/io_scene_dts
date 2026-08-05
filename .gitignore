@@ -5,3 +5,5 @@ __pycache__/
 htmlcov/
 *.pyc
 dist/
+*.blend1
+screenshot-*.png

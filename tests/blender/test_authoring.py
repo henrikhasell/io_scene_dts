@@ -345,6 +345,36 @@ def test_a_z_axis_billboard_is_authorable():
     assert mesh.flags & MESH_BILLBOARD_Z_AXIS, hex(mesh.flags)
 
 
+def test_an_upright_billboard_card_exports_flat_along_y():
+    """The flag alone is not the feature: the card also has to be modelled right.
+
+    Billboarding throws the mesh's node rotation away and keeps only position
+    and scale, so the engine draws the mesh's *own* vertices with an identity
+    rotation -- local x is screen-right and local z screen-up.  A card built
+    lying down therefore exports with perfect flags and renders in-game as a
+    smear on the ground, which is exactly what the 02_billboards example did
+    until this was measured against stock art.
+
+    Every billboard mesh in the shipped Tribes 2 shapes is flat along local y
+    (all four in grenade_flare.dts span x and z at y == 0).  This asserts that
+    ``upright_quad_geometry`` still comes out the same way, since the axis
+    mapping between a Blender mesh and its DTS node is what could drift.
+    """
+    A.reset()
+    arm = A.armature("Card")
+    verts, faces = A.upright_quad_geometry()
+    obj = A.mesh_object("card2", arm, bone="root", verts=verts, faces=faces)
+    obj.dts_mesh.billboard = True
+
+    mesh = A.live_meshes(A.read(A.export_dts()))[0]
+    spans = [
+        max(v[axis] for v in mesh.verts) - min(v[axis] for v in mesh.verts)
+        for axis in range(3)
+    ]
+    assert spans[1] < 1e-4, f"card is not flat along local y: {spans}"
+    assert spans[0] > 0.5 and spans[2] > 0.5, f"card has no width or height: {spans}"
+
+
 def test_a_sorted_mesh_is_authorable():
     A.reset()
     arm = A.armature("Foliage")

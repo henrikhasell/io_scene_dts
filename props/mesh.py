@@ -43,7 +43,9 @@ class DtsMeshProps(PropertyGroup):
         description=(
             "Always face the camera.  The engine replaces this mesh's rotation with "
             "the identity, keeping only its position and scale (tsMesh.cc:59).  "
-            "Nothing in the viewport shows this"
+            "Build the card standing in the XZ plane -- X becomes screen-right and Z "
+            "screen-up, so a card lying flat in XY has no height and draws as a "
+            "smear.  Nothing in the viewport shows this"
         ),
         default=False,
     )

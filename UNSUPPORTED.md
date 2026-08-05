@@ -132,6 +132,27 @@ way to check your work short of re-reading the exported file.
   in the low three bits, so no flag hides in a packed word.  **Nothing in the
   viewport turns a billboard to face you**, which is why they are here: the
   flag is correct in the file and invisible while you work.
+
+  **Authoring one that the engine actually turns is not solved.**  What is
+  established, in Tribes 2 as a `StaticShape`:
+
+  - The flags are written correctly — `0x80000000`, and `0xa0000000` with the
+    Z-axis bit — read back off the exported file.
+  - `grenade_flare.dts` imported and exported again by this add-on **still
+    billboards**, side by side with the stock original.  The writer preserves
+    a working billboard.
+  - The `examples/02_billboards` cards **do not** billboard: they draw lying
+    on the ground.  Built flat in Blender's XY, built upright in XZ to match
+    every billboard in the corpus, at four sizes, and at object scale 1 and
+    1.6 — all draw flat.
+  - A probe shape carrying four upright cards *did* billboard, so it is
+    reachable from a fresh scene.  The difference between those cards and the
+    example's has not been isolated.
+
+  So this is a **blind** item for authoring and a **preserved** one for
+  round-tripping.  `MESH_BILLBOARD_Z_AXIS` is worse: no shipped Tribes 2 shape
+  sets it (0 of 87 billboard meshes), so there is no reference render to
+  compare against at all.
   Undocumented bits are dropped with a warning; no corpus mesh has one.
   `props/mesh.py`, `mapping/shape_to_blender.py:393`
 - **Triggers** (footstep sounds, effect hooks).  A collection on the action,
