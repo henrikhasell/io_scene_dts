@@ -941,6 +941,91 @@ def test_mesh_type_echo_bits_survive_an_edit():
     assert any(m.flags & 0x7 == SKIN_MESH for m in skins), "mesh type echo lost"
 
 
+def _sharing(shape):
+    """(child mesh index, parent mesh index) for every shared mesh."""
+    return [
+        (i, m.parent_mesh)
+        for i, m in enumerate(shape.meshes)
+        if m is not None and m.parent_mesh >= 0
+    ]
+
+
+def test_lod_vertex_sharing_is_rederived():
+    """parent_mesh sharing is rebuilt, not replayed.
+
+    Each detail level of an object is interned into one pool lowest detail
+    first, so every smaller level lands on a prefix of the larger one and can
+    name it instead of storing vertices of its own.  Losing this was worth
+    x1.85 in file size.
+    """
+    _reset()
+    _import_dts("v22_turret_belly_barrell.dts")
+    src = read_shape_file(FIXTURES / "v22_turret_belly_barrell.dts")
+    assert _sharing(src), "fixture does not use parent_mesh"
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
+    dst = read_shape_file(out)
+
+    shared = _sharing(dst)
+    assert shared, "no vertex sharing was re-derived"
+    for child_index, parent_index in shared:
+        child, parent = dst.meshes[child_index], dst.meshes[parent_index]
+        # the reader slices the parent's arrays with the child's own counts, so
+        # the parent must precede it and be at least as long
+        assert parent_index < child_index, (parent_index, child_index)
+        assert parent is not None
+        assert len(parent.verts) >= len(child.verts)
+        assert parent.verts[: len(child.verts)] == child.verts
+        assert parent.tverts[: len(child.tverts)] == child.tverts
+        assert parent.norms[: len(child.norms)] == child.norms
+
+
+def test_lod_sharing_keeps_the_file_from_growing():
+    """The point of the pool, stated as a number: re-deriving a multi-detail
+    shape must not cost more than the file it was read from."""
+    import os
+
+    _reset()
+    _import_dts("v22_turret_belly_barrell.dts")
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
+    before = os.path.getsize(FIXTURES / "v22_turret_belly_barrell.dts")
+    after = os.path.getsize(out)
+    assert after <= before * 1.05, (before, after)
+
+
+def test_lod_sharing_degrades_when_a_level_stops_nesting():
+    """A detail level replaced by unrelated geometry still exports correctly.
+
+    Nesting holds by construction -- the pool only grows -- so the failure mode
+    is a larger pool, never an invalid prefix.
+    """
+    _reset()
+    _import_dts("v22_turret_belly_barrell.dts")
+    # the smallest detail level of some object, rebuilt as a cube nowhere near
+    # the original geometry
+    victim = min(
+        (o for o in bpy.context.scene.objects if o.type == "MESH" and "dts_detail_size" in o),
+        key=lambda o: int(o["dts_detail_size"]),
+    )
+    me = victim.data
+    me.clear_geometry()
+    me.from_pydata(
+        [(9.0, 9.0, 9.0), (10.0, 9.0, 9.0), (10.0, 10.0, 9.0), (9.0, 10.0, 9.0)],
+        [],
+        [(0, 1, 2), (0, 2, 3)],
+    )
+    me.update()
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
+    dst = read_shape_file(out)
+    for child_index, parent_index in _sharing(dst):
+        child, parent = dst.meshes[child_index], dst.meshes[parent_index]
+        assert parent.verts[: len(child.verts)] == child.verts, (parent_index, child_index)
+
+
 def test_ifl_preserved():
     _reset()
     _import_dts("v22_energy_explosion.dts")

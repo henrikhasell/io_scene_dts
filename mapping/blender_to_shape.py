@@ -41,11 +41,12 @@ from ..dtslib.types import (
 )
 
 from . import matframes
-from .decals import build_decals
+from .decals import blender_lookup_of, build_decals
 from .materials import materials_from_blender
 from .naming import detail_name_for_size, split_detail_suffix, strip_blender_dedup
 from .sequences import blender_quat_to_dts, export_sequences
 from .shape_to_blender import flags_from_blender, mesh_digest
+from .vertex_pool import VertexPool
 
 
 class ExportError(Exception):
@@ -234,10 +235,8 @@ def blender_to_shape(
     shape.sub_shape_first_object = []
     shape.sub_shape_num_objects = []
 
-    # source mesh index -> index in the shape being written, for meshes
-    # re-emitted verbatim; drives the parent_mesh fixup below
-    mesh_src_to_new: dict[int, int] = {}
-    verbatim_meshes: set[int] = set()
+    # target Blender object name -> Blender position to DTS index, for decals
+    decal_target_lookups: dict[str, dict] = {}
 
     for s in range(len(subshapes)):
         shape.sub_shape_first_object.append(len(shape.objects))
@@ -256,23 +255,11 @@ def blender_to_shape(
                 if "dts_object_num_meshes" in b
             ]
             num_meshes = max([max_odn + 1] + stored_counts)
-            node_index = -1
-            for odn in range(num_meshes):
-                bobj = odn_map.get(odn)
-                if bobj is None:
-                    shape.meshes.append(None)
-                    continue
-                mesh, mesh_node, verbatim = _export_mesh(
-                    shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warnings
-                )
-                if verbatim:
-                    src = bobj.get("dts_source_index")
-                    if src is not None:
-                        mesh_src_to_new[int(src)] = len(shape.meshes)
-                    verbatim_meshes.add(len(shape.meshes))
-                shape.meshes.append(mesh)
-                if node_index < 0:
-                    node_index = mesh_node
+            node_index, obj_lookups = _export_object_meshes(
+                shape, base, odn_map, num_meshes, arm_obj, node_index_by_bone,
+                node_arm_matrix, warnings,
+            )
+            decal_target_lookups.update(obj_lookups)
             obj = Object(
                 name_index=shape.add_name(base),
                 num_meshes=num_meshes,
@@ -304,7 +291,8 @@ def blender_to_shape(
     # before the material list is built: a decal's material is often used by
     # nothing else, so this is where it gets registered
     decal_index_map = build_decals(
-        shape, arm_obj, object_index_by_name, _material_slot_index, warnings
+        shape, arm_obj, object_index_by_name, _material_slot_index, warnings,
+        target_lookups=decal_target_lookups,
     )
 
     # -- materials ----------------------------------------------------
@@ -317,9 +305,6 @@ def blender_to_shape(
         raw[0] = shape.add_name(str(entry["name"]))
         shape.ifl_materials.append(IflMaterial(tuple(raw)))
 
-
-    # every mesh is in shape.meshes by now, so parent_mesh can be resolved
-    _remap_parent_meshes(shape, mesh_src_to_new, verbatim_meshes)
 
     # engine scratch links, derivable from the hierarchy we just built
     recompute_runtime_links(shape)
@@ -377,37 +362,6 @@ def _prefer_stored_transform(rot, trans, stored):
     if any(abs(a - b) > _TRANS_EPS for a, b in zip(trans, strans)):
         return stored_rot, trans
     return stored_rot, tuple(float(v) for v in strans)
-
-
-def _remap_parent_meshes(shape, src_to_new: dict[int, int], verbatim: set[int]) -> None:
-    """Re-point parent_mesh at the re-emitted parent, or clear it.
-
-    A verbatim payload carries the *source* file's parent_mesh index, which
-    means nothing in the new mesh layout -- leaving it there is what produced
-    files the reader rejected with "mesh references bad parent".
-
-    Clearing is always safe: the reader materializes a child's verts/tverts/
-    norms as a prefix slice of its parent's, so every Mesh we hold is
-    self-contained.  Remapping is preferred where possible because it keeps the
-    vertex sharing, and with it the file size.
-    """
-    for new_index, mesh in enumerate(shape.meshes):
-        if mesh is None or mesh.parent_mesh < 0:
-            continue
-        parent_new = src_to_new.get(mesh.parent_mesh, -1)
-        parent = shape.meshes[parent_new] if 0 <= parent_new < len(shape.meshes) else None
-        shareable = (
-            new_index in verbatim
-            and parent is not None
-            and parent_new < new_index
-            and parent_new in verbatim
-            # the engine slices the parent's arrays with the child's counts, so
-            # the parent must still be at least as long in every shared array
-            and len(parent.verts) >= len(mesh.verts)
-            and len(parent.tverts) >= len(mesh.tverts)
-            and len(parent.norms) >= len(mesh.norms)
-        )
-        mesh.parent_mesh = parent_new if shareable else -1
 
 
 # ----------------------------------------------------------------------
@@ -477,27 +431,97 @@ def _material_slot_index(bmat) -> int:
     return len(_used_materials) - 1
 
 
-def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warnings):
-    """Returns (dtslib.Mesh, node_index, verbatim)."""
+def _export_object_meshes(
+    shape, base, odn_map, num_meshes, arm_obj, node_index_by_bone, node_arm_matrix, warnings
+):
+    """Append one DTS object's detail levels to ``shape.meshes``.
+
+    The levels are built *lowest detail first* against one VertexPool, so each
+    one occupies a prefix of the shared array and can name the largest level as
+    its ``parent_mesh`` instead of storing vertices of its own.  That is worth
+    x1.85 in file size and is the main thing the pickled payload used to buy.
+    Emission order is unchanged -- slot 0 first -- because a parent has to
+    precede its children in the mesh table for the reader to have seen it
+    (dtslib/reader.py:251-253).
+
+    Returns (node index, {target Blender object name: decal vertex lookup}).
+    """
+    pool = VertexPool()
+    built = {}
+    lookups = {}
+    # descending: the largest level seals last and so ends up holding the whole
+    # pool, which makes it the one every other level can point at
+    for odn in sorted(odn_map, reverse=True):
+        built[odn] = _export_mesh(
+            shape, odn_map[odn], arm_obj, node_index_by_bone, node_arm_matrix,
+            warnings, pool=pool,
+        )
+
+    # the parent is the smallest slot that used the pool; it sealed last, so
+    # its prefix is the whole pool and every other pooled prefix fits inside it
+    pooled = [odn for odn, entry in built.items() if entry[3] is not None]
+    parent_odn = min(pooled) if pooled else None
+
+    mesh_index_of = {}
+    node_index = -1
+    for odn in range(num_meshes):
+        entry = built.get(odn)
+        if entry is None:
+            shape.meshes.append(None)
+            continue
+        mesh, mesh_node, _verbatim, pool_length, bvert_to_dts = entry
+        if (
+            parent_odn is not None
+            and odn != parent_odn
+            and pool_length is not None
+            # a multi-frame mesh's array runs past the shared prefix into its
+            # frame blocks, so it can hold a prefix for others but cannot be
+            # one itself
+            and mesh.num_frames == 1
+        ):
+            mesh.parent_mesh = mesh_index_of[parent_odn]
+        mesh_index_of[odn] = len(shape.meshes)
+        shape.meshes.append(mesh)
+        if bvert_to_dts:
+            lookups[odn_map[odn].name] = blender_lookup_of(odn_map[odn], bvert_to_dts)
+        if node_index < 0:
+            node_index = mesh_node
+    return node_index, lookups
+
+
+def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warnings, pool=None):
+    """Returns (dtslib.Mesh, node_index, verbatim, pool_length, bvert_to_dts).
+
+    ``pool`` shares one vertex array across the detail levels of an object; see
+    mapping/vertex_pool.py.  ``pool_length`` is the prefix this mesh occupies,
+    or None when it did not use the pool (a skin, or a replayed payload).
+    ``bvert_to_dts`` maps Blender vertex index to DTS vertex index, which the
+    decal exporter needs to match faces without going through float drift.
+    """
+    # Only sorted meshes are still replayed from the payload: their BSP cluster
+    # tables have nowhere else to live.  Everything else is re-derived, which
+    # costs nothing in file size now that vertex sharing is rebuilt rather than
+    # replayed -- strip packing is worth x1.00 on its own.
+    #
     # "dts_frozen_payload" is the pre-source-payload property name; a .blend
-    # saved by an older add-on only has the strict sorted/multi-matframe ones
+    # saved by an older add-on has it on sorted meshes only.
     payload = bobj.get("dts_source_payload") or bobj.get("dts_frozen_payload")
-    if payload:
+    if payload and bobj.get("dts_strict_freeze"):
         stored_digest = bobj.get("dts_source_digest") or bobj.get("dts_frozen_digest")
-        edited = bool(stored_digest) and mesh_digest(bobj.data) != stored_digest
-        strict = bool(bobj.get("dts_strict_freeze")) or "dts_source_payload" not in bobj
-        if edited and strict:
-            kind = "sorted" if int(bobj.get("dts_mesh_type", 0)) == SORTED_MESH else "multi-matframe"
+        if bool(stored_digest) and mesh_digest(bobj.data) != stored_digest:
             raise ExportError(
-                f"{bobj.name!r} is a {kind} mesh that only round-trips verbatim, but its "
+                f"{bobj.name!r} is a sorted mesh that only round-trips verbatim, but its "
                 f"geometry has been edited — revert the edits or delete the object"
             )
-        if not edited:
-            mesh = pickle.loads(base64.b64decode(payload))
-            for slot in bobj.material_slots:
-                if slot.material is not None:
-                    _material_slot_index(slot.material)
-            return mesh, int(bobj.get("dts_node_index", -1)), True
+        mesh = pickle.loads(base64.b64decode(payload))
+        # the reader copies a shared prefix out of the parent, so the payload
+        # is self-contained; the source index it was written against means
+        # nothing in the shape being built
+        mesh.parent_mesh = -1
+        for slot in bobj.material_slots:
+            if slot.material is not None:
+                _material_slot_index(slot.material)
+        return mesh, int(bobj.get("dts_node_index", -1)), True, None, {}
 
     is_skin = bool(bobj.vertex_groups) and any(
         m.type == "ARMATURE" and m.object == arm_obj for m in bobj.modifiers
@@ -523,27 +547,45 @@ def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warn
     me.calc_loop_triangles()
     uv_layer = me.uv_layers.active
 
+    # A skin's vertices are in shape space, not this object's node space, so
+    # they cannot share a pool with the rigid meshes of the same object; and
+    # skin sharing would additionally need initial_verts, vertex_index,
+    # bone_index, weight and node_index to be prefixes too (mesh_io.py:107-140).
+    pooled = pool is not None and not is_skin
+    store = pool if pooled else VertexPool()
+
+    # Two coincident vertices must stay distinct when something outside the
+    # (position, uv, normal) triple tells them apart: a shape key can move them
+    # in different directions, and a skin can weight them to different bones.
+    frame_keys = _frame_shape_keys(me)
+    split_vertices = is_skin or bool(frame_keys)
+
     # dedup corners into DTS verts
-    key_to_index = {}
-    verts, norms, tverts = [], [], []
     corner_index = {}
+    blender_vert_of = {}
+    dts_index_of_bvert = {}
     for tri in me.loop_triangles:
         for loop_index in tri.loops:
             loop = me.loops[loop_index]
             vi = loop.vertex_index
             uv = tuple(uv_layer.data[loop_index].uv) if uv_layer else (0.0, 0.0)
             normal = tuple(loop.normal if hasattr(loop, "normal") else me.vertices[vi].normal)
-            key = (vi, round(uv[0], 6), round(uv[1], 6), round(normal[0], 4), round(normal[1], 4), round(normal[2], 4))
-            idx = key_to_index.get(key)
-            if idx is None:
-                idx = len(verts)
-                key_to_index[key] = idx
-                verts.append(tuple(to_dts @ me.vertices[vi].co))
-                n = (normal_mat @ Vector(normal))
-                n.normalize()
-                norms.append(tuple(n))
-                tverts.append((uv[0], 1.0 - uv[1]))
+            n = normal_mat @ Vector(normal)
+            n.normalize()
+            idx = store.intern(
+                tuple(to_dts @ me.vertices[vi].co),
+                (uv[0], 1.0 - uv[1]),
+                tuple(n),
+                split=vi if split_vertices else None,
+            )
             corner_index[loop_index] = idx
+            blender_vert_of.setdefault(idx, vi)
+            dts_index_of_bvert.setdefault(vi, idx)
+
+    pool_length = store.seal()
+    verts = store.verts[:pool_length]
+    tverts = store.tverts[:pool_length]
+    norms = store.norms[:pool_length]
 
     if len(verts) > 0xFFFF:
         raise ExportError(f"mesh {bobj.name!r} has {len(verts)} unique vertices (DTS max 65535)")
@@ -571,9 +613,10 @@ def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warn
     mesh.verts_per_frame = len(verts)
     mesh.flags = flags_from_blender(bobj, mesh.mesh_type)
 
-    # DTS vertex index -> the Blender vertex it was deduplicated from; the
-    # dedup dict is insertion-ordered, so this is in DTS order
-    blender_vert_per_dts_vert = [key[0] for key in key_to_index]
+    # DTS vertex index -> the Blender vertex it came from.  A pooled prefix can
+    # hold entries interned by a *different* detail level of the same object,
+    # which this mesh has no vertex for; those are -1.
+    blender_vert_per_dts_vert = [blender_vert_of.get(i, -1) for i in range(len(verts))]
 
     # extra material frames append their own tvert blocks after frame 0's
     for block in matframes.extra_blocks(me, blender_vert_per_dts_vert):
@@ -582,10 +625,9 @@ def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warn
 
     merge = bobj.get("dts_merge_indices")
     if merge:
-        first_dts_index = {}
-        for dts_index, bvert in enumerate(blender_vert_per_dts_vert):
-            first_dts_index.setdefault(bvert, dts_index)
-        mesh.merge_indices = [first_dts_index[i] for i in merge if i in first_dts_index]
+        mesh.merge_indices = [
+            dts_index_of_bvert[i] for i in merge if i in dts_index_of_bvert
+        ]
         dropped = len(merge) - len(mesh.merge_indices)
         if dropped:
             # a source mesh packed as strips carries vertices that only ever
@@ -598,34 +640,49 @@ def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warn
             )
 
     # vertex-animation frames from shape keys named frame_NNN
-    frame_keys = []
-    if me.shape_keys is not None:
-        frame_keys = sorted(
-            (kb for kb in me.shape_keys.key_blocks if kb.name.startswith("frame_")),
-            key=lambda kb: kb.name,
-        )
     if frame_keys:
         if is_skin:
             warnings.append(f"{bobj.name!r}: frame_* shape keys on a skin are not supported; ignored")
         else:
             mesh.num_frames = 1 + len(frame_keys)
+            base_verts = list(mesh.verts)
             base_norms = list(mesh.norms)
             for kb in frame_keys:
-                for key in key_to_index:  # ordered by insertion == DTS vert order
-                    bvert = key[0]
-                    mesh.verts.append(tuple(to_dts @ kb.data[bvert].co))
+                for dts_index, bvert in enumerate(blender_vert_per_dts_vert):
+                    if bvert < 0:
+                        # a shared-prefix entry this mesh does not own has no
+                        # shape key to sample; hold it at its rest position,
+                        # which is already in DTS space
+                        mesh.verts.append(base_verts[dts_index])
+                    else:
+                        mesh.verts.append(tuple(to_dts @ kb.data[bvert].co))
                 mesh.norms.extend(base_norms)
 
     _compute_mesh_bounds(mesh)
 
     if is_skin:
-        _export_skin_data(shape, mesh, bobj, node_index_by_bone, node_arm_matrix, key_to_index, warnings)
+        _export_skin_data(
+            shape, mesh, bobj, node_index_by_bone, node_arm_matrix,
+            blender_vert_per_dts_vert, warnings,
+        )
         node_index = -1
 
-    return mesh, node_index, False
+    return mesh, node_index, False, (pool_length if pooled else None), dts_index_of_bvert
 
 
-def _export_skin_data(shape, mesh, bobj, node_index_by_bone, node_arm_matrix, key_to_index, warnings):
+def _frame_shape_keys(me):
+    """Vertex-animation frames of a mesh, in frame order."""
+    if me.shape_keys is None:
+        return []
+    return sorted(
+        (kb for kb in me.shape_keys.key_blocks if kb.name.startswith("frame_")),
+        key=lambda kb: kb.name,
+    )
+
+
+def _export_skin_data(
+    shape, mesh, bobj, node_index_by_bone, node_arm_matrix, blender_vert_per_dts_vert, warnings
+):
     me = bobj.data
     group_to_node = {}
     for g in bobj.vertex_groups:
@@ -652,8 +709,7 @@ def _export_skin_data(shape, mesh, bobj, node_index_by_bone, node_arm_matrix, ke
             total = 1.0
         weights_by_bvert[v.index] = [(n, w / total) for n, w in entries]
 
-    for key, dts_index in key_to_index.items():
-        bvert = key[0]
+    for dts_index, bvert in enumerate(blender_vert_per_dts_vert):
         for node, w in weights_by_bvert.get(bvert, [(0, 1.0)]):
             if node not in node_to_local:
                 node_to_local[node] = len(used_nodes)

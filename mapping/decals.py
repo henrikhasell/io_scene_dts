@@ -294,6 +294,11 @@ def _vertex_lookup(verts, places: int = 5) -> dict:
     sit exactly where they came from.  Meshes split vertices at UV seams, so a
     position can name several — any of them renders the same triangle, and the
     texgen reads position alone, so the collision does not matter.
+
+    Fallback only.  Prefer the Blender-space table the mesh exporter hands over
+    (see ``blender_lookup`` below): matching against re-derived DTS positions
+    compares the target's recomputed coordinates against the decal's untouched
+    copies of the originals, and the two drift apart in the fifth decimal.
     """
     table = {}
     for i, v in enumerate(verts):
@@ -301,12 +306,21 @@ def _vertex_lookup(verts, places: int = 5) -> dict:
     return table
 
 
-def _decal_mesh_from_blender(bobj, target_mesh, s, t, material_index, warnings) -> Mesh | None:
+def _decal_mesh_from_blender(
+    bobj, target_mesh, s, t, material_index, warnings, blender_lookup=None
+) -> Mesh | None:
     """Rebuild one TSDecalMesh: the covered triangles, as indices into the
-    target, plus the projection planes read back off the empty."""
+    target, plus the projection planes read back off the empty.
+
+    ``blender_lookup`` maps the *target's* Blender-local vertex positions to the
+    DTS indices they were exported as.  A decal mesh holds bit-identical copies
+    of those coordinates, so matching there is exact; matching against the
+    exported DTS positions is not, because those went through the object's
+    transform on the way out and came back a few ULPs different.
+    """
     me = bobj.data
     me.calc_loop_triangles()
-    lookup = _vertex_lookup(target_mesh.verts or target_mesh.initial_verts)
+    lookup = blender_lookup or _vertex_lookup(target_mesh.verts or target_mesh.initial_verts)
 
     indices, missed = [], 0
     for tri in me.loop_triangles:
@@ -346,7 +360,26 @@ def _decal_mesh_from_blender(bobj, target_mesh, s, t, material_index, warnings) 
     return mesh
 
 
-def build_decals(shape: Shape, arm_obj, object_index_by_name, material_index_of, warnings) -> dict:
+def blender_lookup_of(bobj, dts_index_of_bvert, places: int = 5) -> dict:
+    """Target's Blender-local vertex positions -> the DTS indices they became.
+
+    Built while the target mesh is exported, because that is the only place
+    both halves of the mapping exist at once.  Keyed by the target's Blender
+    object name, which is what ``dts_decal_target`` records.
+    """
+    table = {}
+    for bvert, dts_index in dts_index_of_bvert.items():
+        co = bobj.data.vertices[bvert].co
+        table.setdefault(
+            (round(co.x, places), round(co.y, places), round(co.z, places)), dts_index
+        )
+    return table
+
+
+def build_decals(
+    shape: Shape, arm_obj, object_index_by_name, material_index_of, warnings,
+    target_lookups=None,
+) -> dict:
     """Recompute the decal table from the projector empties and their meshes.
 
     Nothing is replayed from a stored payload: the texgen planes come back out
@@ -426,7 +459,12 @@ def build_decals(shape: Shape, arm_obj, object_index_by_name, material_index_of,
             bmat = bobj.material_slots[0].material if bobj.material_slots else None
             mat_index = material_index_of(bmat) if bmat is not None else 0
             shape.meshes.append(
-                _decal_mesh_from_blender(bobj, target, s, t, max(mat_index, 0), warnings)
+                _decal_mesh_from_blender(
+                    bobj, target, s, t, max(mat_index, 0), warnings,
+                    blender_lookup=(target_lookups or {}).get(
+                        str(bobj.get("dts_decal_target", ""))
+                    ),
+                )
             )
 
         decal_index_map[index] = len(shape.decals)
@@ -517,6 +555,11 @@ def import_decals(
             bobj["dts_decal_index"] = decal_index
             bobj["dts_decal_object"] = owner
             bobj["dts_decal_slot"] = j
+            # the target by Blender identity, not by (object name, detail slot):
+            # export rebuilds the detail table and can number the slots
+            # differently, and a decal that matches its faces against the wrong
+            # LOD's vertices covers nothing at all
+            bobj["dts_decal_target"] = target_obj.name
             bobj["dts_detail_size"] = size
             bobj["dts_subshape"] = target_obj.get("dts_subshape", 0)
 

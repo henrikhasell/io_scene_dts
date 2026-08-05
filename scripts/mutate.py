@@ -31,13 +31,27 @@ REPO = Path(__file__).resolve().parent.parent
 
 # name -> (file, find, replace, tests that must fail)
 MUTATIONS = {
-    "uv-digest": (
-        "mapping/shape_to_blender.py",
-        "    for layer in me.uv_layers:\n"
-        "        h.update(layer.name.encode(\"utf-8\"))",
-        "    for layer in []:\n"
-        "        h.update(layer.name.encode(\"utf-8\"))",
+    # Until every mesh was re-derived unconditionally this mutation narrowed
+    # mesh_digest instead, because the digest was what decided whether a UV
+    # edit survived.  It stopped being caught the moment the payload stopped
+    # gating ordinary meshes -- which is the harness doing its job.
+    "uv-export": (
+        "mapping/blender_to_shape.py",
+        "            uv = tuple(uv_layer.data[loop_index].uv) if uv_layer else (0.0, 0.0)",
+        "            uv = (0.0, 0.0)",
         ["test_uv_edit_reaches_the_exported_file"],
+    ),
+    "lod-pool": (
+        "mapping/blender_to_shape.py",
+        "            warnings, pool=pool,",
+        "            warnings, pool=None,",
+        ["test_lod_vertex_sharing_is_rederived"],
+    ),
+    "decal-objects": (
+        "mapping/blender_to_shape.py",
+        '        if o.type != "MESH" or "dts_decal_name" in o:',
+        '        if o.type != "MESH":',
+        ["test_decal_meshes_are_not_exported_as_objects"],
     ),
     "matframes-store": (
         "mapping/matframes.py",

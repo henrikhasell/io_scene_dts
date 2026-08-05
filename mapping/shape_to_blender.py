@@ -113,9 +113,6 @@ def shape_to_blender(
             size = int(detail.size) if detail else j
             display = object_display_name(base_name or "object", size)
             bobj = _build_mesh_object(shape, mesh, display, bmats, warnings)
-            # index in the source shape's mesh array, so a verbatim re-emit can
-            # re-point parent_mesh at wherever the parent lands on export
-            bobj["dts_source_index"] = obj.start_mesh_index + j
             bobj["dts_object_name"] = base_name
             # an object can own trailing empty mesh slots (a detail level it has
             # no geometry for); without the source count they get truncated

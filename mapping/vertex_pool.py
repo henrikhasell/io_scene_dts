@@ -36,19 +36,30 @@ from __future__ import annotations
 #
 # Normals are the delicate one.  The importer writes one normal per vertex with
 # normals_split_custom_set_from_vertices, but Blender stores split normals
-# compressed and hands them back varying in the *fourth* decimal from corner to
-# corner of the same vertex.  Keying at 4 places therefore splits nearly every
-# vertex into two or three, which on bioderm_light meant 1344 stored vertices
-# becoming 9384 and the file tripling.  Three places absorbs the compression
-# noise; it merges normals within about 0.06 degrees of each other, which is
-# far below what DTS itself resolves -- the format also ships a 256-entry
-# encoded-normal table (dtslib/normals.py) that is coarser still.
+# compressed and hands them back varying from corner to corner of the same
+# vertex -- in the *fourth* decimal within one mesh, and rather more than that
+# between two meshes with different topology, which is what decides whether a
+# detail level can share its neighbour's vertices.
+#
+# Measured on the fixtures, stored vertices against what the source file holds:
+#
+#     places   ammo   shield   gman   sqknest   bioderm      (source: 89 / 518
+#          4     ...      ...    ...       ...     9384       / 1135 / 301 / 1344)
+#          3      88      524   1231       328     2845
+#          2      83      497   1145       305     2692
+#
+# Two places lands the skinned shapes on source parity.  It merges normals
+# within about 0.6 degrees of each other: far finer than the 256-entry
+# encoded-normal table the format itself ships (dtslib/normals.py), whose
+# entries average some 13 degrees apart.  A hard edge is not at risk -- those
+# differ by tens of degrees -- and a UV seam still splits, because uv is keyed
+# six places down.
 #
 # Only identity is quantized.  The value stored is the one first seen, at full
 # precision.
 POS_PLACES = 5
 UV_PLACES = 6
-NRM_PLACES = 3
+NRM_PLACES = 2
 
 
 class VertexPool:

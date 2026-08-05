@@ -51,18 +51,36 @@ import and re-export; impossible to author or modify.
 - **Node scale animation** (uniform, aligned and arbitrary).  Preserved as a
   `dts_scale_anim` JSON blob on the action.  Scaling a pose bone in Blender
   does **not** produce scale animation. `mapping/sequences.py:255`
-- **Mesh strip packing, vertex order, `parent_mesh` vertex sharing and encoded
-  normals.**  Preserved via `dts_source_payload` — a pickled `dtslib.Mesh` —
-  and re-emitted verbatim *only while the mesh is untouched*.  Edit it and all
-  of that is regenerated from scratch. `mapping/shape_to_blender.py:558`
-  What that costs is now measured rather than guessed
-  (`scripts/analyze_lod_share.py`): strip packing is worth **×1.00**, because
-  the u16 index buffer is dwarfed by the float vertex arrays, while losing
-  `parent_mesh` sharing costs **×1.85 on average and ×3.5 at worst**.
-  The digest covers UVs, split normals, material assignment, shape keys, skin
-  weights and material-frame attributes as well as geometry
-  (`mapping/shape_to_blender.py:277`); until it did, editing any of those left
-  the digest matching and the edit was silently discarded.
+
+### What used to be here: the mesh payload
+
+Mesh geometry is no longer on this list.  Only sorted meshes are still replayed
+from `dts_source_payload`; every other mesh is re-derived from the Blender
+geometry on every export, so an edit always reaches the file.  What the payload
+used to buy is now paid back in the exporter instead:
+
+- **`parent_mesh` vertex sharing is re-derived, not carried.**  Each detail
+  level of an object is interned into one pool lowest-detail-first, so every
+  smaller level occupies a prefix of the larger one and names it as its parent
+  (`mapping/vertex_pool.py`).  Sharing can never cost bytes — the pool is the
+  union of the per-level vertex sets, so it cannot exceed their sum.
+- **Strip and fan packing is dropped deliberately.**  Everything exports as
+  indexed triangle lists.  Measured across the corpus this is worth **×1.00**:
+  312,733 strip primitives become triangles for no size change at all, because
+  the u16 index buffer is dwarfed by the float vertex arrays.
+- **Vertex order and encoded normals are not preserved.**  Both are recomputed;
+  the encoded normals from the 256-entry table in `dtslib/normals.py`.
+
+Where that lands, fixture by fixture: `turret_belly_barrell` ×0.98, `ammo`
+×0.97, `pack_upgrade_shield` ×0.97, `weapon_chaingun_ammocasing` ×1.01,
+`gman` ×1.23, `bioderm_light` ×1.32.  The two that grow are dominated by
+sequence data rather than geometry — see §4.
+
+The remaining geometry cost is normal quantization.  Blender hands split
+normals back compressed, varying between two meshes of different topology, so
+the pool keys them two decimals down (~0.6°, far finer than the format's own
+encoded-normal table) or detail levels stop matching each other.
+`mapping/vertex_pool.py`
 
 ---
 
@@ -163,6 +181,18 @@ or changes what renders:
   action to `.dsq` silently discards its visibility, frame, matframe and decal
   tracks.  Visibility and decal states round-trip through **DTS only**.  There
   is currently no warning when this happens — worth adding.
+- **Skin and multi-frame meshes do not share vertices across detail levels.**
+  A shared skin would need `initial_verts`, `vertex_index`, `bone_index`,
+  `weight` and `node_index` to be prefixes too (`dtslib/mesh_io.py:107-140`),
+  and a multi-frame mesh's array runs past the shared prefix into its frame
+  blocks.  A multi-frame mesh can still be a *parent*.  14 meshes in the whole
+  corpus share a skin, so this costs almost nothing.
+  `mapping/blender_to_shape.py:466`
+- **Sequences re-export larger than they were read.**  `gman`'s node rotations
+  go from 13,556 to 18,588 entries, which is most of that shape's growth.  This
+  predates the geometry work and is not caused by it: the exporter writes a key
+  for every node in the stored matters sets rather than for the channels that
+  actually exist.
 - **`merge_indices` naming a vertex no face uses.**  A strip-packed source mesh
   carries vertices that only ever appear in a degenerate stitch triangle.  Once
   the mesh is edited and re-derived as triangle lists those vertices are gone,
@@ -258,15 +288,16 @@ Subtle, because nothing errors and nothing warns.
 
 ## Coverage
 
-`tests/blender/test_operators.py` (52 tests) covers the round-trip of every
+`tests/blender/test_operators.py` (55 tests) covers the round-trip of every
 "opaque" item above, plus visibility and decal export/reimport.  The remaining
 "blind" items are tested at the file level only — no test asserts a preview
 exists, because none does.  Most "dropped" items have no tests: they are known
 losses, not regressions to guard; the exception is the partial `merge_indices`
 loss, which is asserted exactly so it cannot quietly get worse.
 
-Five of those tests assert that an *edit* reaches the file — UVs, material
-frames, merge indices and both halves of the flags word.  Each is paired with a
+Several of those tests assert that an *edit* reaches the file — UVs, material
+frames, merge indices, both halves of the flags word, and the re-derived
+detail-level vertex sharing.  Each is paired with a
 mutation in `scripts/mutate.py` that disables the capability and checks the
 test notices, because import and export share property names and a round-trip
 test can otherwise pass without either end touching the file.  Run them with

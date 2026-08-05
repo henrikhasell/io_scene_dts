@@ -87,7 +87,9 @@ def extra_blocks(me, blender_vert_per_dts_vert) -> list[list[tuple[float, float]
 
     ``blender_vert_per_dts_vert`` maps each DTS vertex index back to the
     Blender vertex it was deduplicated from, so a mesh whose corners split at a
-    UV seam still gets one value per DTS vertex.
+    UV seam still gets one value per DTS vertex.  An entry of -1 is a vertex
+    this mesh does not own -- padding in a detail level's shared prefix -- and
+    gets a zero coordinate, which nothing indexes.
     """
     blocks = []
     for name in frame_names(me):
@@ -97,7 +99,7 @@ def extra_blocks(me, blender_vert_per_dts_vert) -> list[list[tuple[float, float]
         data = attr.data
         block = []
         for bvert in blender_vert_per_dts_vert:
-            if bvert < len(data):
+            if 0 <= bvert < len(data):
                 u, v = data[bvert].vector
                 block.append((u, 1.0 - v))
             else:
