@@ -31,6 +31,18 @@ LEGACY_ACTION_KEYS = (
     "dts_trans_matters",
     "dts_keyframes",
 )
+# per-mesh flags, when they were ID properties present only if set
+LEGACY_MESH_KEYS = (
+    "dts_billboard",
+    "dts_billboard_z",
+    "dts_has_detail_texture",
+    "dts_use_encoded_normals",
+    "dts_echo_type_bits",
+    "dts_sorted_mode",
+    "dts_sorted_depth",
+    "dts_always_write_depth",
+)
+
 # the mesh payload: deliberately not converted, see note() below
 LEGACY_PAYLOAD_KEYS = (
     "dts_source_payload",

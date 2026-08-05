@@ -24,6 +24,7 @@ import bpy
 from mathutils import Matrix, Vector
 
 from ..dtslib import Shape
+from ..props.mesh import SCHEMA_VERSION as MESH_SCHEMA_VERSION
 from ..props.shape import SCHEMA_VERSION
 from ..dtslib.types import (
     DECAL_MESH,
@@ -390,21 +391,22 @@ def decode_primitives(mesh: Mesh) -> list[tuple[int, int, int, int]]:
 # exporter echoed it varies per mesh -- all 119 sorted meshes in the corpus do,
 # 16 of 20 skins do -- so it is recorded rather than inferred.
 _MESH_FLAG_PROPS = (
-    ("dts_billboard", MESH_BILLBOARD),
-    ("dts_billboard_z", MESH_BILLBOARD_Z_AXIS),
-    ("dts_has_detail_texture", MESH_HAS_DETAIL_TEXTURE),
-    ("dts_use_encoded_normals", MESH_USE_ENCODED_NORMALS),
+    ("billboard", MESH_BILLBOARD),
+    ("billboard_z", MESH_BILLBOARD_Z_AXIS),
+    ("has_detail_texture", MESH_HAS_DETAIL_TEXTURE),
+    ("use_encoded_normals", MESH_USE_ENCODED_NORMALS),
 )
 
 _MESH_TYPE_MASK = 0x7
 
 
 def _store_mesh_flags(bobj, mesh: Mesh, warnings) -> None:
+    props = bobj.dts_mesh
+    props.is_dts = True
+    props.schema_version = MESH_SCHEMA_VERSION
     for prop, bit in _MESH_FLAG_PROPS:
-        if mesh.flags & bit:
-            bobj[prop] = True
-    if mesh.flags & _MESH_TYPE_MASK:
-        bobj["dts_echo_type_bits"] = True
+        setattr(props, prop, bool(mesh.flags & bit))
+    props.echo_type_bits = bool(mesh.flags & _MESH_TYPE_MASK)
     known = _MESH_TYPE_MASK
     for _, bit in _MESH_FLAG_PROPS:
         known |= bit
@@ -423,11 +425,12 @@ def flags_from_blender(bobj, mesh_type: int) -> int:
     table cannot drift apart -- the same reason materials.py keeps its flag
     pair together.
     """
+    props = bobj.dts_mesh
     flags = 0
     for prop, bit in _MESH_FLAG_PROPS:
-        if bobj.get(prop):
+        if getattr(props, prop):
             flags |= bit
-    if bobj.get("dts_echo_type_bits"):
+    if props.echo_type_bits:
         flags |= mesh_type & _MESH_TYPE_MASK
     return flags
 
@@ -519,10 +522,9 @@ def _store_sorted_mode(bobj, mesh: Mesh) -> None:
     """
     if mesh.mesh_type != SORTED_MESH:
         return
-    bobj["dts_sorted_mode"] = "BSP"
-    bobj["dts_sorted_depth"] = 2
+    bobj.dts_mesh.sorted_mode = "BSP"
     if mesh.sorted_data is not None and mesh.sorted_data.always_write_depth:
-        bobj["dts_always_write_depth"] = True
+        bobj.dts_mesh.always_write_depth = True
 
 
 def _add_frame_shape_keys(mesh: Mesh, bobj) -> None:

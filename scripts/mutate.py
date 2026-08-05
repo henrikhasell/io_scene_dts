@@ -127,7 +127,17 @@ MUTATIONS = {
         "mapping/shape_to_blender.py",
         "def flags_from_blender(bobj, mesh_type: int) -> int:",
         "def flags_from_blender(bobj, mesh_type: int) -> int:\n    return 0",
-        ["test_mesh_flags_survive_an_edit", "test_mesh_type_echo_bits_survive_an_edit"],
+        [
+            "test_mesh_flags_survive_an_edit",
+            "test_mesh_type_echo_bits_survive_an_edit",
+            "test_a_billboard_can_be_authored_from_a_plain_mesh",
+        ],
+    ),
+    "billboard-z": (
+        "mapping/shape_to_blender.py",
+        '    ("billboard_z", MESH_BILLBOARD_Z_AXIS),',
+        "",
+        ["test_a_billboard_can_be_authored_from_a_plain_mesh"],
     ),
 }
 

@@ -1012,7 +1012,10 @@ def test_mesh_flags_survive_an_edit():
     """
     _reset()
     _import_dts("v21_xorg21.dts")
-    billboard = [o for o in bpy.context.scene.objects if o.get("dts_billboard")]
+    billboard = [
+        o for o in bpy.context.scene.objects
+        if o.type == "MESH" and o.dts_mesh.billboard
+    ]
     assert billboard, "fixture's billboard mesh did not import as one"
     for obj in billboard:
         obj.data.vertices[0].co.x += 0.01
@@ -1023,10 +1026,70 @@ def test_mesh_flags_survive_an_edit():
     assert any(m.flags & (1 << 31) for m in dst.meshes if m is not None), "billboard bit lost"
 
 
+def test_a_billboard_can_be_authored_from_a_plain_mesh():
+    """Turning a mesh *into* a billboard, which the ID-prop form could not do.
+
+    The flags were written only when the bit was set, so a mesh that was not
+    already a billboard had no property for a checkbox to bind to: the flag
+    could be cleared and never set.  Z-axis is the sharper case — no Tribes 2
+    shape sets it, so there was nowhere in any scene to tick it.
+    """
+    from io_scene_dts.dtslib.types import MESH_BILLBOARD, MESH_BILLBOARD_Z_AXIS
+
+    _reset()
+    _import_dts("v24_ammo.dts")
+    plain = next(
+        o for o in bpy.context.scene.objects
+        if o.type == "MESH" and "dts_object_name" in o and not o.dts_mesh.billboard
+    )
+    plain.dts_mesh.billboard = True
+    plain.dts_mesh.billboard_z = True
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
+    dst = read_shape_file(out)
+    flagged = [
+        m for m in dst.meshes
+        if m is not None and m.flags & MESH_BILLBOARD and m.flags & MESH_BILLBOARD_Z_AXIS
+    ]
+    assert flagged, "a billboard authored in Blender did not reach the file"
+
+    # and it comes back as one, so the round trip is closed in both directions
+    _reset()
+    assert bpy.ops.io_scene_dts.import_dts(filepath=out) == {"FINISHED"}
+    back = [
+        o for o in bpy.context.scene.objects
+        if o.type == "MESH" and o.dts_mesh.billboard and o.dts_mesh.billboard_z
+    ]
+    assert back, "the Z-axis billboard did not survive re-import"
+
+
+def test_every_mesh_flag_is_settable_not_just_clearable():
+    """Each flag exists on every DTS mesh with a default, so a panel can draw
+    it.  Absence used to mean False, which is not something you can tick."""
+    _reset()
+    _import_dts("v24_ammo.dts")
+    for obj in bpy.context.scene.objects:
+        if obj.type != "MESH" or "dts_object_name" not in obj:
+            continue
+        props = obj.dts_mesh
+        assert props.is_dts
+        for field in ("billboard", "billboard_z", "has_detail_texture",
+                      "use_encoded_normals", "echo_type_bits", "always_write_depth"):
+            assert isinstance(getattr(props, field), bool), field
+        assert props.sorted_mode in ("NONE", "FLAT", "BSP")
+        # and the old conditionally-present keys are gone
+        for key in ("dts_billboard", "dts_billboard_z", "dts_sorted_mode"):
+            assert key not in obj.keys(), key
+
+
 def test_mesh_type_echo_bits_survive_an_edit():
     _reset()
     _import_dts("v24_w_sqknest.dts")
-    echoing = [o for o in bpy.context.scene.objects if o.get("dts_echo_type_bits")]
+    echoing = [
+        o for o in bpy.context.scene.objects
+        if o.type == "MESH" and o.dts_mesh.echo_type_bits
+    ]
     assert echoing, "fixture's skins did not record the type echo"
     for obj in echoing:
         obj.data.vertices[0].co.x += 0.001
@@ -1368,7 +1431,10 @@ def test_sorted_meshes_survive_an_edit():
     src = read_shape_file(FIXTURES / "v21_xorg21.dts")
     assert any(m is not None and m.mesh_type == 3 for m in src.meshes), "fixture has no sorted mesh"
 
-    sorted_objs = [o for o in bpy.context.scene.objects if o.get("dts_sorted_mode")]
+    sorted_objs = [
+        o for o in bpy.context.scene.objects
+        if o.type == "MESH" and o.dts_mesh.sorted_mode != "NONE"
+    ]
     assert sorted_objs, "sorted meshes did not record how to rebuild their tree"
     assert not any(o.get("dts_strict_freeze") for o in sorted_objs), "still frozen"
 

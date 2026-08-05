@@ -120,12 +120,20 @@ way to check your work short of re-reading the exported file.
   plane can still draw out of order — as it can in the shipped art, which drops
   triangles entirely from some angles on 54 of its 119 sorted meshes.
   `dtslib/sorted_build.py`
-- **Mesh flag bits.**  All four defined bits (`MESH_BILLBOARD`,
-  `MESH_BILLBOARD_Z_AXIS`, `MESH_HAS_DETAIL_TEXTURE`,
-  `MESH_USE_ENCODED_NORMALS`) plus the mesh-type echo in the low three bits get
-  a named boolean, so nothing hides in a packed word.  Only `dts_billboard`
-  changes anything you can see.  Undocumented bits are dropped with a warning;
-  no corpus mesh has one. `mapping/shape_to_blender.py:392`
+- **Billboards.**  `MESH_BILLBOARD` makes the engine draw a mesh facing the
+  camera, by replacing its rotation with the identity and keeping only
+  position and scale (`tsMesh.cc:59`); `MESH_BILLBOARD_Z_AXIS` modifies that
+  rather than replacing it, keeping the Z axis so the mesh spins but stays
+  upright — what a trunk or a flame wants.  87 meshes across 10 corpus shapes
+  are billboards; none is Z-axis-locked.
+
+  Both are checkboxes in Object Properties → DTS Mesh, along with
+  `MESH_HAS_DETAIL_TEXTURE`, `MESH_USE_ENCODED_NORMALS` and the mesh-type echo
+  in the low three bits, so no flag hides in a packed word.  **Nothing in the
+  viewport turns a billboard to face you**, which is why they are here: the
+  flag is correct in the file and invisible while you work.
+  Undocumented bits are dropped with a warning; no corpus mesh has one.
+  `props/mesh.py`, `mapping/shape_to_blender.py:393`
 - **Triggers** (footstep sounds, effect hooks).  A collection on the action,
   edited in the DTS tab of the Dope Sheet or NLA sidebar: a state number 1..30
   and two flags rather than the packed U32 the file holds.  Pose markers show
@@ -337,7 +345,7 @@ exist, so adding a bone channel marks its node instead of being ignored.
 
 ## Coverage
 
-`tests/blender/test_operators.py` (72 tests) covers the round-trip of every
+`tests/blender/test_operators.py` (74 tests) covers the round-trip of every
 "opaque" item above, plus visibility and decal export/reimport.  The remaining
 "blind" items are tested at the file level only — no test asserts a preview
 exists, because none does.  Most "dropped" items have no tests: they are known

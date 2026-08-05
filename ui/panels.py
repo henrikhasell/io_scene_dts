@@ -185,23 +185,13 @@ class BONE_PT_dts_node(Panel):
             )
 
 
-_MESH_FLAGS = (
-    ("dts_billboard", "Billboard"),
-    ("dts_billboard_z", "Billboard Z-Axis"),
-    ("dts_has_detail_texture", "Has Detail Texture"),
-    ("dts_use_encoded_normals", "Use Encoded Normals"),
-    ("dts_echo_type_bits", "Echo Mesh Type In Flags"),
-)
-
-
 class OBJECT_PT_dts_mesh(Panel):
-    """The per-mesh settings, which are otherwise ID properties in the N-panel.
+    """The per-mesh settings, which have no natural home in Blender's own UI.
 
-    Only the ones with a decision behind them: what kind of mesh this is, and
-    how its cluster tree should be rebuilt.  The identity properties
-    (dts_object_name, dts_detail_size) are deliberately shown read-only --
-    changing them re-parents the mesh to a different DTS object, which is a
-    rename, not a setting.
+    Every flag is drawn whether or not it is set.  They used to be ID
+    properties written only when the bit was on, so a mesh that was not
+    already a billboard had no billboard checkbox to tick -- the flag could be
+    cleared and never set.
     """
 
     bl_label = "DTS Mesh"
@@ -216,6 +206,7 @@ class OBJECT_PT_dts_mesh(Panel):
 
     def draw(self, context):
         obj = context.object
+        props = obj.dts_mesh
         layout = self.layout
 
         row = layout.row()
@@ -223,22 +214,28 @@ class OBJECT_PT_dts_mesh(Panel):
         row.label(text=f"object {obj['dts_object_name']}, detail "
                        f"{obj.get('dts_detail_size', '?')}")
 
-        if "dts_sorted_mode" in obj:
-            box = layout.box()
-            box.label(text="Sorted mesh: back-to-front draw order for translucency")
-            box.prop(obj, '["dts_sorted_mode"]', text="Mode")
-            if str(obj["dts_sorted_mode"]).upper() == "BSP":
-                if "dts_sorted_depth" in obj:
-                    box.prop(obj, '["dts_sorted_depth"]', text="Tree Depth")
-                box.label(text="Each level doubles the index buffer", icon="INFO")
-            if "dts_always_write_depth" in obj:
-                box.prop(obj, '["dts_always_write_depth"]', text="Always Write Depth")
+        column = layout.column(align=True)
+        column.prop(props, "billboard")
+        sub = column.column(align=True)
+        # the Z variant modifies the first rather than replacing it
+        sub.enabled = props.billboard
+        sub.prop(props, "billboard_z")
+        if props.billboard:
+            layout.label(text="Nothing in the viewport turns it to face you", icon="INFO")
 
         column = layout.column(align=True)
-        column.label(text="Flags")
-        for prop, label in _MESH_FLAGS:
-            if prop in obj:
-                column.prop(obj, f'["{prop}"]', text=label)
+        column.prop(props, "has_detail_texture")
+        column.prop(props, "use_encoded_normals")
+        column.prop(props, "echo_type_bits")
+
+        box = layout.box()
+        box.label(text="Draw order")
+        box.prop(props, "sorted_mode", text="")
+        if props.sorted_mode == "BSP":
+            box.prop(props, "sorted_depth")
+            box.label(text="Each level doubles the index buffer", icon="INFO")
+        if props.sorted_mode != "NONE":
+            box.prop(props, "always_write_depth")
 
         from ..mapping import matframes
 

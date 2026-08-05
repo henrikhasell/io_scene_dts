@@ -608,9 +608,9 @@ def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warn
         if sort_mode == "BSP":
             mesh.primitives, mesh.indices, mesh.sorted_data = build_sorted(
                 verts, tris,
-                depth=int(bobj.get("dts_sorted_depth", 2)),
+                depth=bobj.dts_mesh.sorted_depth,
                 num_mat_frames=mat_frames,
-                always_write_depth=int(bool(bobj.get("dts_always_write_depth"))),
+                always_write_depth=int(bobj.dts_mesh.always_write_depth),
             )
         else:  # FLAT: keep the mesh type, claim no ordering
             for word, indices in by_mat.items():
@@ -619,7 +619,7 @@ def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warn
             mesh.sorted_data = flat_sorted(
                 mesh.primitives, verts,
                 num_mat_frames=mat_frames,
-                always_write_depth=int(bool(bobj.get("dts_always_write_depth"))),
+                always_write_depth=int(bobj.dts_mesh.always_write_depth),
             )
     mesh.verts_per_frame = len(verts)
     mesh.flags = flags_from_blender(bobj, mesh.mesh_type)
@@ -688,12 +688,7 @@ def _sorted_mode(bobj, is_skin: bool, has_frames: bool, warnings) -> str:
     *for*, but turning every translucent mesh in a scene into one would change
     how the engine draws it without anybody asking.
     """
-    mode = str(bobj.get("dts_sorted_mode", "NONE")).upper()
-    if mode not in ("NONE", "FLAT", "BSP"):
-        warnings.append(
-            f"mesh {bobj.name!r}: unknown dts_sorted_mode {mode!r}; exporting as a standard mesh"
-        )
-        return "NONE"
+    mode = bobj.dts_mesh.sorted_mode
     if mode == "NONE":
         return "NONE"
     # mesh_type is one field: a mesh is a skin or it is sorted, never both

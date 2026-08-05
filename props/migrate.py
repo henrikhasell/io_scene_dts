@@ -16,6 +16,7 @@ import bpy
 
 from .legacy import (
     LEGACY_ACTION_KEYS,
+    LEGACY_MESH_KEYS,
     LEGACY_PAYLOAD_KEYS,
     LEGACY_SHAPE_KEYS,
     _loads,
@@ -25,6 +26,7 @@ from .legacy import (
     parse_node_transforms,
     parse_triggers,
 )
+from .mesh import SCHEMA_VERSION as MESH_SCHEMA_VERSION
 from .shape import SCHEMA_VERSION
 
 __all__ = ["legacy_keys_present", "migrate_all", "on_load"]
@@ -139,6 +141,34 @@ def migrate_action(action, report: list) -> bool:
     return True
 
 
+def migrate_mesh_flags(obj, report: list) -> bool:
+    """The per-mesh flags, from ID properties to the property group.
+
+    The old form wrote a key only when the bit was *set*, so absence meant
+    False -- which is why they could never be ticked in a panel.
+    """
+    present = [key for key in LEGACY_MESH_KEYS if key in obj]
+    if not present:
+        return False
+    props = obj.dts_mesh
+    if props.schema_version < MESH_SCHEMA_VERSION:
+        props.is_dts = True
+        for key in present:
+            value = obj[key]
+            field = key.removeprefix("dts_")
+            if field in ("sorted_mode",):
+                mode = str(value).upper()
+                props.sorted_mode = mode if mode in ("NONE", "FLAT", "BSP") else "NONE"
+            elif field == "sorted_depth":
+                props.sorted_depth = int(value)
+            else:
+                setattr(props, field, bool(value))
+        props.schema_version = MESH_SCHEMA_VERSION
+    for key in present:
+        del obj[key]
+    return True
+
+
 def migrate_meshes(report: list) -> bool:
     """Drop the pickled mesh payload without reading it.
 
@@ -171,6 +201,8 @@ def migrate_all() -> list[str]:
     for obj in bpy.data.objects:
         if obj.type == "ARMATURE":
             changed |= migrate_armature(obj, report)
+        elif obj.type == "MESH":
+            changed |= migrate_mesh_flags(obj, report)
     for action in bpy.data.actions:
         changed |= migrate_action(action, report)
     if changed:
@@ -191,7 +223,11 @@ def legacy_keys_present() -> list[str]:
     """Legacy keys still in the scene, for the export path to refuse on."""
     found = []
     for obj in bpy.data.objects:
-        found += [f"{obj.name}.{k}" for k in LEGACY_SHAPE_KEYS + LEGACY_PAYLOAD_KEYS if k in obj]
+        found += [
+            f"{obj.name}.{k}"
+            for k in LEGACY_SHAPE_KEYS + LEGACY_PAYLOAD_KEYS + LEGACY_MESH_KEYS
+            if k in obj
+        ]
     for action in bpy.data.actions:
         found += [f"{action.name}.{k}" for k in LEGACY_ACTION_KEYS if k in action]
     return found
