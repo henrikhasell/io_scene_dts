@@ -46,6 +46,22 @@ def animated_object_names(actions) -> set:
     return names
 
 
+def fractional_object_names(actions) -> set:
+    """Names whose vis track holds values between 0 and 1.
+
+    A binary track is a swap, and the hide drivers cover it without making the
+    material transparent.  Only a genuine fade needs alpha — the generator's
+    power lights pulse 0.1..1.0, while its panel swaps are 1/0.
+    """
+    names = set()
+    for action in actions:
+        for base_name, tracks in tracks_of(action).items():
+            vis = tracks.get("vis") or []
+            if any(0.0 < float(v) < 1.0 for v in vis):
+                names.add(base_name)
+    return names
+
+
 def ensure_props(arm_obj, names, default: float = 1.0) -> None:
     """The ID property must exist before an fcurve or driver can resolve it."""
     for name in names:
@@ -88,6 +104,81 @@ def _add_driver(obj, path, index, arm_obj, base_name, expression):
     var.targets[0].data_path = vis_path(base_name)
     drv.expression = expression
     return fcurve
+
+
+def apply_default_vis(arm_obj, names) -> None:
+    """Start each property at the shape's default object state.
+
+    Defaulting to 1.0 shows everything at once, which is wrong for shapes that
+    use visibility to pick a state: the large generator's "ON" meshes and its
+    destroyed hulk are all hidden at rest, and drawing the hulk buries the
+    machine it replaces.
+    """
+    defaults = {}
+    for obj in bpy.data.objects:
+        name = obj.get("dts_object_name")
+        if obj.type == "MESH" and name in names and name not in defaults:
+            defaults[name] = float(obj.get("dts_default_vis", 1.0))
+    for name, value in defaults.items():
+        arm_obj[vis_prop(name)] = value
+
+
+def _wire_material_alpha(mat) -> bool:
+    """Feed the object's alpha into the shader, so a per-object fade shows.
+
+    Object alpha defaults to 1.0, so this is a no-op for every other mesh
+    sharing the material — only the driven ones change.
+    """
+    nt = getattr(mat, "node_tree", None)
+    if nt is None:
+        return False
+    if any(n.type == "OBJECT_INFO" for n in nt.nodes):
+        return False  # already wired; re-import must not stack nodes
+    bsdf = next((n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"), None)
+    if bsdf is None:
+        return False
+
+    info = nt.nodes.new("ShaderNodeObjectInfo")
+    info.location = (bsdf.location.x - 600, bsdf.location.y - 300)
+    if "Alpha" not in info.outputs:
+        nt.nodes.remove(info)
+        return False
+
+    alpha_in = bsdf.inputs["Alpha"]
+    if alpha_in.is_linked:
+        # keep the texture's own alpha (MAT_TRANSLUCENT) and modulate it
+        source = alpha_in.links[0].from_socket
+        mul = nt.nodes.new("ShaderNodeMath")
+        mul.operation = "MULTIPLY"
+        mul.location = (bsdf.location.x - 300, bsdf.location.y - 300)
+        nt.links.new(source, mul.inputs[0])
+        nt.links.new(info.outputs["Alpha"], mul.inputs[1])
+        nt.links.new(mul.outputs[0], alpha_in)
+    else:
+        nt.links.new(info.outputs["Alpha"], alpha_in)
+
+    # Blender 4.2+ replaced blend_method with surface_render_method
+    if hasattr(mat, "blend_method"):
+        mat.blend_method = "BLEND"
+    if hasattr(mat, "surface_render_method"):
+        mat.surface_render_method = "BLENDED"
+    return True
+
+
+def wire_fade_materials(fractional_names) -> int:
+    """Wire object alpha into the materials of meshes that genuinely fade."""
+    done, count = set(), 0
+    for obj in bpy.data.objects:
+        if obj.type != "MESH" or obj.get("dts_object_name") not in fractional_names:
+            continue
+        for slot in obj.material_slots:
+            mat = slot.material
+            if mat is None or mat.name in done:
+                continue
+            done.add(mat.name)
+            if _wire_material_alpha(mat):
+                count += 1
+    return count
 
 
 def wire_drivers(arm_obj, names, warnings=None) -> int:

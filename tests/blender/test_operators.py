@@ -1,5 +1,6 @@
 """Integration scenarios run inside Blender by run_blender_tests.py."""
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -842,6 +843,54 @@ def test_object_visibility_animates_through_the_strip():
         bpy.context.view_layer.update()
         seen.add(round(arm[vis_prop("Main_light")], 3))
     assert len(seen) > 1, f"visibility never changed: {seen}"
+
+
+def test_visibility_starts_at_the_shapes_default_state():
+    """Defaulting every vis property to 1.0 shows meshes the shape hides at
+    rest — station_generator_large's destroyed hulk swallowed the machine it
+    replaces, because its default vis is 0."""
+    from io_scene_dts.mapping.visibility import vis_prop
+
+    _reset()
+    arm = _import_dts("v22_disc.dts")
+    hidden = ["leadingEdgeAct", "leadingEdgeMaint", "trailAct", "trailMaint"]
+
+    # mute everything so nothing overrides the resting value
+    for t in arm.animation_data.nla_tracks:
+        t.mute = True
+    bpy.context.scene.frame_set(1)
+    bpy.context.view_layer.update()
+
+    for name in hidden:
+        assert arm[vis_prop(name)] == 0.0, (name, arm[vis_prop(name)])
+        mesh = next(o for o in bpy.data.objects
+                    if o.type == "MESH" and o.get("dts_object_name") == name)
+        ev = mesh.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        assert ev.hide_viewport, f"{name} should be hidden at rest"
+
+
+def test_only_fractional_tracks_get_alpha_materials():
+    """A binary vis track is a swap the hide drivers already cover; making its
+    material transparent would cost sorting for no gain."""
+    from io_scene_dts.mapping.visibility import fractional_object_names
+
+    _reset()
+    _import_dts("v22_disc.dts")
+    actions = [a for a in bpy.data.actions if a.get("dts_sequence")]
+    fades = fractional_object_names(actions)
+
+    for action in actions:
+        for name, tracks in json.loads(action.get("dts_object_anim", "{}") or "{}").items():
+            vis = tracks.get("vis") or []
+            if vis and all(v in (0.0, 1.0) for v in vis) and name not in fades:
+                meshes = [o for o in bpy.data.objects
+                          if o.type == "MESH" and o.get("dts_object_name") == name]
+                for m in meshes:
+                    for slot in m.material_slots:
+                        if slot.material and slot.material.node_tree:
+                            assert not any(n.type == "OBJECT_INFO"
+                                           for n in slot.material.node_tree.nodes), \
+                                f"{name} is binary; {slot.material.name} should stay opaque"
 
 
 def test_visibility_drivers_are_not_duplicated_on_reimport():

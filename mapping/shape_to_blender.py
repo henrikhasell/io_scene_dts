@@ -45,7 +45,13 @@ from .materials import material_to_blender, reset_texture_cache
 from .naming import object_display_name
 from .nla import scene_fps, stack_actions
 from .sequences import dts_local_matrix, import_sequences
-from .visibility import animated_object_names, wire_drivers
+from .visibility import (
+    apply_default_vis,
+    animated_object_names,
+    fractional_object_names,
+    wire_drivers,
+    wire_fade_materials,
+)
 
 BONE_LENGTH = 0.25
 
@@ -196,9 +202,15 @@ def shape_to_blender(
         # one Blender mesh per detail level, so this fans out across LODs
         names = animated_object_names(actions)
         if names:
+            apply_default_vis(arm_obj, names)
             wired = wire_drivers(arm_obj, names, warnings)
+            # a binary track is a swap the hide drivers already cover; only a
+            # real fade needs the material to read object alpha
+            fades = fractional_object_names(actions)
+            mats = wire_fade_materials(fades) if fades else 0
             warnings.append(
-                f"visibility: {len(names)} object(s) driven across {wired} mesh(es)"
+                f"visibility: {len(names)} object(s) driven across {wired} mesh(es); "
+                f"{len(fades)} fade via alpha ({mats} material(s) rewired)"
             )
         _, skipped = stack_actions(arm_obj, actions, scene_fps(context))
         for action in skipped:
