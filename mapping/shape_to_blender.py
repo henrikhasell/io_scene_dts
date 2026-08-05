@@ -31,6 +31,8 @@ from ..dtslib.types import (
     DECAL_MESH,
     MESH_BILLBOARD,
     MESH_BILLBOARD_Z_AXIS,
+    MESH_HAS_DETAIL_TEXTURE,
+    MESH_USE_ENCODED_NORMALS,
     PRIM_FAN,
     PRIM_MATERIAL_MASK,
     PRIM_NO_MATERIAL,
@@ -41,6 +43,7 @@ from ..dtslib.types import (
     Mesh,
 )
 
+from . import matframes
 from .decals import apply_default_states, import_decals, wire_decal_drivers
 from .materials import material_to_blender, reset_texture_cache
 from .naming import object_display_name
@@ -271,18 +274,63 @@ def _parent_like(bobj, target_obj, keep_transform: bool = False) -> None:
     bobj.matrix_world = world
 
 
-def geometry_digest(me) -> str:
-    """Stable digest of a Blender mesh's geometry, used to detect edits to
-    meshes that only round-trip as frozen payloads (sorted/multi-matframe)."""
+def mesh_digest(me) -> str:
+    """Stable digest of everything about a Blender mesh that reaches the file.
+
+    A mesh that still carries a source payload is re-emitted from it verbatim,
+    and this decides whether that payload still describes the mesh.  Hashing
+    positions and polygons alone is not enough: UVs, split normals, material
+    assignment, shape keys, skin weights and material-frame attributes all
+    reach the file too, so an edit to any of them has to invalidate the
+    payload or it is silently discarded in favour of stale data.
+
+    Quantized to the precision the exporter itself keys on
+    (blender_to_shape.py:_export_mesh), so float noise that could not change
+    the output does not churn the digest either.
+    """
     import hashlib
 
     h = hashlib.sha1()
+
+    def f(fmt, *values):
+        h.update((fmt % values).encode("ascii"))
+
     h.update(len(me.vertices).to_bytes(4, "little"))
     for v in me.vertices:
-        h.update(b"%.4f%.4f%.4f" % tuple(v.co))
+        f("%.4f%.4f%.4f", *v.co)
     for p in me.polygons:
+        h.update(p.material_index.to_bytes(4, "little"))
         for vi in p.vertices:
             h.update(vi.to_bytes(4, "little"))
+
+    for layer in me.uv_layers:
+        h.update(layer.name.encode("utf-8"))
+        for datum in layer.data:
+            f("%.6f%.6f", datum.uv[0], datum.uv[1])
+
+    for loop in me.loops:
+        normal = loop.normal if hasattr(loop, "normal") else me.vertices[loop.vertex_index].normal
+        f("%.4f%.4f%.4f", *normal)
+
+    if me.shape_keys is not None:
+        for kb in me.shape_keys.key_blocks:
+            h.update(kb.name.encode("utf-8"))
+            for point in kb.data:
+                f("%.4f%.4f%.4f", *point.co)
+
+    # skin weights, by group index -- the names live on the object, not the
+    # mesh, and a rename does not change what the binding exports
+    for v in me.vertices:
+        for ge in v.groups:
+            h.update(ge.group.to_bytes(4, "little"))
+            f("%.4f", ge.weight)
+
+    for name in matframes.frame_names(me):
+        h.update(name.encode("utf-8"))
+        attr = me.attributes.get(name)
+        for datum in attr.data:
+            f("%.6f%.6f", datum.vector[0], datum.vector[1])
+
     return h.hexdigest()
 
 
@@ -365,9 +413,77 @@ def decode_primitives(mesh: Mesh) -> list[tuple[int, int, int, int]]:
 
 
 def _needs_freezing(mesh: Mesh) -> bool:
-    # plain multi-frame meshes are handled via shape keys; only sorted meshes
-    # and multi-matframe meshes still round-trip as frozen payloads
-    return mesh.mesh_type == SORTED_MESH or mesh.num_mat_frames > 1
+    # multi-frame meshes ride shape keys and multi-matframe meshes ride mesh
+    # attributes; only sorted meshes still have data with nowhere to live
+    return mesh.mesh_type == SORTED_MESH
+
+
+# every defined bit of the mesh flags word, as a named property.  The low three
+# bits are the mesh type echoed into the word (types.py:33); whether an
+# exporter echoed it varies per mesh -- all 119 sorted meshes in the corpus do,
+# 16 of 20 skins do -- so it is recorded rather than inferred.
+_MESH_FLAG_PROPS = (
+    ("dts_billboard", MESH_BILLBOARD),
+    ("dts_billboard_z", MESH_BILLBOARD_Z_AXIS),
+    ("dts_has_detail_texture", MESH_HAS_DETAIL_TEXTURE),
+    ("dts_use_encoded_normals", MESH_USE_ENCODED_NORMALS),
+)
+
+_MESH_TYPE_MASK = 0x7
+
+
+def _store_mesh_flags(bobj, mesh: Mesh, warnings) -> None:
+    for prop, bit in _MESH_FLAG_PROPS:
+        if mesh.flags & bit:
+            bobj[prop] = True
+    if mesh.flags & _MESH_TYPE_MASK:
+        bobj["dts_echo_type_bits"] = True
+    known = _MESH_TYPE_MASK
+    for _, bit in _MESH_FLAG_PROPS:
+        known |= bit
+    leftover = mesh.flags & ~known & 0xFFFFFFFF
+    if leftover:
+        # no corpus mesh has one; say so rather than inventing a home for it
+        warnings.append(
+            f"mesh {bobj.name!r} has undocumented flag bits {leftover:#010x}; they are dropped"
+        )
+
+
+def flags_from_blender(bobj, mesh_type: int) -> int:
+    """Repack the mesh flags word from its named properties, for export.
+
+    Lives here next to ``_store_mesh_flags`` so the two directions of the same
+    table cannot drift apart -- the same reason materials.py keeps its flag
+    pair together.
+    """
+    flags = 0
+    for prop, bit in _MESH_FLAG_PROPS:
+        if bobj.get(prop):
+            flags |= bit
+    if bobj.get("dts_echo_type_bits"):
+        flags |= mesh_type & _MESH_TYPE_MASK
+    return flags
+
+
+def _store_merge_indices(bobj, mesh: Mesh, warnings) -> None:
+    """Keep the legacy LOD-morph table as an int array on the object.
+
+    Order matters and entries repeat, so a vertex group cannot hold it.  DTS
+    vertex index and Blender vertex index agree here because the importer
+    builds one Blender vertex per DTS vertex; the exporter maps back through
+    its corner dedup.
+    """
+    if not mesh.merge_indices:
+        return
+    limit = len(bobj.data.vertices)
+    kept = [i for i in mesh.merge_indices if 0 <= i < limit]
+    if len(kept) != len(mesh.merge_indices):
+        warnings.append(
+            f"mesh {bobj.name!r}: {len(mesh.merge_indices) - len(kept)} merge index(es) "
+            f"point past the mesh's {limit} vertices; dropped"
+        )
+    if kept:
+        bobj["dts_merge_indices"] = kept
 
 
 def _build_mesh_object(shape: Shape, mesh: Mesh, name: str, bmats, warnings) -> bpy.types.Object:
@@ -416,27 +532,31 @@ def _build_mesh_object(shape: Shape, mesh: Mesh, name: str, bmats, warnings) -> 
 
     bobj = bpy.data.objects.new(name, bm)
     bobj["dts_mesh_type"] = mesh.mesh_type
-    if mesh.flags & MESH_BILLBOARD:
-        bobj["dts_billboard"] = True
-    if mesh.flags & MESH_BILLBOARD_Z_AXIS:
-        bobj["dts_billboard_z"] = True
-    # Every mesh keeps a verbatim copy of its source payload.  On export an
-    # unedited mesh is re-emitted from this rather than re-derived, which is
-    # what preserves strip packing, vertex order and count, parent_mesh vertex
-    # sharing, merge_indices and encoded normals -- re-deriving throws all of
-    # that away and roughly triples the file.  Only an edited mesh is rebuilt
-    # from the Blender geometry.
-    bobj["dts_source_payload"] = base64.b64encode(pickle.dumps(mesh)).decode("ascii")
-    bobj["dts_source_digest"] = geometry_digest(bm)
+    _store_mesh_flags(bobj, mesh, warnings)
+    _store_merge_indices(bobj, mesh, warnings)
+    matframes.store(bm, mesh, warnings)
     if _needs_freezing(mesh):
-        # these cannot be re-derived at all, so an edit is refused outright
+        # the BSP cluster tables cannot be re-derived yet, so an edit is
+        # refused outright
         bobj["dts_strict_freeze"] = True
         warnings.append(
-            f"mesh {name!r} is {'sorted' if mesh.mesh_type == SORTED_MESH else 'multi-matframe'}; "
-            f"it re-exports verbatim and refuses to export if its geometry is edited"
+            f"mesh {name!r} is sorted; it re-exports verbatim and refuses to "
+            f"export if its geometry is edited"
         )
     elif mesh.num_frames > 1:
         _add_frame_shape_keys(mesh, bobj)
+
+    # Every mesh keeps a verbatim copy of its source payload.  On export an
+    # unedited mesh is re-emitted from this rather than re-derived, which is
+    # what preserves strip packing, vertex order and count, parent_mesh vertex
+    # sharing and encoded normals -- re-deriving throws all of that away.  Only
+    # an edited mesh is rebuilt from the Blender geometry.
+    #
+    # Digested last: the digest covers shape keys, so taking it before
+    # _add_frame_shape_keys would make every vertex-animated mesh read as
+    # edited the moment it was exported.
+    bobj["dts_source_payload"] = base64.b64encode(pickle.dumps(mesh)).decode("ascii")
+    bobj["dts_source_digest"] = mesh_digest(bm)
     return bobj
 
 

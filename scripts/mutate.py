@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Break the export path on purpose and check the right test notices.
+
+CLAUDE.md: "A round-trip test that passes on its first run deserves a mutation
+check -- because a test that reads back what it never wrote will pass for the
+wrong reason."  That risk is real here: import and export share the property
+names, so a test can assert a value survives when in truth neither end ever
+touched the file.
+
+Each mutation is a one-line edit that disables exactly one capability, paired
+with the test that exists to catch it.  The mutation is applied to a *copy* of
+the checkout in a temp directory -- the working tree is never modified -- and
+the run passes when the named tests fail.
+
+Usage:
+    scripts/mutate.py --list
+    scripts/mutate.py                # every mutation
+    scripts/mutate.py uv-digest      # one
+"""
+
+from __future__ import annotations
+
+import argparse
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+
+# name -> (file, find, replace, tests that must fail)
+MUTATIONS = {
+    "uv-digest": (
+        "mapping/shape_to_blender.py",
+        "    for layer in me.uv_layers:\n"
+        "        h.update(layer.name.encode(\"utf-8\"))",
+        "    for layer in []:\n"
+        "        h.update(layer.name.encode(\"utf-8\"))",
+        ["test_uv_edit_reaches_the_exported_file"],
+    ),
+    "matframes-store": (
+        "mapping/matframes.py",
+        "    if mesh.num_mat_frames <= 1 or not mesh.tverts:\n        return 0",
+        "    if True:\n        return 0",
+        ["test_matframes_survive_an_edit"],
+    ),
+    "matframes-export": (
+        "mapping/blender_to_shape.py",
+        "    for block in matframes.extra_blocks(me, blender_vert_per_dts_vert):",
+        "    for block in []:",
+        ["test_matframes_survive_an_edit"],
+    ),
+    "merge-indices": (
+        "mapping/blender_to_shape.py",
+        "    merge = bobj.get(\"dts_merge_indices\")",
+        "    merge = None",
+        ["test_merge_indices_survive_an_edit"],
+    ),
+    "mesh-flags": (
+        "mapping/shape_to_blender.py",
+        "def flags_from_blender(bobj, mesh_type: int) -> int:",
+        "def flags_from_blender(bobj, mesh_type: int) -> int:\n    return 0",
+        ["test_mesh_flags_survive_an_edit", "test_mesh_type_echo_bits_survive_an_edit"],
+    ),
+}
+
+
+def run_mutation(name: str, blender: str) -> bool:
+    path, find, replace, tests = MUTATIONS[name]
+    with tempfile.TemporaryDirectory() as tmp:
+        # the Blender runner imports the checkout by package name, so the copy
+        # has to keep it
+        work = Path(tmp) / "io_scene_dts"
+        shutil.copytree(
+            REPO, work, ignore=shutil.ignore_patterns(".git", "htmlcov", "dist", "__pycache__")
+        )
+        target = work / path
+        source = target.read_text()
+        if find not in source:
+            print(f"  SKIP {name}: anchor no longer present in {path}")
+            print("       (the code moved -- update the mutation, do not ignore it)")
+            return False
+        target.write_text(source.replace(find, replace, 1))
+
+        proc = subprocess.run(
+            [
+                blender, "--background", "--factory-startup",
+                "--python", str(work / "tests/blender/run_blender_tests.py"),
+                "--", *tests,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        out = proc.stdout
+        failed = {line.split()[1] for line in out.splitlines() if line.startswith("FAIL ")}
+        passed = {line.split()[1] for line in out.splitlines() if line.startswith("PASS ")}
+
+    missing = [t for t in tests if t not in failed]
+    if missing:
+        print(f"  BAD  {name}: still passing -> {', '.join(missing)}")
+        if any(t in passed for t in missing):
+            print("       the test does not actually check what it claims to")
+        else:
+            print("       the test did not run at all")
+        return False
+    print(f"  ok   {name}: {', '.join(sorted(failed))} failed as intended")
+    return True
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("names", nargs="*", help="mutations to run (default: all)")
+    parser.add_argument("--list", action="store_true")
+    parser.add_argument("--blender", default="blender")
+    args = parser.parse_args()
+
+    if args.list:
+        for name, (path, _, _, tests) in MUTATIONS.items():
+            print(f"{name:20} {path:32} {', '.join(tests)}")
+        return 0
+
+    names = args.names or list(MUTATIONS)
+    unknown = [n for n in names if n not in MUTATIONS]
+    if unknown:
+        print(f"unknown mutation(s): {', '.join(unknown)}", file=sys.stderr)
+        return 2
+
+    print(f"running {len(names)} mutation(s)")
+    ok = [run_mutation(n, args.blender) for n in names]
+    print(f"\n{sum(ok)}/{len(ok)} mutations were caught")
+    return 0 if all(ok) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

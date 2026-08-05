@@ -28,9 +28,9 @@ These stop with a clear error.  None of them corrupt a file.
 | DTS version 25+ | Same error.  Torque 3D–era shapes are not read. | `dtslib/reader.py:71` |
 | Writing any version but 23/24 | `only 24 (Torque) and 23 (Tribes 2) are supported — older versions keep skins in a separate section`.  You cannot import a v19 shape and write a v19 shape. | `dtslib/writer.py:22` |
 | Ground frames in a v23 export | Refused unless **Strip Ground Frames** is checked, which discards them (movement animations lose their ground speed). v23 has nowhere to store them. | `dtslib/writer.py:27`, `ops/export_dts.py:37` |
-| Editing a sorted or multi-matframe mesh | `is a {sorted,multi-matframe} mesh that only round-trips verbatim, but its geometry has been edited — revert the edits or delete the object` | `mapping/blender_to_shape.py:485` |
+| Editing a sorted mesh | `is a sorted mesh that only round-trips verbatim, but its geometry has been edited — revert the edits or delete the object`.  The BSP cluster tables cannot yet be re-derived.  Multi-matframe meshes used to be refused too and no longer are. | `mapping/blender_to_shape.py:483` |
 | More than 192 nodes or objects | `TSIntegerSet` is 6 dwords wide, so a shape cannot name a 193rd node in a matters set. | `mapping/blender_to_shape.py:77,287`, `dtslib/primitives.py:14` |
-| More than 65535 unique vertices in one mesh | 16-bit index buffer. | `mapping/blender_to_shape.py:542` |
+| More than 65535 unique vertices in one mesh | 16-bit index buffer. | `mapping/blender_to_shape.py:541` |
 | Exporting without an armature | `select an armature (the DTS shape root)` — the armature *is* the shape. | `mapping/blender_to_shape.py:62` |
 
 ---
@@ -40,22 +40,29 @@ These stop with a clear error.  None of them corrupt a file.
 Preserved as a pickled/JSON custom property and re-emitted verbatim.  Safe to
 import and re-export; impossible to author or modify.
 
-- **Sorted meshes** (`SORTED_MESH`) — the engine's BSP-ordered geometry.  The
-  cluster/BSP tables cannot be re-derived from a Blender mesh at all, so these
-  carry `dts_strict_freeze` and refuse edits. `mapping/shape_to_blender.py:433`
-- **Multi-matframe meshes** — same treatment, same reason.
+- **Sorted meshes** (`SORTED_MESH`) — the engine's BSP-ordered geometry, used
+  for translucent surfaces that need a back-to-front draw order.  The cluster
+  tables cannot yet be re-derived from a Blender mesh, so these carry
+  `dts_strict_freeze` and refuse edits. `mapping/shape_to_blender.py:541`
 - **IFL material entries** (animated texture flipbooks).  Stored as
   `dts_ifl_materials` JSON on the armature; per-sequence membership as
   `dts_ifl_matters`.  You cannot add, remove or preview one.
-  `mapping/shape_to_blender.py:200`, `mapping/sequences.py:208`
+  `mapping/shape_to_blender.py:203`, `mapping/sequences.py:208`
 - **Node scale animation** (uniform, aligned and arbitrary).  Preserved as a
   `dts_scale_anim` JSON blob on the action.  Scaling a pose bone in Blender
   does **not** produce scale animation. `mapping/sequences.py:255`
-- **Mesh strip packing, vertex order, `parent_mesh` vertex sharing,
-  `merge_indices` and encoded normals.**  Preserved via `dts_source_payload`
-  and re-emitted verbatim *only while the geometry is untouched* — a digest
-  detects edits.  Edit the mesh and all of it is regenerated from scratch,
-  which roughly triples the file. `mapping/shape_to_blender.py:429`
+- **Mesh strip packing, vertex order, `parent_mesh` vertex sharing and encoded
+  normals.**  Preserved via `dts_source_payload` — a pickled `dtslib.Mesh` —
+  and re-emitted verbatim *only while the mesh is untouched*.  Edit it and all
+  of that is regenerated from scratch. `mapping/shape_to_blender.py:558`
+  What that costs is now measured rather than guessed
+  (`scripts/analyze_lod_share.py`): strip packing is worth **×1.00**, because
+  the u16 index buffer is dwarfed by the float vertex arrays, while losing
+  `parent_mesh` sharing costs **×1.85 on average and ×3.5 at worst**.
+  The digest covers UVs, split normals, material assignment, shape keys, skin
+  weights and material-frame attributes as well as geometry
+  (`mapping/shape_to_blender.py:277`); until it did, editing any of those left
+  the digest matching and the edit was silently discarded.
 
 ---
 
@@ -68,9 +75,27 @@ way to check your work short of re-reading the exported file.
   keys `frame_001…frame_NNN`, and the sequence's `frame` track is preserved in
   `dts_object_anim` — but nothing drives the shape keys from the track.  The
   frames are there and the animation is there; they are not connected.
-  `mapping/shape_to_blender.py:443`
+  `mapping/shape_to_blender.py:563`
 - **`matframe` (material/UV animation) tracks.**  Preserved in
   `dts_object_anim`, no preview at all.
+- **The material frames themselves.**  A mesh with `num_mat_frames > 1` is a
+  texture flipbook: one vertex array and several blocks of texture
+  coordinates.  Frame 0 is the active UV map; frames 1..n-1 are `FLOAT2`
+  POINT-domain attributes named `dts_matframe_001…`, listed in Object Data
+  Properties → Attributes and editable in the Spreadsheet editor.  Nothing
+  previews a frame other than 0.  Attributes rather than UV layers because
+  `Mesh.uv_layers` caps at 8 while real shapes reach 62 — and it caps
+  *silently*, `uv_layers.new()` returning without adding. `mapping/matframes.py`
+- **`merge_indices`**, the legacy LOD-morph table.  An int array on the mesh
+  object (`dts_merge_indices`), editable only as raw numbers in the N-panel.
+  Order matters and entries repeat, so a vertex group cannot hold it.  See §4
+  for what an edit costs. `mapping/shape_to_blender.py:468`
+- **Mesh flag bits.**  All four defined bits (`MESH_BILLBOARD`,
+  `MESH_BILLBOARD_Z_AXIS`, `MESH_HAS_DETAIL_TEXTURE`,
+  `MESH_USE_ENCODED_NORMALS`) plus the mesh-type echo in the low three bits get
+  a named boolean, so nothing hides in a packed word.  Only `dts_billboard`
+  changes anything you can see.  Undocumented bits are dropped with a warning;
+  no corpus mesh has one. `mapping/shape_to_blender.py:425`
 - **Triggers** (footstep sounds, effect hooks).  `dts_triggers` JSON on the
   action.  No timeline markers, no UI.
 - **Ground frames** (root-motion speed).  `dts_ground` JSON.  Not shown as
@@ -138,6 +163,13 @@ or changes what renders:
   action to `.dsq` silently discards its visibility, frame, matframe and decal
   tracks.  Visibility and decal states round-trip through **DTS only**.  There
   is currently no warning when this happens — worth adding.
+- **`merge_indices` naming a vertex no face uses.**  A strip-packed source mesh
+  carries vertices that only ever appear in a degenerate stitch triangle.  Once
+  the mesh is edited and re-derived as triangle lists those vertices are gone,
+  so a merge entry pointing at one has nothing left to name and is dropped with
+  a warning — 15 of 61 entries on `weapon_energy_vehicle`'s first mesh.  The
+  entries that survive are remapped exactly.  An unedited mesh still round-trips
+  the whole table through the payload. `mapping/blender_to_shape.py:588`
 - **Decal faces that do not sit on the target mesh.**  A decal can only cover
   its target's own geometry, since the engine indexes the target's vertex
   array; a face moved off it is dropped with a warning.
@@ -148,14 +180,14 @@ or changes what renders:
   (The DTS path preserves it as a blob — §2.)
 - **`frame_*` shape keys on a skinned mesh.**  `'X': frame_* shape keys on a
   skin are not supported; ignored` — DTS cannot combine vertex animation with
-  skinning. `mapping/blender_to_shape.py:578`
+  skinning. `mapping/blender_to_shape.py:601`
 - **DSQ channels for nodes the armature lacks.**  `DSQ node 'X' not found in
   armature; its channels are dropped` — expected when applying a sequence to a
   different skeleton. `mapping/dsq.py:59`
 - **Bone channels with no DTS node.**  A bone you add in Blender animates
   nothing on export. `mapping/sequences.py:303`, `mapping/dsq.py:180`
 - **Duplicate detail sizes for one object.**  `duplicate detail 'X' for object
-  'Y'; 'Z' skipped`. `mapping/blender_to_shape.py:157`
+  'Y'; 'Z' skipped`. `mapping/blender_to_shape.py:156`
 - **`dts_bump_map` and `dts_detail_map` on a material created in Blender.**
   The export path decides whether a material carries map references by testing
   for `dts_reflectance_map` *alone* — `has_refs = _MAP_PROPS[0] in bmat` — and
@@ -226,8 +258,16 @@ Subtle, because nothing errors and nothing warns.
 
 ## Coverage
 
-`tests/blender/test_operators.py` (46 tests) covers the round-trip of every
+`tests/blender/test_operators.py` (51 tests) covers the round-trip of every
 "opaque" item above, plus visibility and decal export/reimport.  The remaining
 "blind" items are tested at the file level only — no test asserts a preview
-exists, because none does.  The "dropped" items have no tests: they are known
-losses, not regressions to guard.
+exists, because none does.  Most "dropped" items have no tests: they are known
+losses, not regressions to guard; the exception is the partial `merge_indices`
+loss, which is asserted exactly so it cannot quietly get worse.
+
+Five of those tests assert that an *edit* reaches the file — UVs, material
+frames, merge indices and both halves of the flags word.  Each is paired with a
+mutation in `scripts/mutate.py` that disables the capability and checks the
+test notices, because import and export share property names and a round-trip
+test can otherwise pass without either end touching the file.  Run them with
+`scripts/mutate.py`; `--list` shows what each one breaks.

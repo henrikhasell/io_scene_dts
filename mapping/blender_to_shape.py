@@ -23,8 +23,6 @@ from ..dtslib import Shape
 from ..dtslib.primitives import MAX_TS_SET_SIZE
 from ..dtslib.runtime_links import recompute_runtime_links
 from ..dtslib.types import (
-    MESH_BILLBOARD,
-    MESH_BILLBOARD_Z_AXIS,
     PRIM_INDEXED,
     PRIM_NO_MATERIAL,
     PRIM_TRIANGLES,
@@ -42,11 +40,12 @@ from ..dtslib.types import (
     STANDARD_MESH,
 )
 
+from . import matframes
 from .decals import build_decals
 from .materials import materials_from_blender
 from .naming import detail_name_for_size, split_detail_suffix, strip_blender_dedup
 from .sequences import blender_quat_to_dts, export_sequences
-from .shape_to_blender import geometry_digest
+from .shape_to_blender import flags_from_blender, mesh_digest
 
 
 class ExportError(Exception):
@@ -477,7 +476,7 @@ def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warn
     payload = bobj.get("dts_source_payload") or bobj.get("dts_frozen_payload")
     if payload:
         stored_digest = bobj.get("dts_source_digest") or bobj.get("dts_frozen_digest")
-        edited = bool(stored_digest) and geometry_digest(bobj.data) != stored_digest
+        edited = bool(stored_digest) and mesh_digest(bobj.data) != stored_digest
         strict = bool(bobj.get("dts_strict_freeze")) or "dts_source_payload" not in bobj
         if edited and strict:
             kind = "sorted" if int(bobj.get("dts_mesh_type", 0)) == SORTED_MESH else "multi-matframe"
@@ -562,9 +561,33 @@ def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warn
         mesh.primitives.append(Primitive(len(mesh.indices), len(indices), word))
         mesh.indices.extend(indices)
     mesh.verts_per_frame = len(verts)
-    mesh.flags = (MESH_BILLBOARD if bobj.get("dts_billboard") else 0) | (
-        MESH_BILLBOARD_Z_AXIS if bobj.get("dts_billboard_z") else 0
-    )
+    mesh.flags = flags_from_blender(bobj, mesh.mesh_type)
+
+    # DTS vertex index -> the Blender vertex it was deduplicated from; the
+    # dedup dict is insertion-ordered, so this is in DTS order
+    blender_vert_per_dts_vert = [key[0] for key in key_to_index]
+
+    # extra material frames append their own tvert blocks after frame 0's
+    for block in matframes.extra_blocks(me, blender_vert_per_dts_vert):
+        mesh.tverts.extend(block)
+    mesh.num_mat_frames = matframes.frame_count(me)
+
+    merge = bobj.get("dts_merge_indices")
+    if merge:
+        first_dts_index = {}
+        for dts_index, bvert in enumerate(blender_vert_per_dts_vert):
+            first_dts_index.setdefault(bvert, dts_index)
+        mesh.merge_indices = [first_dts_index[i] for i in merge if i in first_dts_index]
+        dropped = len(merge) - len(mesh.merge_indices)
+        if dropped:
+            # a source mesh packed as strips carries vertices that only ever
+            # appear in a degenerate stitch triangle; re-deriving as triangle
+            # lists has no use for them, so a merge entry naming one has
+            # nothing left to point at
+            warnings.append(
+                f"mesh {bobj.name!r}: {dropped} of {len(merge)} merge indices name a vertex "
+                f"no longer referenced by any face; dropped"
+            )
 
     # vertex-animation frames from shape keys named frame_NNN
     frame_keys = []

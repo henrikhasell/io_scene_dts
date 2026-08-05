@@ -764,6 +764,166 @@ def test_multiframe_shape_keys():
             assert all(close(p, src_frame) for p in dst_frame), f"frame {f}: dst point extra"
 
 
+def _uv_range(shape):
+    """(min, max) texture u across every non-decal mesh of a shape."""
+    us = [t[0] for m in shape.meshes if m is not None and m.mesh_type != 2 for t in m.tverts]
+    return min(us), max(us)
+
+
+def test_uv_edit_reaches_the_exported_file():
+    """A mesh still carrying a source payload must not ignore a UV edit.
+
+    The payload digest used to cover vertex positions and polygons only, so
+    editing a UV left it matching and the exporter re-emitted the stale
+    payload -- the edit was silently discarded.  Narrow the digest back down
+    and this test fails, which is what makes it worth having.
+    """
+    _reset()
+    _import_dts("v24_ammo.dts")
+    shifted = 0
+    for obj in bpy.context.scene.objects:
+        if obj.type != "MESH" or obj.data.uv_layers.active is None:
+            continue
+        for datum in obj.data.uv_layers.active.data:
+            datum.uv[0] += 0.25
+        shifted += 1
+    assert shifted, "fixture has no UV layers to edit"
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
+    src_lo, src_hi = _uv_range(read_shape_file(FIXTURES / "v24_ammo.dts"))
+    dst_lo, dst_hi = _uv_range(read_shape_file(out))
+    assert abs(dst_lo - (src_lo + 0.25)) < 1e-4, (src_lo, dst_lo)
+    assert abs(dst_hi - (src_hi + 0.25)) < 1e-4, (src_hi, dst_hi)
+
+
+def _matframe_blocks(mesh):
+    n = len(mesh.verts)
+    return [
+        [(round(u, 4), round(v, 4)) for u, v in mesh.tverts[f * n : (f + 1) * n]]
+        for f in range(mesh.num_mat_frames)
+    ]
+
+
+def test_matframes_survive_an_edit():
+    """Extra material frames live in mesh attributes, so editing is allowed.
+
+    They used to sit in the pickled payload behind dts_strict_freeze, which
+    refused the export outright rather than lose them.
+    """
+    _reset()
+    _import_dts("v21_weapon_energy.dts")
+    src = read_shape_file(FIXTURES / "v21_weapon_energy.dts")
+
+    from io_scene_dts.mapping import matframes
+
+    carriers = [
+        o for o in bpy.context.scene.objects
+        if o.type == "MESH" and matframes.frame_count(o.data) > 1
+    ]
+    assert carriers, "no matframe attributes created"
+    assert all(matframes.frame_count(o.data) == 17 for o in carriers), [
+        matframes.frame_count(o.data) for o in carriers
+    ]
+    assert not any(o.get("dts_strict_freeze") for o in carriers), "matframes still frozen"
+
+    # nudge geometry so the payload is invalidated and the mesh is re-derived
+    for obj in carriers:
+        obj.data.vertices[0].co.x += 0.01
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
+    dst = read_shape_file(out)
+
+    src_mf = [m for m in src.meshes if m is not None and m.num_mat_frames > 1]
+    dst_mf = [m for m in dst.meshes if m is not None and m.num_mat_frames > 1]
+    assert len(dst_mf) == len(src_mf) == 3, (len(dst_mf), len(src_mf))
+    for m_src, m_dst in zip(src_mf, dst_mf):
+        assert m_dst.num_mat_frames == 17
+        assert len(m_dst.tverts) == 17 * len(m_dst.verts)
+        src_blocks = _matframe_blocks(m_src)
+        dst_blocks = _matframe_blocks(m_dst)
+        # the dedup can split a vertex across a UV seam, so compare the set of
+        # coordinates a frame holds rather than their order
+        for f in range(17):
+            assert set(src_blocks[f]) == set(dst_blocks[f]), f"material frame {f}"
+        # and the frames stay distinct from one another -- 9 distinct blocks
+        # among the 17 is what the fixture ships
+        assert len({tuple(b) for b in dst_blocks}) == len({tuple(b) for b in src_blocks})
+
+
+def test_merge_indices_survive_an_edit():
+    """The legacy LOD-morph table rides an int array on the object.
+
+    It does not survive whole: a strip-packed source mesh carries vertices
+    that only appear in a degenerate stitch triangle, and re-deriving as
+    triangle lists drops them, so a merge entry naming one has nothing to
+    point at.  Export warns and keeps the rest.
+    """
+    _reset()
+    _import_dts("v23_weapon_energy_vehicle.dts")
+
+    carriers = [o for o in bpy.context.scene.objects if o.get("dts_merge_indices")]
+    assert carriers, "no merge indices stored"
+
+    expected = []
+    for obj in carriers:
+        me = obj.data
+        me.calc_loop_triangles()
+        referenced = {
+            me.loops[li].vertex_index for tri in me.loop_triangles for li in tri.loops
+        }
+        expected.append(sum(1 for i in obj["dts_merge_indices"] if i in referenced))
+        me.vertices[0].co.x += 0.01
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
+    dst = read_shape_file(out)
+    dst_counts = sorted(
+        len(m.merge_indices) for m in dst.meshes if m is not None and m.merge_indices
+    )
+    assert dst_counts == sorted(expected), (sorted(expected), dst_counts)
+    # whatever survived has to index the vertex array it was written against
+    for m in dst.meshes:
+        if m is not None and m.merge_indices:
+            assert max(m.merge_indices) < len(m.verts)
+
+
+def test_mesh_flags_survive_an_edit():
+    """Every defined bit of the flags word has a named property.
+
+    The billboard bits had one already; the mesh-type echo in the low three
+    bits did not, and export dropped it.
+    """
+    _reset()
+    _import_dts("v21_xorg21.dts")
+    billboard = [o for o in bpy.context.scene.objects if o.get("dts_billboard")]
+    assert billboard, "fixture's billboard mesh did not import as one"
+    for obj in billboard:
+        obj.data.vertices[0].co.x += 0.01
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
+    dst = read_shape_file(out)
+    assert any(m.flags & (1 << 31) for m in dst.meshes if m is not None), "billboard bit lost"
+
+
+def test_mesh_type_echo_bits_survive_an_edit():
+    _reset()
+    _import_dts("v24_w_sqknest.dts")
+    echoing = [o for o in bpy.context.scene.objects if o.get("dts_echo_type_bits")]
+    assert echoing, "fixture's skins did not record the type echo"
+    for obj in echoing:
+        obj.data.vertices[0].co.x += 0.001
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
+    dst = read_shape_file(out)
+    skins = [m for m in dst.meshes if m is not None and m.mesh_type == SKIN_MESH]
+    assert skins, "no skins exported"
+    assert any(m.flags & 0x7 == SKIN_MESH for m in skins), "mesh type echo lost"
+
+
 def test_ifl_preserved():
     _reset()
     _import_dts("v22_energy_explosion.dts")

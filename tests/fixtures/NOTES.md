@@ -12,6 +12,7 @@ From `~/Documents/Repositories/hasell-engine/t2/shapes/` (Tribes 2 game data):
 | v19_weapon_chaingun_ammocasing.dts | weapon_chaingun_ammocasing.dts | v19 multi-detail |
 | v19_xorg20.dts | xorg20.dts | v19 sorted mesh + translucent material |
 | v21_xorg21.dts | xorg21.dts | v21 (rare) sorted + multi-detail |
+| v21_weapon_energy.dts | weapon_energy.dts | multi-matframe (17 frames on 3 meshes) |
 | v22_porg1.dts | porg1.dts | smallest v22 |
 | v22_porg5.dts | porg5.dts | v22 multi-detail |
 | v22_energy_explosion.dts | energy_explosion.dts | v22 animated + IFL materials |

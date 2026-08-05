@@ -6,6 +6,12 @@ Run with:
 Starts coverage inside the Blender process (data_suffix so `coverage combine`
 can merge it with the pytest run), registers the add-on from this checkout,
 runs the scenarios in test_operators.py, and exits non-zero on failure.
+
+Pass substrings after `--` to run only the tests whose names contain one of
+them, which is how scripts/mutate.py keeps a mutation run down to seconds:
+
+    blender --background --factory-startup --python tests/blender/run_blender_tests.py \
+        -- merge_indices matframes
 """
 
 import sys
@@ -41,12 +47,19 @@ io_scene_dts.register()
 sys.path.insert(0, str(REPO / "tests" / "blender"))
 import test_operators  # noqa: E402
 
+patterns = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
+
 failures = []
 tests = [
     (name, fn)
     for name, fn in vars(test_operators).items()
-    if name.startswith("test_") and callable(fn)
+    if name.startswith("test_")
+    and callable(fn)
+    and (not patterns or any(p in name for p in patterns))
 ]
+if patterns and not tests:
+    print(f"no test matches {patterns}")
+    sys.exit(2)
 for name, fn in tests:
     try:
         fn()
