@@ -28,8 +28,8 @@ from mathutils import Matrix, Quaternion, Vector
 
 from ..dtslib import ObjectState, Quat16, Sequence, Shape, Trigger, TSIntegerSet
 from ..dtslib.types import SEQ_BLEND, SEQ_CYCLIC, SEQ_MAKE_PATH
-from .decals import decal_names_by_index, write_decal_fcurves
-from .visibility import write_vis_fcurves
+from .decals import decal_names_by_index, read_decal_tracks, write_decal_fcurves
+from .objectstate import read_tracks, write_tracks
 
 
 # ----------------------------------------------------------------------
@@ -128,10 +128,11 @@ def import_sequences(shape: Shape, arm_obj: bpy.types.Object, bone_name_by_node:
             _write_fcurves(bag, f"{base}.rotation_quaternion", 4, [[q.w, q.x, q.y, q.z] for q in quats])
             _write_fcurves(bag, f"{base}.location", 3, [list(v) for v in locs])
 
-        # object visibility and decal states ride in the same slot as the
-        # bones, so one strip drives pose, visibility and damage together
-        write_vis_fcurves(bag, action, arm_obj)
-        write_decal_fcurves(bag, action, arm_obj, decal_names)
+        # object states and decal states ride in the same slot as the bones, so
+        # one strip drives pose, visibility and damage together.  These curves
+        # are what export reads back -- there is no stored copy beside them.
+        write_tracks(bag, arm_obj, _object_state_tracks(shape, seq))
+        write_decal_fcurves(bag, action, arm_obj, _decal_tracks(shape, seq), decal_names)
 
         for i, trig in enumerate(_seq_triggers(shape, seq)):
             state_bit = trig.state & 0x3FFFFFFF
@@ -162,6 +163,45 @@ def _rest_local_matrices(shape: Shape) -> list[Matrix]:
 
 def _seq_triggers(shape: Shape, seq: Sequence) -> list[Trigger]:
     return shape.triggers[seq.first_trigger : seq.first_trigger + seq.num_triggers]
+
+
+def _decal_tracks(shape: Shape, seq: Sequence) -> dict[int, list]:
+    """{decal index: [state per keyframe]} for a sequence."""
+    n = seq.num_keyframes
+    tracks = {}
+    for di in seq.decal_matters.indices():
+        track = []
+        for kf in range(n):
+            idx = seq.base_decal_state + seq.decal_matters.ordinal_of(di) * n + kf
+            track.append(shape.decal_states[idx] if idx < len(shape.decal_states) else 0)
+        tracks[di] = track
+    return tracks
+
+
+def _object_state_tracks(shape: Shape, seq: Sequence) -> dict[str, dict[str, list]]:
+    """{object name: {vis|frame|matframe: [value per keyframe]}} for a sequence."""
+    n = seq.num_keyframes
+    tracks: dict[str, dict[str, list]] = {}
+    for kind, matters in (
+        ("vis", seq.vis_matters),
+        ("frame", seq.frame_matters),
+        ("matframe", seq.mat_frame_matters),
+    ):
+        for obj_index in matters.indices():
+            if obj_index >= len(shape.objects):
+                continue
+            base_name = shape.name(shape.objects[obj_index].name_index)
+            track = []
+            for kf in range(n):
+                st = shape.object_states[
+                    seq.base_object_state + matters.ordinal_of(obj_index) * n + kf
+                ]
+                track.append(
+                    st.vis if kind == "vis"
+                    else (st.frame_index if kind == "frame" else st.mat_frame_index)
+                )
+            tracks.setdefault(base_name, {})[kind] = track
+    return tracks
 
 
 def _store_sequence_props(action: bpy.types.Action, seq: Sequence, shape: Shape) -> None:
@@ -206,30 +246,6 @@ def _store_sequence_props(action: bpy.types.Action, seq: Sequence, shape: Shape)
 
     if seq.ifl_matters.count():
         action["dts_ifl_matters"] = json.dumps(sorted(seq.ifl_matters.indices()))
-
-    if seq.decal_matters.count():
-        decal_tracks = {}
-        for di in seq.decal_matters.indices():
-            track = []
-            for kf in range(n):
-                idx = seq.base_decal_state + seq.decal_matters.ordinal_of(di) * n + kf
-                track.append(shape.decal_states[idx] if idx < len(shape.decal_states) else 0)
-            decal_tracks[str(di)] = track
-        action["dts_decal_anim"] = json.dumps(decal_tracks)
-
-    obj_anim = {}
-    for kind, matters in (("vis", seq.vis_matters), ("frame", seq.frame_matters), ("matframe", seq.mat_frame_matters)):
-        for obj_index in matters.indices():
-            if obj_index >= len(shape.objects):
-                continue
-            base_name = shape.name(shape.objects[obj_index].name_index)
-            track = []
-            for kf in range(n):
-                st = shape.object_states[seq.base_object_state + matters.ordinal_of(obj_index) * n + kf]
-                track.append(st.vis if kind == "vis" else (st.frame_index if kind == "frame" else st.mat_frame_index))
-            obj_anim.setdefault(base_name, {})[kind] = track
-    if obj_anim:
-        action["dts_object_anim"] = json.dumps(obj_anim)
 
     if seq.flags & 0x7:  # any scale
         scale = {
@@ -380,8 +396,8 @@ def export_sequences(
         for state, pos in trigs:
             shape.triggers.append(Trigger(int(state) & 0xFFFFFFFF, float(pos)))
 
-        # object-state tracks
-        obj_anim = json.loads(action.get("dts_object_anim", "{}") or "{}")
+        # object-state tracks, sampled from the curves the user edits
+        obj_anim = read_tracks(action, n)
         vis_set, frame_set, matframe_set = TSIntegerSet(), TSIntegerSet(), TSIntegerSet()
         tracked = []
         for base_name, tracks in obj_anim.items():
@@ -415,8 +431,8 @@ def export_sequences(
                 iset.set(int(i))
         seq.ifl_matters = iset
 
-        # decal-state tracks
-        decal_anim = json.loads(action.get("dts_decal_anim", "{}") or "{}")
+        # decal-state tracks, likewise
+        decal_anim = read_decal_tracks(action, n)
         dset = TSIntegerSet()
         decal_tracked = []
         for k, track in decal_anim.items():

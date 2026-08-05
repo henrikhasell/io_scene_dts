@@ -126,16 +126,41 @@ def apply_default_states(arm_obj, shape: Shape) -> None:
         arm_obj[decal_prop(i, name)] = float(state)
 
 
-def write_decal_fcurves(bag, action, arm_obj, names_by_index: dict) -> set:
+def decal_path_of(index: int, name: str) -> str:
+    return decal_path(index, name)
+
+
+def parse_decal_path(data_path: str) -> int | None:
+    """The decal index an fcurve drives, or None if it drives something else."""
+    if not (data_path.startswith(f'["{DECAL_PREFIX}') and data_path.endswith('"]')):
+        return None
+    rest = data_path[2 + len(DECAL_PREFIX) : -2]
+    number, _, _name = rest.partition("_")
+    return int(number) if number.isdigit() else None
+
+
+def read_decal_tracks(action, n: int) -> dict[int, list]:
+    """Sample the decal-state fcurves at frames 1..n.
+
+    These curves are the authored form; nothing else stores the states.
+    """
+    from .sequences import _iter_fcurves
+
+    tracks = {}
+    for fcurve in _iter_fcurves(action):
+        index = parse_decal_path(fcurve.data_path)
+        if index is not None:
+            tracks[index] = [fcurve.evaluate(kf + 1) for kf in range(n)]
+    return tracks
+
+
+def write_decal_fcurves(bag, action, arm_obj, tracks: dict, names_by_index: dict) -> set:
     """Keyframe the sequence's decal-state tracks onto the armature.
 
     Torque switches a decal on and off; there is nothing between frames, so
     the keys are CONSTANT — linear interpolation would fade a decal in through
     fractional states that mean nothing.
     """
-    import json
-
-    tracks = json.loads(action.get("dts_decal_anim", "{}") or "{}")
     written = set()
     for key, track in tracks.items():
         index = int(key)

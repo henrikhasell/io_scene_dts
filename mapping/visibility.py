@@ -1,67 +1,44 @@
-"""Object visibility tracks, previewable in Blender.
+"""Previewing object visibility, and the drivers that do it.
 
-A sequence can animate an object's ``vis`` (0..1) alongside its bone channels.
-Those channels belong to mesh objects, not the armature — and one DTS object
-maps to one Blender mesh *per detail level*, so light_male's ``Jetfire`` is ten
-objects.  Keyframing them directly would mean a slot and an NLA track per LOD
-copy per sequence, all of which would have to be muted and scaled in lockstep
-with the armature's.
+Where the ``vis`` value lives, and why it lives on the armature, is
+mapping/objectstate.py -- this module is about making it *visible*: hiding a
+mesh whose object is switched off, and fading one whose object is part-way.
 
-Instead the value is keyframed as a custom property on the armature, in the
-same slot as the bones, and each mesh reads it through a driver.  One ID stays
-animated, the NLA model is untouched, and retiming a strip retimes visibility
-for free because a driver reads whatever the strip currently produces.
-
-Drivers are display only.  Export samples the fcurves (or the stored
-``dts_object_anim``) and never looks at them.
+Drivers are display only.  Export samples the fcurves.
 """
-
-import json
 
 import bpy
 
 from .materials import emission_of_add_shader, fade_emission, remember_blend_state
+from .objectstate import (
+    PREFIXES,
+    animated_object_names,
+    fractional_object_names,
+    path_for,
+    prop_name,
+)
 
-VIS_PREFIX = "dts_vis_"
+VIS_PREFIX = PREFIXES["vis"]
+
+__all__ = [
+    "VIS_PREFIX",
+    "animated_object_names",
+    "apply_default_vis",
+    "fractional_object_names",
+    "refresh_driver_relations",
+    "vis_path",
+    "vis_prop",
+    "wire_drivers",
+    "wire_fade_materials",
+]
 
 
 def vis_prop(dts_object_name: str) -> str:
-    return f"{VIS_PREFIX}{dts_object_name}"
+    return prop_name("vis", dts_object_name)
 
 
 def vis_path(dts_object_name: str) -> str:
-    # bracketed string key, so DTS names with spaces or punctuation are fine
-    return f'["{vis_prop(dts_object_name)}"]'
-
-
-def tracks_of(action: bpy.types.Action) -> dict:
-    return json.loads(action.get("dts_object_anim", "{}") or "{}")
-
-
-def animated_object_names(actions) -> set:
-    """DTS object names carrying a vis track across the given actions."""
-    names = set()
-    for action in actions:
-        for base_name, tracks in tracks_of(action).items():
-            if tracks.get("vis"):
-                names.add(base_name)
-    return names
-
-
-def fractional_object_names(actions) -> set:
-    """Names whose vis track holds values between 0 and 1.
-
-    A binary track is a swap, and the hide drivers cover it without making the
-    material transparent.  Only a genuine fade needs alpha — the generator's
-    power lights pulse 0.1..1.0, while its panel swaps are 1/0.
-    """
-    names = set()
-    for action in actions:
-        for base_name, tracks in tracks_of(action).items():
-            vis = tracks.get("vis") or []
-            if any(0.0 < float(v) < 1.0 for v in vis):
-                names.add(base_name)
-    return names
+    return path_for("vis", dts_object_name)
 
 
 def ensure_props(arm_obj, names, default: float = 1.0) -> None:
@@ -69,26 +46,6 @@ def ensure_props(arm_obj, names, default: float = 1.0) -> None:
     for name in names:
         if vis_prop(name) not in arm_obj.keys():
             arm_obj[vis_prop(name)] = float(default)
-
-
-def write_vis_fcurves(bag, action: bpy.types.Action, arm_obj) -> set:
-    """Keyframe each animated object's vis track into the action's armature
-    slot.  Returns the DTS object names that got a track."""
-    written = set()
-    for base_name, tracks in tracks_of(action).items():
-        vis = tracks.get("vis")
-        if not vis:
-            continue
-        ensure_props(arm_obj, [base_name])
-        fc = bag.fcurves.new(data_path=vis_path(base_name), index=0)
-        fc.keyframe_points.add(len(vis))
-        for i, v in enumerate(vis):
-            kp = fc.keyframe_points[i]
-            kp.co = (i + 1, float(v))
-            kp.interpolation = "LINEAR"
-        fc.update()
-        written.add(base_name)
-    return written
 
 
 _PENDING_REFRESH = set()

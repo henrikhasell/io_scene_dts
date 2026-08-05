@@ -87,6 +87,12 @@ MUTATIONS = {
         '    bobj["dts_sorted_mode"] = "NONE"',
         ["test_sorted_meshes_survive_an_edit"],
     ),
+    "object-state-read": (
+        "mapping/objectstate.py",
+        "        parsed = parse_path(fcurve.data_path)\n        if parsed is None:\n            continue",
+        "        parsed = None\n        if parsed is None:\n            continue",
+        ["test_keyframed_visibility_reaches_the_exported_file"],
+    ),
     "mesh-flags": (
         "mapping/shape_to_blender.py",
         "def flags_from_blender(bobj, mesh_type: int) -> int:",

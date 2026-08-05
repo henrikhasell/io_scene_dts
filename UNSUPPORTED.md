@@ -42,10 +42,10 @@ and re-export; impossible to author or modify.  Nothing is pickled any more.
 - **IFL material entries** (animated texture flipbooks).  Stored as
   `dts_ifl_materials` JSON on the armature; per-sequence membership as
   `dts_ifl_matters`.  You cannot add, remove or preview one.
-  `mapping/shape_to_blender.py:203`, `mapping/sequences.py:208`
+  `mapping/shape_to_blender.py:203`, `mapping/sequences.py:248`
 - **Node scale animation** (uniform, aligned and arbitrary).  Preserved as a
   `dts_scale_anim` JSON blob on the action.  Scaling a pose bone in Blender
-  does **not** produce scale animation. `mapping/sequences.py:255`
+  does **not** produce scale animation. `mapping/sequences.py:271`
 
 ### What used to be here: the mesh payload
 
@@ -86,12 +86,12 @@ The data survives a round trip, but Blender shows you nothing, so there is no
 way to check your work short of re-reading the exported file.
 
 - **`frame` (vertex animation) tracks.**  Multi-frame meshes import as shape
-  keys `frame_001…frame_NNN`, and the sequence's `frame` track is preserved in
-  `dts_object_anim` — but nothing drives the shape keys from the track.  The
-  frames are there and the animation is there; they are not connected.
+  keys `frame_001…frame_NNN`, and the sequence's `frame` track is keyframed on
+  the armature as `dts_frame_<object>` — but nothing drives the shape keys from
+  it.  The frames are there and the animation is there; they are not connected.
   `mapping/shape_to_blender.py:490`
-- **`matframe` (material/UV animation) tracks.**  Preserved in
-  `dts_object_anim`, no preview at all.
+- **`matframe` (material/UV animation) tracks.**  Keyframed as
+  `dts_mat_frame_<object>` on the armature, no preview at all.
 - **The material frames themselves.**  A mesh with `num_mat_frames > 1` is a
   texture flipbook: one vertex array and several blocks of texture
   coordinates.  Frame 0 is the active UV map; frames 1..n-1 are `FLOAT2`
@@ -162,6 +162,13 @@ way to check your work short of re-reading the exported file.
   `dts_reflectance_map_only` checkbox, which `_flags_from_blender` ORs back in.
   Read `dts_flags` as the full word and you will be wrong about that one bit.
   `mapping/materials.py:53,348`
+
+All three object-state channels — `vis`, `frame` and `matframe` — plus decal
+states are keyframed on the armature and **read back off those curves on
+export**, so editing a key changes the file.  Until they were, export rebuilt
+the tracks from `dts_object_anim` / `dts_decal_anim` JSON and never looked at
+the curves the drivers read: the blob was the authored form and the keys were
+decoration.  `mapping/objectstate.py`
 
 Object **visibility** and **decals** used to be on this list.  Both are now
 previewed through per-object drivers into alpha, and round-trip through DTS —
@@ -265,7 +272,7 @@ Subtle, because nothing errors and nothing warns.
   imported sequence always has the property, so **adding or removing keyframes
   in Blender does not change the exported length** — keys are sampled at frames
   `1..n` regardless.  Changing a key's *value* inside that range does export.
-  `mapping/sequences.py:277`, `mapping/dsq.py:155`
+  `mapping/sequences.py:293`, `mapping/dsq.py:155`
 - **Sequence timing.**  `dts_duration` is the single source of truth.  NLA
   strip scale is display-only by design, so retiming a strip cannot change the
   file — you must edit `dts_duration` on the action.
@@ -303,7 +310,7 @@ Subtle, because nothing errors and nothing warns.
 
 ## Coverage
 
-`tests/blender/test_operators.py` (56 tests) covers the round-trip of every
+`tests/blender/test_operators.py` (58 tests) covers the round-trip of every
 "opaque" item above, plus visibility and decal export/reimport.  The remaining
 "blind" items are tested at the file level only — no test asserts a preview
 exists, because none does.  Most "dropped" items have no tests: they are known

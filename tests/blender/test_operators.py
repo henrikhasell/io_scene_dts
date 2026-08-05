@@ -1614,6 +1614,72 @@ def test_visibility_survives_export_and_reimport():
                 assert abs(arm[vis_prop(name)] - vis) < 1e-6, (fixture, name)
 
 
+def _vis_fcurve(action, dts_object_name):
+    from io_scene_dts.mapping.objectstate import path_for
+    from io_scene_dts.mapping.sequences import _iter_fcurves
+
+    want = path_for("vis", dts_object_name)
+    return next((fc for fc in _iter_fcurves(action) if fc.data_path == want), None)
+
+
+def test_keyframed_visibility_reaches_the_exported_file():
+    """Editing a visibility key used to change the preview and nothing else.
+
+    Export rebuilt the object-state tracks from a dts_object_anim JSON blob and
+    never looked at the curves the drivers read, so the blob was the authored
+    form and the curves were decoration.  There is no blob now.
+    """
+    _reset()
+    _import_dts("v23_bioderm_light.dts")
+    arm = _armature()
+
+    from io_scene_dts.mapping.objectstate import parse_path
+    from io_scene_dts.mapping.sequences import _iter_fcurves
+
+    edited = None
+    for action in bpy.data.actions:
+        for fcurve in _iter_fcurves(action):
+            parsed = parse_path(fcurve.data_path)
+            if parsed and parsed[0] == "vis" and len(fcurve.keyframe_points) > 1:
+                edited = (action, parsed[1], fcurve)
+                break
+        if edited:
+            break
+    assert edited, "fixture has no visibility curve to edit"
+    action, name, fcurve = edited
+
+    # drive every key to a value the file cannot already contain
+    for point in fcurve.keyframe_points:
+        point.co = (point.co[0], 0.375)
+    fcurve.update()
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
+    dst = read_shape_file(out)
+
+    seq = next(s for s in dst.sequences if dst.name(s.name_index) == action.name)
+    oi = next(
+        i for i, o in enumerate(dst.objects) if dst.name(o.name_index) == name
+    )
+    assert seq.vis_matters.test(oi), f"{name} lost its vis track"
+    ordinal = seq.vis_matters.ordinal_of(oi)
+    states = [
+        dst.object_states[seq.base_object_state + ordinal * seq.num_keyframes + kf].vis
+        for kf in range(seq.num_keyframes)
+    ]
+    assert states, "no object states written"
+    assert all(abs(v - 0.375) < 1e-4 for v in states), states
+
+
+def test_object_state_blobs_are_gone():
+    """The JSON that used to shadow the curves must not come back."""
+    _reset()
+    _import_dts("v23_bioderm_light.dts")
+    for action in bpy.data.actions:
+        for key in ("dts_object_anim", "dts_decal_anim"):
+            assert key not in action.keys(), f"{action.name} still carries {key}"
+
+
 def test_visibility_drivers_are_not_duplicated_on_reimport():
     _reset()
     arm = _import_dts("v23_pack_upgrade_shield.dts")
