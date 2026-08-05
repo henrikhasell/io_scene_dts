@@ -15,7 +15,7 @@ the run passes when the named tests fail.
 Usage:
     scripts/mutate.py --list
     scripts/mutate.py                # every mutation
-    scripts/mutate.py uv-digest      # one
+    scripts/mutate.py sorted-mode    # one
 """
 
 from __future__ import annotations
@@ -28,6 +28,9 @@ import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+
+# mutations whose tests live in the pytest suite rather than inside Blender
+RUNNERS = {"sorted-threading": "pytest"}
 
 # name -> (file, find, replace, tests that must fail)
 MUTATIONS = {
@@ -71,6 +74,19 @@ MUTATIONS = {
         "    merge = None",
         ["test_merge_indices_survive_an_edit"],
     ),
+    # checked by the fast pytest loop rather than inside Blender
+    "sorted-threading": (
+        "dtslib/sorted_build.py",
+        "        back_entry = emit(front, emit(back, continuation, remaining - 1), remaining - 1)",
+        "        back_entry = front_entry",
+        ["test_beats_the_shipped_median"],
+    ),
+    "sorted-mode": (
+        "mapping/shape_to_blender.py",
+        '    bobj["dts_sorted_mode"] = "BSP"',
+        '    bobj["dts_sorted_mode"] = "NONE"',
+        ["test_sorted_meshes_survive_an_edit"],
+    ),
     "mesh-flags": (
         "mapping/shape_to_blender.py",
         "def flags_from_blender(bobj, mesh_type: int) -> int:",
@@ -80,8 +96,45 @@ MUTATIONS = {
 }
 
 
+def _run_blender(work: Path, tests, blender: str) -> tuple[set, set]:
+    proc = subprocess.run(
+        [
+            blender, "--background", "--factory-startup",
+            "--python", str(work / "tests/blender/run_blender_tests.py"),
+            "--", *tests,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    out = proc.stdout
+    return (
+        {line.split()[1] for line in out.splitlines() if line.startswith("FAIL ")},
+        {line.split()[1] for line in out.splitlines() if line.startswith("PASS ")},
+    )
+
+
+def _run_pytest(work: Path, tests) -> tuple[set, set]:
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "--no-header", "-p", "no:cacheprovider",
+         "-m", "not corpus", *[f"-k={t}" for t in tests[:1]], "tests"],
+        cwd=work,
+        capture_output=True,
+        text=True,
+    )
+    out = proc.stdout
+    failed = {t for t in tests if f"::{t}" in out and "FAILED" in out}
+    # pytest names failures as path::Class::test, so match on the leaf
+    for line in out.splitlines():
+        if line.startswith("FAILED "):
+            leaf = line.split()[1].split("::")[-1].split("[")[0]
+            failed.add(leaf)
+    passed = set() if failed else set(tests)
+    return failed, passed
+
+
 def run_mutation(name: str, blender: str) -> bool:
     path, find, replace, tests = MUTATIONS[name]
+    runner = RUNNERS.get(name, "blender")
     with tempfile.TemporaryDirectory() as tmp:
         # the Blender runner imports the checkout by package name, so the copy
         # has to keep it
@@ -97,18 +150,10 @@ def run_mutation(name: str, blender: str) -> bool:
             return False
         target.write_text(source.replace(find, replace, 1))
 
-        proc = subprocess.run(
-            [
-                blender, "--background", "--factory-startup",
-                "--python", str(work / "tests/blender/run_blender_tests.py"),
-                "--", *tests,
-            ],
-            capture_output=True,
-            text=True,
-        )
-        out = proc.stdout
-        failed = {line.split()[1] for line in out.splitlines() if line.startswith("FAIL ")}
-        passed = {line.split()[1] for line in out.splitlines() if line.startswith("PASS ")}
+        if runner == "pytest":
+            failed, passed = _run_pytest(work, tests)
+        else:
+            failed, passed = _run_blender(work, tests, blender)
 
     missing = [t for t in tests if t not in failed]
     if missing:

@@ -16,10 +16,24 @@ a pure decision node.
 from __future__ import annotations
 
 import math
+import sys
+from pathlib import Path
 
-# clusters are 8 words: start/end primitive, plane normal xyz, plane k,
-# front cluster, back cluster (dtslib/mesh_io.py:167-171)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from dtslib.primitives import bits_to_f32  # noqa: E402
+
+# Clusters are 8 words: start/end primitive, plane normal xyz, plane k, front
+# cluster, back cluster (dtslib/mesh_io.py:167-171).  The reader takes all
+# eight with get32n and the writer puts them back with set32n, so the four
+# plane words are float *bit patterns* sitting in an int table -- reading them
+# as though they were already floats gives a plane test that is pure noise.
 CLUSTER_WORDS = 8
+
+
+def plane_of(cluster) -> tuple[float, float, float, float]:
+    """The cluster's splitting plane, bit-cast back out of the word table."""
+    return tuple(bits_to_f32(w) for w in cluster[2:6])
 
 
 class WalkError(Exception):
@@ -44,7 +58,8 @@ def walk(sorted_data, camera, frame: int = 0) -> list[int]:
             return out
         if cluster >= len(clusters):
             raise WalkError(f"cluster {cluster} out of range ({len(clusters)})")
-        start, end, nx, ny, nz, k, front, back = clusters[cluster]
+        start, end, _, _, _, _, front, back = clusters[cluster]
+        nx, ny, nz, k = plane_of(clusters[cluster])
         out.extend(range(start, end))
         cluster = front if (nx * camera[0] + ny * camera[1] + nz * camera[2] + k) > 0 else back
     raise WalkError(f"walk did not terminate within {len(clusters)} steps")

@@ -1040,22 +1040,67 @@ def test_ifl_preserved():
     assert [m.name for m in dst.materials] == [m.name for m in src.materials]
 
 
-def test_sorted_edit_refused():
+def test_sorted_meshes_survive_an_edit():
+    """Editing a sorted mesh used to be refused outright: its BSP cluster
+    tables lived only in the pickled payload and could not be re-derived.
+    dtslib/sorted_build.py generates them, so it is ordinary geometry now."""
     _reset()
-    _import_dts("v19_xorg20.dts")
-    out = _tmp(".dts")
-    res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="23")
-    assert res == {"FINISHED"}, res  # unedited: exports fine
+    _import_dts("v21_xorg21.dts")
+    src = read_shape_file(FIXTURES / "v21_xorg21.dts")
+    assert any(m is not None and m.mesh_type == 3 for m in src.meshes), "fixture has no sorted mesh"
 
-    # every mesh carries a source payload now; only sorted/multi-matframe ones
-    # are strict, i.e. refuse to export when edited instead of re-deriving
-    frozen = next(o for o in bpy.context.scene.objects if o.get("dts_strict_freeze"))
-    frozen.data.vertices[0].co.x += 1.0
-    try:
-        res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="23")
-        assert res == {"CANCELLED"}, res
-    except RuntimeError as e:
-        assert "round-trips verbatim" in str(e), str(e)
+    sorted_objs = [o for o in bpy.context.scene.objects if o.get("dts_sorted_mode")]
+    assert sorted_objs, "sorted meshes did not record how to rebuild their tree"
+    assert not any(o.get("dts_strict_freeze") for o in sorted_objs), "still frozen"
+
+    for obj in sorted_objs:
+        obj.data.vertices[0].co.x += 0.05
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
+    dst = read_shape_file(out)
+    dst_sorted = [m for m in dst.meshes if m is not None and m.mesh_type == 3]
+    assert len(dst_sorted) == len(sorted_objs), (len(dst_sorted), len(sorted_objs))
+    for mesh in dst_sorted:
+        assert mesh.sorted_data is not None
+        assert mesh.sorted_data.clusters, "no cluster tree was built"
+        assert mesh.sorted_data.num_verts == [len(mesh.verts)]
+
+
+def test_sorted_cluster_tree_walks_like_the_engine_reads_it():
+    """The generated tree is checked with the same walk simulation that
+    measured the shipped art, so both are held to one reading of the format."""
+    import sys as _sys
+
+    _sys.path.insert(0, str(REPO / "tests"))
+    from sorted_walk import camera_positions, triangles_of, walk
+
+    _reset()
+    _import_dts("v21_xorg21.dts")
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
+    dst = read_shape_file(out)
+
+    checked = 0
+    for mesh in dst.meshes:
+        if mesh is None or mesh.mesh_type != 3 or not mesh.sorted_data:
+            continue
+        checked += 1
+        every = {
+            tuple(sorted(t))
+            for t in triangles_of(mesh.primitives, mesh.indices, range(len(mesh.primitives)))
+        }
+        for camera in camera_positions(mesh.verts, 32):
+            drawn = walk(mesh.sorted_data, camera)  # raises if it never terminates
+            assert len(set(drawn)) == len(drawn), "a primitive was drawn twice"
+            got = {
+                tuple(sorted(t))
+                for t in triangles_of(mesh.primitives, mesh.indices, drawn)
+            }
+            # better than the shipped art, which drops triangles from some
+            # angles on 54 of its 119 sorted meshes
+            assert got == every
+    assert checked, "no sorted meshes were exported"
 
 
 def test_import_v18_old_format():

@@ -28,22 +28,17 @@ These stop with a clear error.  None of them corrupt a file.
 | DTS version 25+ | Same error.  Torque 3D–era shapes are not read. | `dtslib/reader.py:71` |
 | Writing any version but 23/24 | `only 24 (Torque) and 23 (Tribes 2) are supported — older versions keep skins in a separate section`.  You cannot import a v19 shape and write a v19 shape. | `dtslib/writer.py:22` |
 | Ground frames in a v23 export | Refused unless **Strip Ground Frames** is checked, which discards them (movement animations lose their ground speed). v23 has nowhere to store them. | `dtslib/writer.py:27`, `ops/export_dts.py:37` |
-| Editing a sorted mesh | `is a sorted mesh that only round-trips verbatim, but its geometry has been edited — revert the edits or delete the object`.  The BSP cluster tables cannot yet be re-derived.  Multi-matframe meshes used to be refused too and no longer are. | `mapping/blender_to_shape.py:483` |
 | More than 192 nodes or objects | `TSIntegerSet` is 6 dwords wide, so a shape cannot name a 193rd node in a matters set. | `mapping/blender_to_shape.py:77,287`, `dtslib/primitives.py:14` |
-| More than 65535 unique vertices in one mesh | 16-bit index buffer. | `mapping/blender_to_shape.py:541` |
+| More than 65535 unique vertices in one mesh | 16-bit index buffer. | `mapping/blender_to_shape.py:565` |
 | Exporting without an armature | `select an armature (the DTS shape root)` — the armature *is* the shape. | `mapping/blender_to_shape.py:62` |
 
 ---
 
 ## 2. Opaque — round-trips, but you cannot see or edit it
 
-Preserved as a pickled/JSON custom property and re-emitted verbatim.  Safe to
-import and re-export; impossible to author or modify.
+Preserved as a JSON custom property and re-emitted verbatim.  Safe to import
+and re-export; impossible to author or modify.  Nothing is pickled any more.
 
-- **Sorted meshes** (`SORTED_MESH`) — the engine's BSP-ordered geometry, used
-  for translucent surfaces that need a back-to-front draw order.  The cluster
-  tables cannot yet be re-derived from a Blender mesh, so these carry
-  `dts_strict_freeze` and refuse edits. `mapping/shape_to_blender.py:541`
 - **IFL material entries** (animated texture flipbooks).  Stored as
   `dts_ifl_materials` JSON on the armature; per-sequence membership as
   `dts_ifl_matters`.  You cannot add, remove or preview one.
@@ -54,10 +49,11 @@ import and re-export; impossible to author or modify.
 
 ### What used to be here: the mesh payload
 
-Mesh geometry is no longer on this list.  Only sorted meshes are still replayed
-from `dts_source_payload`; every other mesh is re-derived from the Blender
-geometry on every export, so an edit always reaches the file.  What the payload
-used to buy is now paid back in the exporter instead:
+No mesh data is on this list any more.  Every mesh is re-derived from the
+Blender geometry on every export — there is no pickled payload and nothing is
+replayed — so an edit always reaches the file.  `tests/test_no_pickle.py` keeps
+it that way.  What the payload used to buy is paid back in the exporter
+instead:
 
 - **`parent_mesh` vertex sharing is re-derived, not carried.**  Each detail
   level of an object is interned into one pool lowest-detail-first, so every
@@ -93,7 +89,7 @@ way to check your work short of re-reading the exported file.
   keys `frame_001…frame_NNN`, and the sequence's `frame` track is preserved in
   `dts_object_anim` — but nothing drives the shape keys from the track.  The
   frames are there and the animation is there; they are not connected.
-  `mapping/shape_to_blender.py:563`
+  `mapping/shape_to_blender.py:490`
 - **`matframe` (material/UV animation) tracks.**  Preserved in
   `dts_object_anim`, no preview at all.
 - **The material frames themselves.**  A mesh with `num_mat_frames > 1` is a
@@ -107,13 +103,32 @@ way to check your work short of re-reading the exported file.
 - **`merge_indices`**, the legacy LOD-morph table.  An int array on the mesh
   object (`dts_merge_indices`), editable only as raw numbers in the N-panel.
   Order matters and entries repeat, so a vertex group cannot hold it.  See §4
-  for what an edit costs. `mapping/shape_to_blender.py:468`
+  for what an edit costs. `mapping/shape_to_blender.py:397`
+- **Sorted meshes.**  A `SORTED_MESH` is the engine's answer to translucency:
+  its triangles are partitioned into a small tree of clusters, and at draw time
+  the engine walks the tree from the camera to get a back-to-front order without
+  sorting per frame.  Roughly 120 meshes across 33 corpus shapes — trees,
+  vehicle canopies — all of them on translucent materials.
+
+  The tree is regenerated on export from the geometry itself, so the mesh is
+  ordinary editable geometry; it used to be frozen behind the payload and
+  refused edits.  `dts_sorted_mode` (`NONE`/`FLAT`/`BSP`), `dts_sorted_depth`
+  and `dts_always_write_depth` say how.  Nothing in Blender previews the draw
+  order, and the generated tree does not match the original.
+
+  It is not inferred from material translucency: that would silently convert
+  every translucent mesh in a scene into a sorted one and change how the engine
+  draws it.  Triangles are never split, since that would change the vertex count
+  and break the detail-level sharing above, so a large face crossing a splitting
+  plane can still draw out of order — as it can in the shipped art, which drops
+  triangles entirely from some angles on 54 of its 119 sorted meshes.
+  `dtslib/sorted_build.py`
 - **Mesh flag bits.**  All four defined bits (`MESH_BILLBOARD`,
   `MESH_BILLBOARD_Z_AXIS`, `MESH_HAS_DETAIL_TEXTURE`,
   `MESH_USE_ENCODED_NORMALS`) plus the mesh-type echo in the low three bits get
   a named boolean, so nothing hides in a packed word.  Only `dts_billboard`
   changes anything you can see.  Undocumented bits are dropped with a warning;
-  no corpus mesh has one. `mapping/shape_to_blender.py:425`
+  no corpus mesh has one. `mapping/shape_to_blender.py:354`
 - **Triggers** (footstep sounds, effect hooks).  `dts_triggers` JSON on the
   action.  No timeline markers, no UI.
 - **Ground frames** (root-motion speed).  `dts_ground` JSON.  Not shown as
@@ -199,7 +214,7 @@ or changes what renders:
   so a merge entry pointing at one has nothing left to name and is dropped with
   a warning — 15 of 61 entries on `weapon_energy_vehicle`'s first mesh.  The
   entries that survive are remapped exactly.  An unedited mesh still round-trips
-  the whole table through the payload. `mapping/blender_to_shape.py:588`
+  the whole table through the payload. `mapping/blender_to_shape.py:638`
 - **Decal faces that do not sit on the target mesh.**  A decal can only cover
   its target's own geometry, since the engine indexes the target's vertex
   array; a face moved off it is dropped with a warning.
@@ -210,7 +225,7 @@ or changes what renders:
   (The DTS path preserves it as a blob — §2.)
 - **`frame_*` shape keys on a skinned mesh.**  `'X': frame_* shape keys on a
   skin are not supported; ignored` — DTS cannot combine vertex animation with
-  skinning. `mapping/blender_to_shape.py:601`
+  skinning. `mapping/blender_to_shape.py:645`
 - **DSQ channels for nodes the armature lacks.**  `DSQ node 'X' not found in
   armature; its channels are dropped` — expected when applying a sequence to a
   different skeleton. `mapping/dsq.py:59`
@@ -232,7 +247,7 @@ or changes what renders:
   through `index_by_name = {m.name.lower(): i ...}`, where a later entry
   overwrites an earlier one.  Material names are not unique in real shapes —
   the importer says so itself, and keys material identity on
-  `dts_material_index` for that reason (`mapping/materials.py:345`) — so a slot
+  `dts_material_index` for that reason (`mapping/materials.py:347`) — so a slot
   pointing at the *first* of two materials named `glass` comes back pointing at
   the last, silently.  104 of the 630 corpus shapes have duplicate material
   names, but none of them has a map slot targeting a duplicated name, so no
@@ -288,7 +303,7 @@ Subtle, because nothing errors and nothing warns.
 
 ## Coverage
 
-`tests/blender/test_operators.py` (55 tests) covers the round-trip of every
+`tests/blender/test_operators.py` (56 tests) covers the round-trip of every
 "opaque" item above, plus visibility and decal export/reimport.  The remaining
 "blind" items are tested at the file level only — no test asserts a preview
 exists, because none does.  Most "dropped" items have no tests: they are known

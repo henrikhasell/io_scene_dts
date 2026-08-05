@@ -11,10 +11,8 @@ space with initialTransforms = inverse of each bone's rest matrix.
 
 from __future__ import annotations
 
-import base64
 import json
 import math
-import pickle
 
 import bpy
 from mathutils import Matrix, Vector
@@ -22,6 +20,7 @@ from mathutils import Matrix, Vector
 from ..dtslib import Shape
 from ..dtslib.primitives import MAX_TS_SET_SIZE
 from ..dtslib.runtime_links import recompute_runtime_links
+from ..dtslib.sorted_build import build_sorted, flat_sorted
 from ..dtslib.types import (
     PRIM_INDEXED,
     PRIM_NO_MATERIAL,
@@ -45,7 +44,7 @@ from .decals import blender_lookup_of, build_decals
 from .materials import materials_from_blender
 from .naming import detail_name_for_size, split_detail_suffix, strip_blender_dedup
 from .sequences import blender_quat_to_dts, export_sequences
-from .shape_to_blender import flags_from_blender, mesh_digest
+from .shape_to_blender import flags_from_blender
 from .vertex_pool import VertexPool
 
 
@@ -498,31 +497,6 @@ def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warn
     ``bvert_to_dts`` maps Blender vertex index to DTS vertex index, which the
     decal exporter needs to match faces without going through float drift.
     """
-    # Only sorted meshes are still replayed from the payload: their BSP cluster
-    # tables have nowhere else to live.  Everything else is re-derived, which
-    # costs nothing in file size now that vertex sharing is rebuilt rather than
-    # replayed -- strip packing is worth x1.00 on its own.
-    #
-    # "dts_frozen_payload" is the pre-source-payload property name; a .blend
-    # saved by an older add-on has it on sorted meshes only.
-    payload = bobj.get("dts_source_payload") or bobj.get("dts_frozen_payload")
-    if payload and bobj.get("dts_strict_freeze"):
-        stored_digest = bobj.get("dts_source_digest") or bobj.get("dts_frozen_digest")
-        if bool(stored_digest) and mesh_digest(bobj.data) != stored_digest:
-            raise ExportError(
-                f"{bobj.name!r} is a sorted mesh that only round-trips verbatim, but its "
-                f"geometry has been edited — revert the edits or delete the object"
-            )
-        mesh = pickle.loads(base64.b64decode(payload))
-        # the reader copies a shared prefix out of the parent, so the payload
-        # is self-contained; the source index it was written against means
-        # nothing in the shape being built
-        mesh.parent_mesh = -1
-        for slot in bobj.material_slots:
-            if slot.material is not None:
-                _material_slot_index(slot.material)
-        return mesh, int(bobj.get("dts_node_index", -1)), True, None, {}
-
     is_skin = bool(bobj.vertex_groups) and any(
         m.type == "ARMATURE" and m.object == arm_obj for m in bobj.modifiers
     )
@@ -590,26 +564,52 @@ def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warn
     if len(verts) > 0xFFFF:
         raise ExportError(f"mesh {bobj.name!r} has {len(verts)} unique vertices (DTS max 65535)")
 
-    # triangles grouped per material; DTS winding is the reverse of Blender's
+    # triangles, in DTS winding (the reverse of Blender's), tagged with the
+    # primitive word they belong under
+    tris: list[tuple[int, int, int, int]] = []
     by_mat: dict[int, list[int]] = {}
     for tri in me.loop_triangles:
         slot = tri.material_index if tri.material_index < len(bobj.material_slots) else 0
         bmat = bobj.material_slots[slot].material if bobj.material_slots else None
         mat_index = _material_slot_index(bmat) if bmat is not None else -1
-        by_mat.setdefault(mat_index, []).extend(corner_index[li] for li in reversed(tri.loops))
-
-    mesh = Mesh(mesh_type=SKIN_MESH if is_skin else STANDARD_MESH)
-    mesh.verts = verts
-    mesh.norms = norms
-    mesh.tverts = tverts
-    for mat_index, indices in by_mat.items():
         word = (
             (PRIM_TRIANGLES | PRIM_INDEXED | PRIM_NO_MATERIAL)
             if mat_index < 0
             else (PRIM_TRIANGLES | PRIM_INDEXED | (mat_index & 0x0FFFFFFF))
         )
-        mesh.primitives.append(Primitive(len(mesh.indices), len(indices), word))
-        mesh.indices.extend(indices)
+        a, b, c = (corner_index[li] for li in reversed(tri.loops))
+        tris.append((a, b, c, word))
+        by_mat.setdefault(word, []).extend((a, b, c))
+
+    mesh = Mesh(mesh_type=SKIN_MESH if is_skin else STANDARD_MESH)
+    mesh.verts = verts
+    mesh.norms = norms
+    mesh.tverts = tverts
+
+    sort_mode = _sorted_mode(bobj, is_skin, bool(frame_keys), warnings)
+    if sort_mode == "NONE":
+        for word, indices in by_mat.items():
+            mesh.primitives.append(Primitive(len(mesh.indices), len(indices), word))
+            mesh.indices.extend(indices)
+    else:
+        mesh.mesh_type = SORTED_MESH
+        mat_frames = matframes.frame_count(me)
+        if sort_mode == "BSP":
+            mesh.primitives, mesh.indices, mesh.sorted_data = build_sorted(
+                verts, tris,
+                depth=int(bobj.get("dts_sorted_depth", 2)),
+                num_mat_frames=mat_frames,
+                always_write_depth=int(bool(bobj.get("dts_always_write_depth"))),
+            )
+        else:  # FLAT: keep the mesh type, claim no ordering
+            for word, indices in by_mat.items():
+                mesh.primitives.append(Primitive(len(mesh.indices), len(indices), word))
+                mesh.indices.extend(indices)
+            mesh.sorted_data = flat_sorted(
+                mesh.primitives, verts,
+                num_mat_frames=mat_frames,
+                always_write_depth=int(bool(bobj.get("dts_always_write_depth"))),
+            )
     mesh.verts_per_frame = len(verts)
     mesh.flags = flags_from_blender(bobj, mesh.mesh_type)
 
@@ -668,6 +668,37 @@ def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warn
         node_index = -1
 
     return mesh, node_index, False, (pool_length if pooled else None), dts_index_of_bvert
+
+
+def _sorted_mode(bobj, is_skin: bool, has_frames: bool, warnings) -> str:
+    """Which sorted-mesh treatment this object asked for.
+
+    Never inferred from the material.  Translucency is what sorted meshes are
+    *for*, but turning every translucent mesh in a scene into one would change
+    how the engine draws it without anybody asking.
+    """
+    mode = str(bobj.get("dts_sorted_mode", "NONE")).upper()
+    if mode not in ("NONE", "FLAT", "BSP"):
+        warnings.append(
+            f"mesh {bobj.name!r}: unknown dts_sorted_mode {mode!r}; exporting as a standard mesh"
+        )
+        return "NONE"
+    if mode == "NONE":
+        return "NONE"
+    # mesh_type is one field: a mesh is a skin or it is sorted, never both
+    if is_skin:
+        warnings.append(
+            f"mesh {bobj.name!r} is skinned, so it cannot also be sorted; "
+            f"exporting as a skin"
+        )
+        return "NONE"
+    if has_frames:
+        warnings.append(
+            f"mesh {bobj.name!r} has vertex-animation frames, which the sorted "
+            f"cluster tables do not address; exporting as a standard mesh"
+        )
+        return "NONE"
+    return mode
 
 
 def _frame_shape_keys(me):
