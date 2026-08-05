@@ -26,6 +26,7 @@ paths_exclude_pattern = [
   ".pytest_cache/",
   "tests/",
   "scripts/",
+  "examples/",
   "dist/",
   "htmlcov/",
   ".github/",

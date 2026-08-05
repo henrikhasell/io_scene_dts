@@ -729,6 +729,104 @@ def test_an_operator_decal_projects_inside_its_texture():
         assert -0.01 <= w <= 1.01, w
 
 
+def test_a_damage_ramp_of_decals_is_authorable():
+    """The shipped pattern: each decal switches on further into a Damage
+    sequence, so scorch marks accumulate as an object takes hits.  47 of the
+    49 decal-bearing Tribes 2 shapes do exactly this."""
+    from io_scene_dts.mapping.decals import decal_path, decal_prop
+
+    A.reset()
+    arm = A.armature("Hull", bones=(("root", None), ("shell", "root")))
+    verts, faces = [], []
+    n = 4
+    for row in range(n + 1):
+        for col in range(n + 1):
+            verts.append(((col / n - 0.5) * 2.0, (row / n - 0.5) * 2.0, 0.0))
+    for row in range(n):
+        for col in range(n):
+            a = row * (n + 1) + col
+            faces += [(a, a + 1, a + n + 2), (a, a + n + 2, a + n + 1)]
+    target = A.mesh_object("hull2", arm, bone="shell", verts=verts, faces=faces)
+
+    from io_scene_dts.mapping.decals import create_decal
+
+    for index, patch in enumerate(([0, 1], [10, 11])):
+        for polygon in target.data.polygons:
+            polygon.select = polygon.index in patch
+        create_decal(arm, target, name=f"burn{index}", index=index, all_details=False)
+
+    action = A.action_for(arm, "Damage", frames=11)
+    action["dts_sequence"] = True
+    bag = A.channelbag(action, arm)
+    for index, first_on in ((0, 3), (1, 7)):
+        name = f"burn{index}"
+        arm[decal_prop(index, name)] = -1.0
+        curve = bag.fcurves.new(data_path=decal_path(index, name), index=0)
+        curve.keyframe_points.add(11)
+        for kf in range(11):
+            point = curve.keyframe_points[kf]
+            point.co = (kf + 1, 0.0 if kf >= first_on else -1.0)
+            point.interpolation = "CONSTANT"
+        curve.update()
+
+    shape = A.read(A.export_dts())
+    seq = shape.sequences[0]
+    assert seq.decal_matters.count() == 2, seq.decal_matters.count()
+    n_keys = seq.num_keyframes
+    tracks = []
+    for di in sorted(seq.decal_matters.indices()):
+        ordinal = seq.decal_matters.ordinal_of(di)
+        tracks.append([
+            shape.decal_states[seq.base_decal_state + ordinal * n_keys + kf]
+            for kf in range(n_keys)
+        ])
+    assert tracks[0] == [-1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0], tracks[0]
+    assert tracks[1] == [-1] * 7 + [0] * 4, tracks[1]
+
+
+def test_a_decal_projects_inside_the_zero_to_one_square():
+    """The texgen planes have to land the covered faces inside the texture.
+
+    Outside it, the decal samples its own transparent border and renders
+    nothing -- which is indistinguishable from a decal that was never written,
+    and is what a hand-placed projector produced before create_decal sized it.
+    """
+    A.reset()
+    arm = A.armature("Plate", bones=(("root", None), ("shell", "root")))
+    verts, faces = [], []
+    n = 4
+    for row in range(n + 1):
+        for col in range(n + 1):
+            verts.append(((col / n - 0.5) * 2.0, (row / n - 0.5) * 2.0, 0.0))
+    for row in range(n):
+        for col in range(n):
+            a = row * (n + 1) + col
+            faces += [(a, a + 1, a + n + 2), (a, a + n + 2, a + n + 1)]
+    target = A.mesh_object("plate2", arm, bone="shell", verts=verts, faces=faces)
+
+    from io_scene_dts.mapping.decals import create_decal
+
+    for polygon in target.data.polygons:
+        polygon.select = polygon.index in (8, 9, 10, 11)
+    create_decal(arm, target, name="mark", index=0, all_details=False)
+
+    shape = A.read(A.export_dts())
+    decal = shape.decals[0]
+    mesh = next(
+        shape.meshes[decal.raw[2] + i]
+        for i in range(decal.raw[1])
+        if shape.meshes[decal.raw[2] + i] is not None
+    )
+    target_mesh = shape.meshes[shape.objects[decal.raw[3]].start_mesh_index]
+    s_plane, t_plane = mesh.decal_data.texgen_s[0], mesh.decal_data.texgen_t[0]
+    for index in set(mesh.decal_data.indices):
+        v = target_mesh.verts[index]
+        u = sum(v[i] * s_plane[i] for i in range(3)) + s_plane[3]
+        w = sum(v[i] * t_plane[i] for i in range(3)) + t_plane[3]
+        assert -0.01 <= u <= 1.01, f"u={u} outside the texture"
+        assert -0.01 <= w <= 1.01, f"v={w} outside the texture"
+
+
 def test_an_operator_decal_covers_every_detail_level():
     """A decal that only covers the highest LOD vanishes as the engine drops
     detail, which is why every shipped decal spans all of them."""

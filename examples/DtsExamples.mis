@@ -1,0 +1,148 @@
+// MissionTypes = SinglePlayer
+// PlanetName = DTS Examples
+// DisplayName = DTS Add-on Examples
+
+//--- MISSION BRIEFING BEGIN ---
+//Terrain only.  Interiors wedge the client lighting pass under swrast,
+//so every InteriorInstance is stripped from the Rimehold environment.
+//--- MISSION BRIEFING END ---
+
+//--- OBJECT WRITE BEGIN ---
+new SimGroup(MissionGroup) {
+		cdTrack = "5";
+		powerCount = "0";
+		musicTrack = "ice";
+		Team_Hunters_timeLimit = "25";
+		Hunters_timeLimit = "25";
+
+	new MissionArea(MissionArea) {
+		area = "-440 -312 848 880";
+		flightCeiling = "2000";
+		flightCeilingRange = "50";
+			locked = "true";
+	};
+	new Sun() {
+		direction = "0.57735 0.57735 -0.57735";
+		color = "0.700000 0.700000 0.700000 1.000000";
+		ambient = "0.600000 0.600000 0.620000 1.000000";
+			locked = "true";
+			position = "-1024 -1024 0";
+			rotation = "1 0 0 0";
+			scale = "1 1 1";
+	};
+	new TerrainBlock(Terrain) {
+		rotation = "1 0 0 0";
+		scale = "1 1 1";
+		detailTexture = "details/snowdet1";
+		terrainFile = "Rimehold.ter";
+		squareSize = "8";
+		emptySquares = "101741 101997 102253 299658 430985 431241 431497 366217";
+			hazeDistance = "250";
+			locked = "true";
+			visibleDistance = "1200";
+			position = "-1024 -1024 0";
+	};
+	new Sky(Sky) {
+		position = "-904 -1136 0";
+		rotation = "1 0 0 0";
+		scale = "1 1 1";
+		cloudHeightPer[0] = "0.349971";
+		cloudHeightPer[1] = "0.25";
+		cloudHeightPer[2] = "0.199973";
+		cloudSpeed1 = "0.0001";
+		cloudSpeed2 = "0.0002";
+		cloudSpeed3 = "0.0003";
+		visibleDistance = "600";
+		useSkyTextures = "1";
+		SkySolidColor = "0.365000 0.390000 0.420000 0.000000";
+		fogDistance = "0";
+		fogColor = "0.700000 0.700000 0.700000 1.000000";
+		fogVolume1 = "0 0 0";
+		fogVolume2 = "0 0 0";
+		fogVolume3 = "0 0 0";
+		materialList = "sky_ice_blue.dml";
+		windVelocity = "1 0 0";
+		windEffectPrecipitation = "0";
+		fogVolumeColor1 = "128.000000 128.000000 128.000000 0.000000";
+		fogVolumeColor2 = "128.000000 128.000000 128.000000 -0.000000";
+		fogVolumeColor3 = "128.000000 128.000000 128.000000 0.000000";
+			locked = "true";
+			cloudSpeed0 = "0.000000 0.000000";
+	};
+	new SimGroup(ObserverDropPoints) {
+			powerCount = "0";
+
+	};
+	new SimGroup(Teams) {
+			powerCount = "0";
+
+		new SimGroup(Team1) {
+				powerCount = "0";
+
+			new SimGroup(spawnspheres) {
+					powerCount = "0";
+
+				new SpawnSphere() {
+					position = "-0.966477 -50.0832 112.711";
+					rotation = "0 0 -1 84.7978";
+					scale = "1 1 1";
+					dataBlock = "SpawnSphereMarker";
+					lockCount = "0";
+					homingCount = "0";
+					radius = "100";
+					sphereWeight = "100";
+					indoorWeight = "0";
+					outdoorWeight = "120";
+						locked = "true";
+				};
+				new SpawnSphere() {
+					position = "-34.2901 125.288 201.689";
+					rotation = "1 0 0 0";
+					scale = "1 1 1";
+					dataBlock = "SpawnSphereMarker";
+					lockCount = "0";
+					homingCount = "0";
+					radius = "300";
+					sphereWeight = "100";
+					indoorWeight = "0";
+					outdoorWeight = "100";
+						locked = "true";
+				};
+			};
+		};
+		new SimGroup(Team2) {
+				powerCount = "0";
+
+			new SimGroup(spawnspheres) {
+					powerCount = "0";
+
+				new SpawnSphere() {
+					position = "-87.5583 365.17 126.118";
+					rotation = "0 0 1 57.8687";
+					scale = "1 1 1";
+					dataBlock = "SpawnSphereMarker";
+					lockCount = "0";
+					homingCount = "0";
+					radius = "120";
+					sphereWeight = "100";
+					indoorWeight = "0";
+					outdoorWeight = "100";
+						locked = "true";
+				};
+			};
+		};
+		new SimGroup(team0) {
+				powerCount = "0";
+
+			new SimGroup(Stuff) {
+					powerCount = "1";
+
+			};
+		};
+	};
+	new SimGroup(Ambiance) {
+			powerCount = "0";
+
+	};
+};
+//--- OBJECT WRITE END ---

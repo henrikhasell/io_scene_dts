@@ -350,7 +350,7 @@ Two Blender suites, and the difference between them is the point.
 and exports.  That covers reading files the add-on did not write, and it is the
 only way to check a feature no fixture-free scene can produce.
 
-`tests/blender/test_authoring.py` (53 tests) never imports anything.  Every test
+`tests/blender/test_authoring.py` (55 tests) never imports anything.  Every test
 builds a shape from nothing — armature, meshes, materials, actions — exports it,
 and reads the feature back out of the file.  This is the suite that answers
 "can a user *make* one of these", which a round-trip cannot: the exporter may be
@@ -371,6 +371,13 @@ the matching test notices.  It has caught its own drift three times — a
 mutation that stopped biting when the code moved, and two that were never
 testing what they claimed.  Run it when adding a feature; a test that survives
 its own mutation is not a test.
+
+`examples/` carries one `.blend` per feature, built from nothing by
+`examples/build_examples.py`, and `examples/verify_in_tribes2.sh` loads them
+into the real game and screenshots each.  That is the only check that the
+files an engine actually reads are the files this add-on writes; it found the
+degenerate UV unwrap in the example builder and confirmed decal rendering is
+unavailable through a StaticShape (Tribes 2's own shapes behave identically).
 
 The "blind" items are checked at the file level only — no test asserts a preview
 exists, because none does.  Most "dropped" items have no tests: they are known
