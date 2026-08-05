@@ -253,7 +253,7 @@ or changes what renders:
   skinning. `mapping/blender_to_shape.py:650`
 - **DSQ channels for nodes the armature lacks.**  `DSQ node 'X' not found in
   armature; its channels are dropped` — expected when applying a sequence to a
-  different skeleton. `mapping/dsq.py:59`
+  different skeleton. `mapping/dsq.py:60`
 - **Bone channels with no DTS node.**  A bone you add in Blender animates
   nothing on export. `mapping/sequences.py:297`, `mapping/dsq.py:179`
 - **Duplicate detail sizes for one object.**  `duplicate detail 'X' for object
@@ -337,7 +337,7 @@ exist, so adding a bone channel marks its node instead of being ignored.
 
 ## Coverage
 
-`tests/blender/test_operators.py` (71 tests) covers the round-trip of every
+`tests/blender/test_operators.py` (72 tests) covers the round-trip of every
 "opaque" item above, plus visibility and decal export/reimport.  The remaining
 "blind" items are tested at the file level only — no test asserts a preview
 exists, because none does.  Most "dropped" items have no tests: they are known

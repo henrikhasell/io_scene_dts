@@ -460,6 +460,34 @@ def test_every_material_flag_bit_has_a_checkbox():
     assert got == want, (hex(want), hex(got))
 
 
+def test_dsq_sequences_use_the_same_tables_as_dts_ones():
+    """The DSQ path wrote its ground frames and triggers as JSON while the DTS
+    path used collections.  Nothing read the JSON any more, so a sequence
+    imported from a .dsq lost both on a DTS export -- and once export started
+    refusing legacy keys, it could not be exported at all."""
+    _reset()
+    arm = _import_dts("v24_w_sqknest.dts")
+    before = {a.name for a in bpy.data.actions}
+    res = bpy.ops.io_scene_dts.import_dsq(filepath=str(FIXTURES / "v24_player_root.dsq"))
+    assert res == {"FINISHED"}, res
+    fresh = [a for a in bpy.data.actions if a.name not in before]
+    assert fresh, "no action imported from the dsq"
+
+    for action in fresh:
+        for key in ("dts_ground", "dts_triggers"):
+            assert key not in action.keys(), f"{action.name} still writes {key}"
+
+    src = read_dsq(Path(FIXTURES / "v24_player_root.dsq").read_bytes())
+    total_ground = sum(len(a.dts_sequence_props.ground) for a in fresh)
+    assert total_ground == sum(s.num_ground_frames for s in src.sequences)
+
+    # and it still exports, which the legacy-key guard would otherwise refuse
+    out = _tmp(".dsq")
+    assert bpy.ops.io_scene_dts.export_dsq(filepath=out) == {"FINISHED"}
+    dst = read_dsq(Path(out).read_bytes())
+    assert sum(s.num_ground_frames for s in dst.sequences) >= total_ground
+
+
 def test_export_refuses_a_scene_that_has_not_been_converted():
     """The load_post handler only fires when a file is opened with the add-on
     already enabled.  Enable it afterwards and the legacy keys are still there,

@@ -117,6 +117,12 @@ MUTATIONS = {
         "    stale = []",
         ["test_export_refuses_a_scene_that_has_not_been_converted"],
     ),
+    "dsq-ground": (
+        "mapping/dsq.py",
+        "            for item in action.dts_sequence_props.ground",
+        "            for item in []",
+        ["test_dsq_sequences_use_the_same_tables_as_dts_ones"],
+    ),
     "mesh-flags": (
         "mapping/shape_to_blender.py",
         "def flags_from_blender(bobj, mesh_type: int) -> int:",

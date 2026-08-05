@@ -8,13 +8,14 @@ matching node names.
 
 from __future__ import annotations
 
-import json
 
 import bpy
 from mathutils import Vector
 
 from ..dtslib import DsqFile, Quat16, Sequence, Trigger, TSIntegerSet
 from ..dtslib.types import SEQ_BLEND, SEQ_CYCLIC, SEQ_MAKE_PATH
+from ..props.legacy import pack_trigger, parse_trigger_state
+from ..props.sequence import SCHEMA_VERSION
 from .naming import strip_blender_dedup
 from .sequences import (
     _action_channelbag,
@@ -120,20 +121,25 @@ def dsq_to_actions(dsq: DsqFile, arm_obj) -> tuple[list[bpy.types.Action], list[
             _write_fcurves(bag, f"{base}.rotation_quaternion", 4, [[q.w, q.x, q.y, q.z] for q in quats])
             _write_fcurves(bag, f"{base}.location", 3, [list(v) for v in locs])
 
-        ground = []
+        # the same collections the DTS path fills, so a sequence brought in
+        # from a .dsq is editable in the same panel and exports the same way
+        props = action.dts_sequence_props
+        props.schema_version = SCHEMA_VERSION
+        props.ground.clear()
         for i in range(seq.num_ground_frames):
-            t = dsq.ground_translations[seq.first_ground_frame + i]
             q = dsq.ground_rotations[seq.first_ground_frame + i]
-            ground.append([list(t), [q.x, q.y, q.z, q.w]])
-        if ground:
-            action["dts_ground"] = json.dumps(ground)
+            item = props.ground.add()
+            item.translation = tuple(dsq.ground_translations[seq.first_ground_frame + i])
+            item.rotation = (q.x, q.y, q.z, q.w)
 
-        trigs = [
-            [t.state, t.pos]
-            for t in dsq.triggers[seq.first_trigger : seq.first_trigger + seq.num_triggers]
-        ]
-        if trigs:
-            action["dts_triggers"] = json.dumps(trigs)
+        props.triggers.clear()
+        for trigger in dsq.triggers[seq.first_trigger : seq.first_trigger + seq.num_triggers]:
+            fields = parse_trigger_state(trigger.state)
+            item = props.triggers.add()
+            item.state = fields["state"]
+            item.on = fields["on"]
+            item.invert_on_reverse = fields["invert_on_reverse"]
+            item.pos = trigger.pos
 
         actions.append(action)
     return actions, warnings
@@ -205,14 +211,20 @@ def actions_to_dsq(arm_obj, actions: list[bpy.types.Action], version: int = 24) 
                 local = basis if blend else rest[bone] @ basis
                 dsq.node_translations.append(tuple(local.to_translation()))
 
-        ground = json.loads(action.get("dts_ground", "[]") or "[]")
+        ground = [
+            (list(item.translation), list(item.rotation))
+            for item in action.dts_sequence_props.ground
+        ]
         seq.first_ground_frame = len(dsq.ground_translations)
         seq.num_ground_frames = len(ground)
         for t, q in ground:
             dsq.ground_translations.append(tuple(t))
             dsq.ground_rotations.append(Quat16(*q))
 
-        trigs = json.loads(action.get("dts_triggers", "[]") or "[]")
+        trigs = [
+            (pack_trigger(item.state, item.on, item.invert_on_reverse), item.pos)
+            for item in action.dts_sequence_props.triggers
+        ]
         seq.first_trigger = len(dsq.triggers)
         seq.num_triggers = len(trigs)
         for state, pos in trigs:
