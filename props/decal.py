@@ -34,21 +34,29 @@ from bpy.types import PropertyGroup
 
 SCHEMA_VERSION = 1
 
-# Measured against the 18,484 decal mesh slots in the corpus, as recall of the
-# faces the shipped files actually cover:
+# Measured against the 27,243 decal mesh slots in the corpus, as recall
+# (precision) of the faces the shipped files actually cover.  "facing" is the
+# max_angle gate at its 90-degree default:
 #
-#     rule      depth 0.5   depth 1.0   depth 4.0
-#     centre      0.319       0.444       0.541
-#     any         0.372       0.513       0.608
-#     all         0.122       0.152       0.163
+#     rule        facing on        facing off
+#     centre d1  0.251 (0.432)    0.436 (0.402)
+#     centre d4  0.303 (0.516)    0.521 (0.476)
+#     any    d4  0.346 (0.433)    0.606 (0.392)
+#     all    d4  0.092 (0.263)    0.163 (0.257)
 #
-# "any" at depth 4 has the best recall, but "centre" is the default: it is the
-# one that reproduces a face *selection*, so making a decal covers what you
-# picked rather than that plus a ring of neighbours.  Import does not use the
-# default at all -- it fits rule and depth per decal against the list the file
-# carries (mapping/decals.py fit_coverage).  None is close to exact; shipped
-# coverage was picked by hand, not by a rule, which is why UNSUPPORTED.md
-# carries this as a known loss rather than a solved problem.
+# Read that carefully: as a fixed rule the facing gate buys a little precision
+# for a lot of recall, and is worse on F1 (0.382 against 0.498 for centre d4).
+# It earns its place because import does not apply a fixed rule -- fit_coverage
+# fits rule, depth *and* angle per decal against the list the file carries, and
+# 180 degrees is in that search precisely so the fit can switch facing off
+# where it hurts.  Its other justification is not statistical: it is what the
+# original exporter did (DECAL::MAX_ANGLE, same default), and without it a
+# decal on the front of a shape also lands on the back.
+#
+# "centre" is the authoring default because it reproduces a face *selection*:
+# making a decal covers what you picked rather than that plus a ring of
+# neighbours.  Nothing here is exact -- 0.4% of slots come back identical --
+# which is why UNSUPPORTED.md carries this as a known loss.
 COVERAGE_RULES = (
     (
         "ANY",
@@ -141,4 +149,19 @@ class DtsDecalProps(PropertyGroup):
         description="Which faces of the target the projector covers",
         items=COVERAGE_RULES,
         default="CENTRE",
+    )
+    max_angle: FloatProperty(
+        name="Max Angle",
+        description=(
+            "Do not cover a face whose normal turns further than this from the "
+            "projector's axis.  90 degrees rejects anything pointing away, which "
+            "is what stops a decal on the front of a shape also landing on the "
+            "back.  The original exporter's DECAL::MAX_ANGLE, same default"
+        ),
+        # plain degrees rather than subtype="ANGLE": that would make Blender
+        # store and show radians, and the number here is meant to be readable
+        # against the exporter's own DECAL::MAX_ANGLE
+        default=90.0,
+        min=0.0,
+        max=180.0,
     )

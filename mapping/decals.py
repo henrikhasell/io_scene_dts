@@ -17,12 +17,16 @@ objects in the outliner, none of which was geometry anybody should edit.
 The cost is the index list.  A TSDecalMesh names the target triangles it
 covers, and an empty does not, so export recomputes them from the projector
 volume (:func:`covered_faces`).  That does not reproduce what the shipped files
-store: across 18,484 corpus decal slots the best single rule recalls 0.61 of
-the covered faces, and reproduces the exact set 0.9% of the time — 4.1% even
-when handed an oracle depth band.  Shipped coverage was picked by hand.
-Import narrows the gap by fitting the rule per decal against the list the file
-does have (:func:`fit_coverage`), but re-deriving coverage is a deliberate,
-documented loss; see UNSUPPORTED.md.
+store.  The original exporter decided coverage with a conjunction this does
+not reproduce — a unit-square overlap test in *texture* space, a per-vertex
+projection test against the decal mesh's own faces, and a filter bitmap that
+only ever existed in the Max scene (``ShapeMimic.cc:5762-5764``).  What is
+reproduced is the facing gate, which is the one part that needs nothing but
+the shape.  Import narrows the gap by fitting rule, depth and angle per decal
+against the list the file does have (:func:`fit_coverage`); on bioderm_light
+that returns the covered triangles at recall 0.444 and precision 0.589, and
+0.4% of corpus slots come back identical.  Re-deriving coverage is still a
+deliberate, documented loss; see UNSUPPORTED.md and DECALS.md.
 
 The correspondence is exact.  Blender projects with
 
@@ -213,7 +217,9 @@ def decal_objects():
 # ----------------------------------------------------------------------
 
 
-def covered_faces(target_obj, projector_matrix: Matrix, *, depth=4.0, rule="CENTRE"):
+def covered_faces(
+    target_obj, projector_matrix: Matrix, *, depth=4.0, rule="CENTRE", max_angle=90.0
+):
     """Face indices of ``target_obj`` the projector covers.
 
     This *is* the decal's index list.  The file stores one and an empty cannot,
@@ -222,21 +228,49 @@ def covered_faces(target_obj, projector_matrix: Matrix, *, depth=4.0, rule="CENT
     can be relied on to agree.
 
     ``depth`` is in multiples of the projector's half-width, so it scales with
-    the projector rather than with the model.  See ``props/decal.py`` for what
-    the rules recall against the shipped art; none of them is exact.
+    the projector rather than with the model.
+
+    ``max_angle`` is the facing gate, in degrees: a face whose normal turns
+    further than this from the projector's axis is not covered.  It is the
+    original exporter's rule -- ``mDot(normal, n) < minCos`` where ``minCos =
+    cos(DECAL::MAX_ANGLE)``, defaulting to 90 degrees, i.e. reject anything
+    pointing away (``ShapeMimic.cc:5546-5548``, ``:6043``).  Measured over the
+    corpus it raises precision from 0.476 to 0.516 for CENTRE at depth 4, and
+    costs 0.22 recall doing it -- see ``props/decal.py`` for why that trade is
+    still worth making.  Its plainest justification is not statistical: without
+    it a decal on a chest also lands on the back.
+
+    See ``props/decal.py`` for what the rules recall; none of them is exact.
     """
     to_projector = projector_matrix.inverted() @ target_obj.matrix_world
     mesh = target_obj.data
+    # the projector looks along its own +Z, and normals need the inverse
+    # transpose rather than the matrix itself once an object is scaled
+    axis = (projector_matrix.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
+    normal_matrix = target_obj.matrix_world.to_3x3().inverted_safe().transposed()
+    # The tolerance leans toward rejecting, and that direction is the whole
+    # point: cos(pi/2) is 6.1e-17 rather than 0, so a face exactly edge-on to
+    # the projector -- the sides of any axis-aligned box, which is most of this
+    # art -- would be kept or dropped on rounding alone.  Leaning the other way
+    # decals the sides of a crate from a projector aimed at its lid.
+    # 180 means no gate at all, and must not reject a face pointing exactly
+    # away, so it is taken out of the comparison entirely.
+    min_cos = (
+        -2.0 if max_angle >= 180.0 else math.cos(math.radians(max_angle)) + 1e-6
+    )
     hits = []
+
     def in_square(p):
         return abs(p.x) <= 0.5 and abs(p.y) <= 0.5
 
     for polygon in mesh.polygons:
         centre = to_projector @ polygon.center
-        # depth is measured at the centre whichever rule is in force: a rule
-        # about which corners are in the square should not quietly become a
-        # rule about how steeply the face may tilt away from the projector
+        # depth is measured at the centre whichever rule is in force: which
+        # corners fall in the square and how far the face has turned are
+        # separate questions, and max_angle is the one that answers the second
         if abs(centre.z) > depth:
+            continue
+        if (normal_matrix @ polygon.normal).normalized().dot(axis) < min_cos:
             continue
         if rule == "CENTRE":
             inside = in_square(centre)
@@ -252,12 +286,15 @@ def covered_faces(target_obj, projector_matrix: Matrix, *, depth=4.0, rule="CENT
 
 #: what :func:`fit_coverage` searches.  Depths are multiples of the projector's
 #: half-width; the rules are the three :data:`props.decal.COVERAGE_RULES`.
+#: The angles mirror DECAL::MAX_ANGLE being a per-decal property in the
+#: original exporter rather than a constant -- 90 was only its default.
 FIT_RULES = ("CENTRE", "ANY", "ALL")
 FIT_DEPTHS = (0.25, 0.5, 1.0, 2.0, 4.0)
+FIT_ANGLES = (90.0, 120.0, 180.0)
 
 
 def fit_coverage(target_obj, projector_matrix: Matrix, wanted) -> tuple:
-    """Pick the (rule, depth) that best reproduces a known face set.
+    """Pick the (rule, depth, max_angle) that best reproduces a known face set.
 
     Import has something authoring never does: the list of faces the file
     actually covers.  Coverage is re-derived on export, so rather than impose
@@ -268,15 +305,19 @@ def fit_coverage(target_obj, projector_matrix: Matrix, wanted) -> tuple:
     """
     wanted = set(wanted)
     if not wanted:
-        return ("CENTRE", 4.0)
-    best, best_score = ("CENTRE", 4.0), -1.0
+        return ("CENTRE", 4.0, 90.0)
+    best, best_score = ("CENTRE", 4.0, 90.0), -1.0
     for rule in FIT_RULES:
         for depth in FIT_DEPTHS:
-            got = set(covered_faces(target_obj, projector_matrix, depth=depth, rule=rule))
-            union = len(got | wanted)
-            score = len(got & wanted) / union if union else 0.0
-            if score > best_score:
-                best, best_score = (rule, depth), score
+            for angle in FIT_ANGLES:
+                got = set(covered_faces(
+                    target_obj, projector_matrix,
+                    depth=depth, rule=rule, max_angle=angle,
+                ))
+                union = len(got | wanted)
+                score = len(got & wanted) / union if union else 0.0
+                if score > best_score:
+                    best, best_score = (rule, depth, angle), score
     return best
 
 
@@ -319,7 +360,8 @@ def refresh_coverage(decal_obj) -> int:
     if target is None or target.type != "MESH":
         return 0
     faces = covered_faces(
-        target, decal_obj.matrix_world, depth=props.depth, rule=props.rule
+        target, decal_obj.matrix_world,
+        depth=props.depth, rule=props.rule, max_angle=props.max_angle,
     )
     write_coverage(target, props.index, faces)
     return len(faces)
@@ -688,7 +730,8 @@ def build_decals(
             # every detail level gets its own coverage: the projector is the
             # same, but a coarser level has different faces under it
             faces = covered_faces(
-                bobj, projector.matrix_world, depth=props.depth, rule=props.rule
+                bobj, projector.matrix_world,
+                depth=props.depth, rule=props.rule, max_angle=props.max_angle,
             )
             if not faces:
                 shape.meshes.append(None)
@@ -813,11 +856,12 @@ def import_decals(
             if target_obj is projector.dts_decal.target:
                 # fit the derivation to this decal's own coverage while the
                 # file's answer is still in hand; export has only the projector
-                rule, depth = fit_coverage(
+                rule, depth, angle = fit_coverage(
                     target_obj, projector.matrix_world, file_faces
                 )
                 projector.dts_decal.rule = rule
                 projector.dts_decal.depth = depth
+                projector.dts_decal.max_angle = angle
             n_targets += 1
 
     if not n_decals:
@@ -1004,7 +1048,8 @@ def create_decal(arm_obj, target_obj, *, name, material=None, index=None,
     covered = 0
     for host in hosts:
         faces = covered_faces(
-            host, projector_matrix, depth=props.depth, rule=props.rule
+            host, projector_matrix,
+            depth=props.depth, rule=props.rule, max_angle=props.max_angle,
         )
         if faces:
             write_coverage(host, index, faces)

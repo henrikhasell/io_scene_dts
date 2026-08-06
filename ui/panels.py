@@ -196,6 +196,7 @@ class OBJECT_PT_dts_decal(Panel):
         box.label(text="Covered Faces", icon="FACESEL")
         box.prop(props, "rule")
         box.prop(props, "depth")
+        box.prop(props, "max_angle")
         box.operator(DTS_OT_refresh_decal.bl_idname, icon="FILE_REFRESH")
         box.label(
             text="Recomputed on export; the file's own list is not kept",

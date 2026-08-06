@@ -276,32 +276,37 @@ The larger decal caveat -- that the covered faces themselves are not preserved
   stores an authored list of target triangles (`dtslib/mesh_io.py:196`), and a
   decal is a projector empty, which cannot hold one.  Export therefore
   *recomputes* coverage from the projector volume, and that does not reproduce
-  what the shipped files say.  Measured over the 18,484 decal mesh slots in the
-  corpus, as recall of the faces the file actually covers:
+  what the shipped files say.
 
-  | rule | depth 0.5 | depth 1.0 | depth 4.0 |
-  | --- | --- | --- | --- |
-  | **centre inside** (authoring default) | 0.319 | 0.444 | 0.541 |
-  | any corner inside | 0.372 | 0.513 | 0.608 |
-  | all corners inside | 0.122 | 0.152 | 0.163 |
+  It was never going to.  The original exporter decided coverage with a
+  conjunction of three tests (`ShapeMimic.cc:5762-5764`): a unit-square overlap
+  test in *texture* space including the cases where the face swallows or merely
+  clips the square; a per-vertex test that the target vertex projects inside
+  the decal mesh's own faces, gated on a normal cone; and a **filter bitmap**
+  that lived in the Max scene and is in no `.dts`.  See `DECALS.md`.
 
-  The exact index set comes back **0.9%** of the time, and **4.1%** even when
-  the depth window is handed the answer — the format stores no depth axis for
-  it to be recovered from, so `_depth_row` invents one.  Shipped decal coverage
-  was picked by hand and is not a function of the projector.
+  Only the normal cone needs nothing but the shape, and it is implemented as
+  `Max Angle` on the empty, same 90-degree default as the exporter's
+  `DECAL::MAX_ANGLE`.  Measured over the corpus's 27,243 decal mesh slots, as
+  recall (precision) of the faces the file covers:
 
-  Import does not simply impose the default, because it has something
-  authoring never does: the list of faces the file actually covers.  It fits
-  the rule and depth to each decal against that list (`fit_coverage`), which is
-  worth more than any single rule — on `bioderm_light`, recall 0.434 and
-  precision 0.312, against 0.418/0.259 for a fixed *any corner* and 0.229 for
-  the *centre inside* default.
+  | rule | facing on | facing off |
+  | --- | --- | --- |
+  | centre, depth 1 | 0.251 (0.432) | 0.436 (0.402) |
+  | **centre, depth 4** | 0.303 (0.516) | 0.521 (0.476) |
+  | any, depth 4 | 0.346 (0.433) | 0.606 (0.392) |
+  | all, depth 4 | 0.092 (0.263) | 0.163 (0.257) |
+
+  **0.4%** of slots come back identical.  Import does not apply a fixed rule:
+  it fits rule, depth and angle per decal against the list the file carries
+  (`fit_coverage`), with 180 degrees in the search so facing can be switched
+  off where it hurts.  On `bioderm_light` that returns coverage at recall
+  0.444, precision 0.589.
 
   Everything else about that round trip is exact: all 24 decals, their names,
   owners, states, materials, `decal_matters` bits and texgen planes.  What the
   loss costs in the engine is a burn mark covering a different patch of the
-  same surface, not a missing decal, and `Coverage` and `Depth` on the empty
-  tune it.  `mapping/decals.py` (`covered_faces`)
+  same surface, not a missing decal.  `mapping/decals.py` (`covered_faces`)
 - **Decal faces that do not sit on the target mesh.**  A decal can only cover
   its target's own geometry, since the engine indexes the target's vertex
   array; a face that cannot be matched is dropped with a warning.
@@ -406,7 +411,7 @@ Two Blender suites, and the difference between them is the point.
 and exports.  That covers reading files the add-on did not write, and it is the
 only way to check a feature no fixture-free scene can produce.
 
-`tests/blender/test_authoring.py` (58 tests) never imports anything.  Every test
+`tests/blender/test_authoring.py` (59 tests) never imports anything.  Every test
 builds a shape from nothing — armature, meshes, materials, actions — exports it,
 and reads the feature back out of the file.  This is the suite that answers
 "can a user *make* one of these", which a round-trip cannot: the exporter may be
@@ -422,7 +427,7 @@ variant no shipped shape uses, sorted meshes in both modes, skins, vertex
 animation, material frames, sequences, triggers, ground frames, object-state
 tracks, node scale, DSQ export, IFL entries, decals and both output versions.
 
-`scripts/mutate.py` (28 mutations) disables one capability at a time and checks
+`scripts/mutate.py` (29 mutations) disables one capability at a time and checks
 the matching test notices.  It has caught its own drift three times — a
 mutation that stopped biting when the code moved, and two that were never
 testing what they claimed.  Run it when adding a feature; a test that survives

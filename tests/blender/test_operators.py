@@ -710,10 +710,10 @@ def test_decals_roundtrip_through_their_projectors():
 def test_decal_coverage_recall_has_a_floor():
     """Coverage is recomputed, so it drifts -- but it must not silently rot.
 
-    Measured on this fixture the round trip recalls 0.434 of the covered
-    triangles at precision 0.312, with the rule and depth fitted per decal at
-    import (fit_coverage).  A fixed CENTRE rule scores 0.229 and a fixed ANY
-    0.418, so this also guards the fitting: drop it and the floor fails.
+    Measured on this fixture the round trip recalls 0.444 of the covered
+    triangles at precision 0.589, with rule, depth and angle fitted per decal
+    at import (fit_coverage).  The precision floor also guards the facing gate:
+    without it the same fit scores 0.312, so dropping it fails here.
     """
     _reset()
     _import_dts("v23_bioderm_light.dts")
@@ -742,7 +742,7 @@ def test_decal_coverage_recall_has_a_floor():
             n += 1
     assert n >= 120, n
     assert recall / n > 0.35, recall / n
-    assert precision / n > 0.25, precision / n
+    assert precision / n > 0.45, precision / n
 
 
 def test_decals_import_as_projector_empties():

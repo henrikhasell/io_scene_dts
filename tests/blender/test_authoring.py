@@ -928,6 +928,11 @@ def test_a_decal_is_authorable_by_hand():
 
     projector = bpy.data.objects.new(f"{PROJECTOR_PREFIX}scorch", None)
     bpy.context.scene.collection.objects.link(projector)
+    # after the update, not before: the target is bone-parented, so until the
+    # depsgraph runs its matrix_world is still the identity and a projector
+    # copied from it ends up perpendicular to the face it is meant to project
+    # onto -- which the facing gate then correctly refuses to cover
+    bpy.context.view_layer.update()
     projector.matrix_world = target.matrix_world
 
     props = projector.dts_decal
@@ -996,6 +1001,44 @@ def test_decal_coverage_is_what_the_export_writes():
     cached = {i for i, v in enumerate(attr.data) if v.value > 0.5}
     assert cached == derived, (sorted(cached), sorted(derived))
     assert derived, "the decal covers nothing"
+
+
+def test_a_decal_does_not_reach_the_far_side():
+    """The facing gate, tested as behaviour rather than as a corpus average.
+
+    A projector has depth but no notion of what is in front of what, so without
+    a facing test a decal aimed at the front of a box also covers the back --
+    the burn mark appears on both sides.  The original exporter rejected a face
+    whose normal turned more than DECAL::MAX_ANGLE from the projection axis
+    (ShapeMimic.cc:6043, default 90 degrees); Max Angle is that rule.
+
+    The aggregate recall floor cannot catch this: fit_coverage searches the
+    angle too, so removing the gate just makes the fit pick 180 and the numbers
+    barely move.  This asserts the behaviour directly.
+    """
+    from io_scene_dts.mapping.decals import covered_faces
+
+    A.reset()
+    arm = A.armature("Box")
+    verts, faces = A.cube_geometry(0.5)
+    target = A.mesh_object("box2", arm, bone="root", verts=verts, faces=faces)
+    bpy.context.view_layer.update()
+
+    # a projector above the box, looking straight down, deep enough to reach
+    # right through it
+    projector = Matrix.Translation(target.matrix_world.translation + Vector((0, 0, 2)))
+
+    front = target.matrix_world.to_3x3().inverted_safe().transposed()
+    covered = covered_faces(target, projector, depth=8.0, rule="CENTRE", max_angle=90.0)
+    assert covered, "the facing gate rejected everything"
+    for index in covered:
+        n = (front @ target.data.polygons[index].normal).normalized()
+        assert n.z > 0.0, f"face {index} points away ({n.z:.3f}) and was covered"
+
+    # and with the gate opened all the way the far side comes back, which is
+    # what makes the assertion above about the gate and not about the depth
+    both = covered_faces(target, projector, depth=8.0, rule="CENTRE", max_angle=180.0)
+    assert len(both) > len(covered), (len(both), len(covered))
 
 
 def test_moving_the_projector_changes_the_covered_faces():

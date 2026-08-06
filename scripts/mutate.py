@@ -190,6 +190,14 @@ MUTATIONS = {
     ),
     # the preview mask must come from the same predicate export uses; a cache
     # that is never written shows a decal nowhere while the file has one
+    # the facing gate is the one part of the original coverage rule that needs
+    # nothing but the shape, and it is what keeps a decal off the far side
+    "decal-facing": (
+        "mapping/decals.py",
+        "        if (normal_matrix @ polygon.normal).normalized().dot(axis) < min_cos:",
+        "        if False:",
+        ["test_a_decal_does_not_reach_the_far_side"],
+    ),
     # import fits the rule to each decal's own stored faces; without it the
     # default rule applies and round-trip coverage drops from 0.43 to 0.23
     "decal-fit": (
