@@ -219,8 +219,13 @@ decoration.  `mapping/objectstate.py`
 Object **visibility** and **decals** used to be on this list.  Visibility is
 previewed through per-object drivers into alpha.  A decal is previewed by a
 branch in its *target's* material — a Texture Coordinate reading the projector
-empty's object space, masked by a face attribute so it shows only where the
-exported file will name it — with its state driving the branch.  Both still
+empty's object space, masked to the projector's box — with its state driving
+the branch.  That mask is per *pixel* where the export decides per *face*, so
+the preview is close to the exported coverage rather than identical to it: the
+exact face set would need one Attribute node per decal, and EEVEE caps how
+many attributes a material may use.  `light_male` puts all 58 of its decals on
+one body material, which took it past that cap and rendered the body as
+broken-material magenta.  Both still
 lose something: see §4.
 
 **Translucent and additive** materials are no longer blind either.  Both are

@@ -780,12 +780,24 @@ def test_decals_import_as_projector_empties():
         mat = props.target.active_material
         label = f"DTS Decal {props.index:03d}"
         nodes = {n.type for n in mat.node_tree.nodes if n.label == label}
-        assert {"TEX_COORD", "MAPPING", "ATTRIBUTE", "MIX_SHADER"} <= nodes, nodes
+        assert {"TEX_COORD", "MAPPING", "SEPXYZ", "MIX_SHADER"} <= nodes, nodes
         coord = next(
             n for n in mat.node_tree.nodes
             if n.label == label and n.type == "TEX_COORD"
         )
         assert coord.object is d, (coord.object, d)
+
+    # No Attribute node anywhere: EEVEE caps how many attributes one material
+    # may use, and every decal on a shape can land on a single material --
+    # light_male puts all 58 on the body -- at which point the material fails
+    # to compile and the whole mesh renders as broken-material magenta.  The
+    # depth mask is computed from the projector coordinates for this reason,
+    # so a stray Attribute node is a rendering regression, not a style choice.
+    for mat in bpy.data.materials:
+        if mat.node_tree is None:
+            continue
+        attrs = [n for n in mat.node_tree.nodes if n.type == "ATTRIBUTE"]
+        assert not attrs, (mat.name, [n.attribute_name for n in attrs])
 
 
 def test_decals_start_at_the_states_the_file_stores():

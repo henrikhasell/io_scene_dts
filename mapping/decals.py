@@ -63,12 +63,11 @@ PROJECTOR_PREFIX = "decal_"
 # rides on the armature in the bones' own slot, exactly like object visibility,
 # so one NLA strip drives pose and damage together.
 DECAL_PREFIX = "dts_decal_"
-# The face-domain attribute holding which faces a decal covers, per target
-# mesh.  It is a derived cache, written by write_coverage(), never authored:
-# export calls covered_faces() itself rather than reading this back, so the
-# preview cannot drift from the file.  It exists so the shader can mask by
-# coverage, which also makes a shared target material safe -- a mesh with no
-# such attribute reads 0 and shows no decal.
+# The face-domain attribute recording which faces a decal covers, per target
+# mesh.  A derived cache, written by write_coverage() and never authored:
+# export calls covered_faces() itself rather than reading it back.  It makes
+# the exported face set inspectable; it is not what the shader masks by (see
+# write_coverage for why not).
 COVERAGE_ATTRIBUTE = "dts_decal_%03d"
 
 
@@ -286,11 +285,18 @@ def coverage_attribute(index: int) -> str:
 
 
 def write_coverage(target_obj, index: int, faces) -> str:
-    """Cache a coverage set as a face-domain attribute, for the shader mask.
+    """Record a coverage set as a face-domain attribute.
 
-    Derived, not authored: export recomputes coverage rather than reading this.
-    It exists so Blender can show the decal on exactly the faces the engine
-    will draw it on, instead of smeared across the whole material.
+    Derived, not authored: export recomputes coverage rather than reading this
+    back.  It is what makes the exported face set *inspectable* in Blender --
+    the spreadsheet, geometry nodes, a selection operator all read it.
+
+    It is deliberately not what the shader masks by.  That needs one Attribute
+    node per decal, and EEVEE caps how many attributes a material may use;
+    light_male puts all 58 of its decals on the single body material, which
+    took it past the limit and rendered the whole body as broken-material
+    magenta.  The preview masks by the projector volume instead, which is the
+    same test at pixel rather than face granularity.
     """
     name = coverage_attribute(index)
     mesh = target_obj.data
@@ -368,9 +374,12 @@ def wire_decal_branch(target_mat, decal_obj, arm_obj=None) -> bool:
     modifier used to compute -- and Mapping shifts local +-0.5 onto UV 0..1 to
     match ``projector_for``'s ``scale = 2.0 * half``.
 
-    The mask is the coverage attribute, so the preview shows the decal only on
-    the faces the exported file will name.  It doubles as the reason this is
-    safe on a *shared* material: a mesh without the attribute reads 0.
+    The decal is masked to the projector volume: the image is CLIPped so its
+    alpha is 0 outside the 0..1 square, and a depth test on the projector's own
+    Z closes the box.  That is the per-pixel form of what
+    :func:`covered_faces` decides per face, so the preview is close to the
+    exported coverage without being identical to it -- see the note in
+    :func:`write_coverage`.
     """
     nt = getattr(target_mat, "node_tree", None)
     if nt is None:
@@ -416,11 +425,35 @@ def wire_decal_branch(target_mat, decal_obj, arm_obj=None) -> bool:
     source.label = label
     source.location = (x - 800, y)
 
-    mask = nt.nodes.new("ShaderNodeAttribute")
+    # Depth mask, computed from the projector coordinates rather than read
+    # from the coverage attribute.
+    #
+    # The attribute would be exact -- it is the very face set export writes --
+    # but it costs one Attribute node per decal, and EEVEE caps how many
+    # attributes a material may use.  Every one of light_male's 58 decals lands
+    # on the single body material, so the attribute form failed to compile and
+    # the whole body rendered as the broken-material magenta.  This is the
+    # per-pixel approximation of the same test: inside the 0..1 square (already
+    # handled by CLIP on the image, which makes alpha 0 outside it) and within
+    # the depth window.  It uses no attributes at all, so it does not care how
+    # many decals share a material.
+    axes = nt.nodes.new("ShaderNodeSeparateXYZ")
+    axes.label = label
+    axes.location = (x - 1000, y - 300)
+    nt.links.new(coord.outputs["Object"], axes.inputs["Vector"])
+
+    depth_abs = nt.nodes.new("ShaderNodeMath")
+    depth_abs.label = label
+    depth_abs.operation = "ABSOLUTE"
+    depth_abs.location = (x - 800, y - 300)
+    nt.links.new(axes.outputs["Z"], depth_abs.inputs[0])
+
+    mask = nt.nodes.new("ShaderNodeMath")
     mask.label = label
-    mask.attribute_type = "GEOMETRY"
-    mask.attribute_name = coverage_attribute(props.index)
-    mask.location = (x - 800, y - 300)
+    mask.operation = "LESS_THAN"
+    mask.location = (x - 620, y - 300)
+    nt.links.new(depth_abs.outputs[0], mask.inputs[0])
+    mask.inputs[1].default_value = props.depth
 
     fac = nt.nodes.new("ShaderNodeMath")
     fac.label = label
@@ -430,7 +463,7 @@ def wire_decal_branch(target_mat, decal_obj, arm_obj=None) -> bool:
         nt.links.new(alpha_out, fac.inputs[0])
     else:
         fac.inputs[0].default_value = 1.0
-    nt.links.new(mask.outputs["Fac"], fac.inputs[1])
+    nt.links.new(mask.outputs[0], fac.inputs[1])
 
     # the decal's state: negative means the engine does not draw it at all
     state = nt.nodes.new("ShaderNodeValue")
