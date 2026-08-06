@@ -73,6 +73,9 @@ DECAL_PREFIX = "dts_decal_"
 # the exported face set inspectable; it is not what the shader masks by (see
 # write_coverage for why not).
 COVERAGE_ATTRIBUTE = "dts_decal_%03d"
+# The pass index the preview's object gate compares against, remembered on the
+# target so the assignment is idempotent and inspectable.  See decal_host_id.
+DECAL_HOST_PROP = "dts_decal_host"
 
 
 def _depth_row(r0: Vector, r1: Vector) -> Vector:
@@ -353,6 +356,71 @@ def write_coverage(target_obj, index: int, faces) -> str:
     return name
 
 
+def decal_host_id(target_obj) -> int:
+    """A pass index unique to this object, for the preview's object gate.
+
+    The preview draws in the *target's material*, and a DTS material is one
+    Blender datablock shared by every mesh that uses it -- 5999 of the corpus's
+    6053 decals sit on a material another DTS object also uses.  The projector
+    volume alone therefore does not say which object is being shaded, and a burn
+    on a hull drew on the turret too.  Object Info's Object Index does say, and
+    it is the only per-object number a shader can read without an Attribute
+    node (see write_coverage for why that matters), so the add-on claims
+    ``pass_index`` on any mesh a decal targets.
+
+    Idempotent: several decals on one target must land on the same id, and
+    rewiring must not renumber.  The ID property records what was assigned, so
+    a pass_index the user has since edited by hand is noticed rather than
+    silently honoured.  Numbering starts at 1, which keeps the default 0 --
+    every object this has never touched -- outside the space entirely.
+    """
+    existing = int(target_obj.get(DECAL_HOST_PROP, 0))
+    if existing > 0 and target_obj.pass_index == existing:
+        return existing
+    # by name, not identity: bpy hands back a fresh wrapper per read, so ``is``
+    # would ask about Python objects rather than about the scene
+    used = {o.pass_index for o in bpy.data.objects if o.name != target_obj.name}
+    n = 1
+    while n in used:
+        n += 1
+    target_obj.pass_index = n
+    target_obj[DECAL_HOST_PROP] = n
+    return n
+
+
+def _host_gate_nodes(index: int):
+    """Every COMPARE node carrying a decal's object gate, across all materials."""
+    label = _branch_label(index)
+    for mat in bpy.data.materials:
+        nt = getattr(mat, "node_tree", None)
+        if nt is None:
+            continue
+        for node in nt.nodes:
+            if (
+                node.label == label
+                and node.type == "MATH"
+                and node.operation == "COMPARE"
+            ):
+                yield node
+
+
+def sync_host_gate(decal_obj) -> int:
+    """Point a decal's object gate at whatever its target is now.
+
+    Retargeting is a pointer assignment in the panel, and the branch it has to
+    agree with lives in a material, so nothing would otherwise tell the shader
+    the number changed.  Returns the host id, or 0 if there is no target.
+    """
+    props = decal_obj.dts_decal
+    target = props.target
+    if target is None or target.type != "MESH":
+        return 0
+    host = decal_host_id(target)
+    for node in _host_gate_nodes(props.index):
+        node.inputs[1].default_value = float(host)
+    return host
+
+
 def refresh_coverage(decal_obj) -> int:
     """Recompute one decal's coverage cache from its empty.  Returns the count."""
     props = decal_obj.dts_decal
@@ -364,6 +432,8 @@ def refresh_coverage(decal_obj) -> int:
         depth=props.depth, rule=props.rule, max_angle=props.max_angle,
     )
     write_coverage(target, props.index, faces)
+    # the gate is the other half of the preview, and retargeting moves it
+    sync_host_gate(decal_obj)
     return len(faces)
 
 
@@ -422,6 +492,12 @@ def wire_decal_branch(target_mat, decal_obj, arm_obj=None) -> bool:
     :func:`covered_faces` decides per face, so the preview is close to the
     exported coverage without being identical to it -- see the note in
     :func:`write_coverage`.
+
+    A volume is not a mesh, though, and the branch lives in a material rather
+    than on an object, so the box alone drew the decal on every *other* object
+    sharing the material as well.  The gate that stops it is an Object Info
+    comparison against :func:`decal_host_id` -- chosen because it costs no
+    attribute slots, which is the constraint the depth mask is shaped by too.
     """
     nt = getattr(target_mat, "node_tree", None)
     if nt is None:
@@ -521,6 +597,36 @@ def wire_decal_branch(target_mat, decal_obj, arm_obj=None) -> bool:
     if arm_obj is not None:
         _drive_state(state, arm_obj, props.index, props.decal_name)
 
+    # The object gate.  Everything above is computed from the projector, and
+    # the projector does not know which object the shader is running on; this
+    # is the only part that does.  Object Index is Blender's per-object integer
+    # and reaches EEVEE as a uniform, so unlike the coverage attribute it costs
+    # nothing per decal -- light_male's 58 branches on one material each carry
+    # their own copy of these two nodes and the material still compiles.
+    factor = gate
+    host = decal_host_id(props.target) if props.target is not None else 0
+    if host:
+        info = nt.nodes.new("ShaderNodeObjectInfo")
+        info.label = label
+        info.location = (x - 800, y - 600)
+
+        same = nt.nodes.new("ShaderNodeMath")
+        same.label = label
+        same.operation = "COMPARE"
+        same.location = (x - 600, y - 600)
+        nt.links.new(info.outputs["Object Index"], same.inputs[0])
+        same.inputs[1].default_value = float(host)
+        # pass indices are integers, so half a unit is the whole window
+        same.inputs[2].default_value = 0.5
+
+        mine = nt.nodes.new("ShaderNodeMath")
+        mine.label = label
+        mine.operation = "MULTIPLY"
+        mine.location = (x - 300, y - 400)
+        nt.links.new(gate.outputs[0], mine.inputs[0])
+        nt.links.new(same.outputs[0], mine.inputs[1])
+        factor = mine
+
     emit = nt.nodes.new("ShaderNodeEmission")
     emit.label = label
     emit.location = (x - 400, y + 150)
@@ -529,7 +635,7 @@ def wire_decal_branch(target_mat, decal_obj, arm_obj=None) -> bool:
     mix = nt.nodes.new("ShaderNodeMixShader")
     mix.label = label
     mix.location = (x - 200, y)
-    nt.links.new(gate.outputs[0], mix.inputs["Fac"])
+    nt.links.new(factor.outputs[0], mix.inputs["Fac"])
     nt.links.new(surface, mix.inputs[1])
     nt.links.new(emit.outputs["Emission"], mix.inputs[2])
     nt.links.new(mix.outputs["Shader"], output.inputs["Surface"])
@@ -751,6 +857,159 @@ def build_decals(
         state = arm_obj.get(decal_prop(index, name), -1.0)
         shape.decal_states.append(int(round(float(state))))
     return decal_index_map
+
+
+# The engine draws decals with a polygon offset; Blender has no per-object
+# depth bias, so a Displace modifier lifts the mesh form off its target instead.
+# A modifier and not an edit, so the copied vertices stay where the file put
+# them and the mesh still says exactly what the file says.
+DECAL_LIFT = 0.002
+
+
+def _decal_uvs(mesh, verts, s, t) -> None:
+    """Bake the file's own texgen planes into a UV layer.
+
+    The engine computes every decal UV as two dot products against the stored
+    planes, so this is not an approximation of the projection -- it *is* the
+    projection, evaluated per vertex.  DTS's V axis runs opposite Blender's, as
+    it does for ordinary tverts.
+    """
+    layer = mesh.uv_layers.new(name="UVMap")
+    for loop in mesh.loops:
+        v = verts[loop.vertex_index]
+        layer.data[loop.index].uv = (
+            v[0] * s[0] + v[1] * s[1] + v[2] * s[2] + s[3],
+            1.0 - (v[0] * t[0] + v[1] * t[1] + v[2] * t[2] + t[3]),
+        )
+
+
+def _build_decal_mesh(name, tris, verts_src, bmat, s, t):
+    """The covered faces, as their own object.
+
+    A decal borrows its target's vertices, so this is a copy of the subset the
+    file's index list names -- the one thing the projector form cannot
+    reproduce, since a projector has to re-derive coverage from a volume.
+    """
+    used = sorted({i for tri in tris for i in tri[:3]})
+    remap = {old: new for new, old in enumerate(used)}
+    verts = [verts_src[i] for i in used]
+    bm = bpy.data.meshes.new(name)
+    bm.from_pydata(
+        [Vector(v) for v in verts],
+        [],
+        [(remap[a], remap[b], remap[c]) for a, b, c, *_ in tris],
+    )
+    _decal_uvs(bm, verts, s, t)
+    if bmat is not None:
+        bm.materials.append(bmat)
+    bm.validate()
+    bm.update()
+    return bpy.data.objects.new(name, bm)
+
+
+def import_decal_meshes(
+    shape: Shape,
+    arm_obj,
+    bmats,
+    targets: dict,
+    collection_of,
+    parent_like,
+    warnings,
+) -> tuple[int, int]:
+    """Build one mesh per (decal, detail level), and no projectors.
+
+    The other half of the ``Import Decals as Meshes`` checkbox.  What it buys
+    is the one thing the projector form gives up: a ``TSDecalMesh`` names the
+    triangles it covers, an empty cannot hold a list, and export therefore
+    re-derives coverage from the projector volume at recall 0.44 -- so the
+    faces a shipped file actually names are visible *here* and nowhere else.
+
+    What it costs is the export path.  A decal is exported from a projector
+    empty and from nothing else, so these meshes reach no file; the exporter
+    skips them rather than emitting each one again as a phantom object
+    (``blender_to_shape._gather_mesh_objects``).  This is a way to look at what
+    a file says, not a way to author one.  The caller warns.
+
+    Same arguments as :func:`import_decals`.  Returns ``(decals, meshes)``.
+    """
+    from .shape_to_blender import decode_primitives
+
+    coll = bpy.data.collections.new(f"{arm_obj.name}.decals")
+    bpy.context.scene.collection.children.link(coll)
+    n_decals = n_meshes = 0
+
+    for decal_index, decal in enumerate(shape.decals):
+        name_index, num_meshes, start, obj_index, _sibling = decal.raw
+        decal_name = shape.name(name_index)
+        owner = (
+            shape.name(shape.objects[obj_index].name_index)
+            if 0 <= obj_index < len(shape.objects)
+            else ""
+        )
+        built = False
+        for j in range(num_meshes):
+            src = shape.meshes[start + j] if start + j < len(shape.meshes) else None
+            if src is None or src.decal_data is None:
+                continue
+            dd = src.decal_data
+            entry = targets.get((obj_index, j))
+            if entry is None:
+                continue
+            target_obj, target_mesh = entry
+            if not dd.texgen_s or not dd.texgen_t or not dd.indices:
+                continue
+            if len(dd.start_primitive) > 1:
+                warnings.append(
+                    f"decal {decal_name!r}: {len(dd.start_primitive)} frames; "
+                    f"only the first is imported and the rest are lost"
+                )
+
+            verts_src = _target_verts(target_mesh)
+            tris = [
+                tri for tri in decode_primitives(dd) if max(tri[:3]) < len(verts_src)
+            ]
+            if not tris:
+                continue
+
+            mat_index = dd.material_index & PRIM_MATERIAL_MASK
+            bmat = bmats[mat_index] if 0 <= mat_index < len(bmats) else None
+            size = target_obj.get("dts_detail_size", j)
+            bobj = _build_decal_mesh(
+                f"{decal_name}{size}", tris, verts_src, bmat,
+                dd.texgen_s[0], dd.texgen_t[0],
+            )
+            coll.objects.link(bobj)
+            parent_like(bobj, target_obj)
+
+            # the legacy property names, deliberately: the exporter already
+            # keys its "do not export this as an object" guard on
+            # dts_decal_name, and props/migrate.py already knows how to turn a
+            # scene full of these into projectors
+            bobj["dts_decal_name"] = decal_name
+            bobj["dts_decal_index"] = decal_index
+            bobj["dts_decal_object"] = owner
+            bobj["dts_decal_slot"] = j
+            bobj["dts_decal_target"] = target_obj.name
+            bobj["dts_detail_size"] = size
+            bobj["dts_subshape"] = target_obj.get("dts_subshape", 0)
+
+            lift = bobj.modifiers.new("Decal Lift", "DISPLACE")
+            lift.strength = DECAL_LIFT
+            lift.mid_level = 0.0
+
+            target_coll = collection_of(target_obj)
+            if target_coll is not None:
+                target_coll.objects.link(bobj)
+                coll.objects.unlink(bobj)
+
+            n_meshes += 1
+            built = True
+        if built:
+            n_decals += 1
+
+    if not n_meshes:
+        bpy.data.collections.remove(coll)
+    return n_decals, n_meshes
 
 
 def import_decals(

@@ -83,6 +83,18 @@ def _is_mesh(self, obj) -> bool:
     return obj.type == "MESH"
 
 
+def _retarget(self, context) -> None:
+    """Follow a retarget with the preview's object gate.
+
+    The gate is a number baked into a node in a *material*, so a pointer
+    reassigned in the panel would otherwise leave the decal drawing on the mesh
+    it used to point at.  Imported deferred: mapping.decals imports this module.
+    """
+    from ..mapping.decals import sync_host_gate
+
+    sync_host_gate(self.id_data)
+
+
 class DtsDecalProps(PropertyGroup):
     is_dts: BoolProperty(default=False)
     schema_version: IntProperty(default=0)
@@ -123,6 +135,7 @@ class DtsDecalProps(PropertyGroup):
         ),
         type=bpy.types.Object,
         poll=_is_mesh,
+        update=_retarget,
     )
     material: PointerProperty(
         name="Material",

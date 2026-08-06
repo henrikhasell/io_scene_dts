@@ -12,7 +12,9 @@ Mapping conventions (mirrored by blender_to_shape):
   an armature modifier.
 - Multi-frame meshes import as shape keys; sorted meshes record how their
   cluster tree should be rebuilt on export (dts_sorted_mode).
-- Decal meshes are dropped with a warning (dead legacy feature).
+- Decals import as projector empties, or as a copy of the faces they cover
+  when "Import Decals as Meshes" is on.  A DECAL_MESH in an object's own slots
+  is skipped either way; the decal table is what import walks.
 - Detail levels are organized into collections named after the detail.
 """
 
@@ -43,7 +45,7 @@ from ..dtslib.types import (
 )
 
 from . import matframes
-from .decals import apply_default_states, import_decals
+from .decals import apply_default_states, import_decal_meshes, import_decals
 from .materials import material_to_blender, reset_texture_cache
 from .naming import object_display_name
 from .nla import scene_fps, stack_actions
@@ -66,6 +68,8 @@ def shape_to_blender(
     filepath: str | None = None,
     do_import_sequences: bool = True,
     create_materials: bool = True,
+    decals_as_meshes: bool = False,
+    do_import_details: bool = True,
 ) -> tuple[bpy.types.Object, list[str]]:
     """Build the scene; returns (armature object, warnings)."""
     warnings = []
@@ -97,6 +101,8 @@ def shape_to_blender(
     # find the target whose vertices its indices point at
     decal_targets = {}
     collection_by_object = {}
+    kept_slots = None if do_import_details else _slots_to_import(shape)
+    skipped_details = set()
 
     for obj_index, obj in enumerate(shape.objects):
         base_name = shape.name(obj.name_index)
@@ -110,6 +116,16 @@ def shape_to_blender(
                 # import_decals walks shape.decals instead
                 continue
             detail = _detail_for(shape, subshape, j)
+            if (
+                kept_slots is not None
+                and detail is not None
+                and (detail.sub_shape_num, detail.object_detail_num) not in kept_slots
+            ):
+                # a detail with no geometry is legal, and the detail table
+                # itself is stored on the armature, so the level still exists
+                # in the exported file -- it is the triangles that are gone
+                skipped_details.add(shape.name(detail.name_index))
+                continue
             size = int(detail.size) if detail else j
             display = object_display_name(base_name or "object", size)
             bobj = _build_mesh_object(shape, mesh, display, bmats, warnings)
@@ -165,7 +181,31 @@ def shape_to_blender(
     arm_obj["dts_smallest_visible_dl"] = shape.smallest_visible_dl
     arm_obj["dts_exporter_version"] = shape.exporter_version
 
-    if shape.decals:
+    if skipped_details:
+        warnings.append(
+            f"detail levels: {len(skipped_details)} level(s) not imported "
+            f"({', '.join(sorted(skipped_details))}); their geometry is gone "
+            f"from anything exported from this scene"
+        )
+
+    if shape.decals and decals_as_meshes:
+        n_decals, n_meshes = import_decal_meshes(
+            shape,
+            arm_obj,
+            bmats,
+            decal_targets,
+            lambda obj: collection_by_object.get(obj.name),
+            _parent_like,
+            warnings,
+        )
+        apply_default_states(arm_obj, shape)
+        warnings.append(
+            f"decals: {n_decals} imported as {n_meshes} mesh object(s).  This is "
+            f"the file's own face list, which the projector form cannot "
+            f"reproduce -- and it is not exported: a decal is exported from a "
+            f"projector empty, and these have none"
+        )
+    elif shape.decals:
         n_decals, n_targets = import_decals(
             shape,
             arm_obj,
@@ -602,6 +642,29 @@ def _hide_non_default_details(context, detail_collections, detail_sizes) -> None
             lc.hide_viewport = True
         else:  # collection not in this view layer (rare); fall back to the datablock
             coll.hide_viewport = True
+
+
+def _slots_to_import(shape: Shape) -> set[tuple[int, int]]:
+    """The (subshape, objectDetailNum) slots to build with LODs switched off.
+
+    The engine's default is the largest size, so that is the level worth
+    having; the rest are the same shape with fewer triangles standing at the
+    same origin, which is what makes a full import of `light_male` eleven
+    overlapping copies.
+
+    Negative sizes are kept regardless.  A detail sized -1 is a collision or
+    LOS hull rather than a level of detail, and dropping it would quietly turn
+    a re-exported shape into one the engine cannot collide with -- a much
+    larger loss than the one the option is asking for.
+    """
+    kept = set()
+    for sub in {d.sub_shape_num for d in shape.details}:
+        mine = [d for d in shape.details if d.sub_shape_num == sub]
+        visible = [d for d in mine if d.size >= 0]
+        if visible:
+            kept.add((sub, max(visible, key=lambda d: d.size).object_detail_num))
+        kept |= {(sub, d.object_detail_num) for d in mine if d.size < 0}
+    return kept
 
 
 def _detail_for(shape: Shape, subshape: int, object_detail_num: int):

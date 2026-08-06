@@ -36,6 +36,28 @@ class ImportDTS(bpy.types.Operator, ImportHelper):
         description="Create Principled BSDF materials with textures found next to the file",
         default=True,
     )
+    decals_as_meshes: BoolProperty(
+        name="Import Decals as Meshes",
+        description=(
+            "Import each decal as a copy of the faces the file says it covers, "
+            "one mesh per detail level, instead of as a projector empty.  This "
+            "is the only way to see the file's own face list, which a projector "
+            "has to re-derive -- but a decal is exported from a projector, so "
+            "these meshes reach no file"
+        ),
+        default=False,
+    )
+    import_details: BoolProperty(
+        name="Import Detail Levels",
+        description=(
+            "Import every LOD, not just the one the engine shows by default.  "
+            "They all stand at the same origin, so a shape with eleven levels "
+            "imports as eleven overlapping copies.  Collision and LOS details "
+            "are kept either way; the levels left out lose their geometry in "
+            "anything exported from this scene"
+        ),
+        default=False,
+    )
 
     def _selected_paths(self):
         """The file browser's multi-selection, or just filepath when the
@@ -97,6 +119,8 @@ class ImportDTS(bpy.types.Operator, ImportHelper):
                 filepath=str(dts_path),
                 do_import_sequences=self.import_sequences,
                 create_materials=self.create_materials,
+                decals_as_meshes=self.decals_as_meshes,
+                do_import_details=self.import_details,
             )
         except DtsError as e:
             self.report({"ERROR"}, str(e))

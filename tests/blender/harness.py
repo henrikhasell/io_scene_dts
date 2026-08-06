@@ -61,6 +61,9 @@ def armature():
 
 
 def import_dts(path, **kw):
+    # the sweep compares an import against the file it came from, so it
+    # needs every level regardless of what the operator defaults to
+    kw.setdefault("import_details", True)
     res = bpy.ops.io_scene_dts.import_dts(filepath=str(path), **kw)
     assert res == {"FINISHED"}, res
     return armature()
