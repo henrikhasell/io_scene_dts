@@ -23,7 +23,7 @@ from __future__ import annotations
 def _classes():
     """Leaf groups first: an item type must be registered before the group
     holding a CollectionProperty of it."""
-    from . import decal, mesh, node, sequence, shape
+    from . import decal, material, mesh, node, sequence, shape
 
     return (
         shape.DtsNameItem,
@@ -32,6 +32,7 @@ def _classes():
         shape.DtsIflItem,
         shape.DtsShapeProps,
         mesh.DtsMeshProps,
+        material.DtsMaterialProps,
         decal.DtsDecalProps,
         node.DtsNodeProps,
         sequence.DtsGroundItem,
@@ -44,7 +45,7 @@ def _classes():
 def register() -> None:
     import bpy
 
-    from . import decal, mesh, migrate, node, sequence, shape
+    from . import decal, material, mesh, migrate, node, sequence, shape
 
     for cls in _classes():
         bpy.utils.register_class(cls)
@@ -52,6 +53,9 @@ def register() -> None:
     bpy.types.Object.dts_shape = bpy.props.PointerProperty(type=shape.DtsShapeProps)
     bpy.types.Object.dts_mesh = bpy.props.PointerProperty(type=mesh.DtsMeshProps)
     bpy.types.Object.dts_decal = bpy.props.PointerProperty(type=decal.DtsDecalProps)
+    bpy.types.Material.dts_material = bpy.props.PointerProperty(
+        type=material.DtsMaterialProps
+    )
     bpy.types.Bone.dts_node = bpy.props.PointerProperty(type=node.DtsNodeProps)
     bpy.types.Action.dts_sequence_props = bpy.props.PointerProperty(
         type=sequence.DtsSequenceProps
@@ -70,6 +74,7 @@ def unregister() -> None:
     for owner, name in (
         (bpy.types.Action, "dts_sequence_props"),
         (bpy.types.Bone, "dts_node"),
+        (bpy.types.Material, "dts_material"),
         (bpy.types.Object, "dts_decal"),
         (bpy.types.Object, "dts_mesh"),
         (bpy.types.Object, "dts_shape"),

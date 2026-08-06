@@ -93,9 +93,20 @@ Disk.  For development, symlink this checkout into
   `MAT_TRANSLUCENT` is the material's `surface_render_method`, and
   `MAT_ADDITIVE` / `MAT_SUBTRACTIVE` are a `Transparent BSDF + Emission ->
   Add Shader` graph, so the shader is what export reads and editing it changes
-  the file.  All fourteen flag bits have a checkbox, in Material Properties →
-  **DTS Material**.  The exporter always writes a self-index reflectance map
-  (never `0xFFFFFFFF`, which crashes the engine).
+  the file.  They are not stored beside it either — those three bits have no
+  `dts_*` prop at all, and the panel shows the blend mode as a computed label.
+  The other eleven have a checkbox, in Material Properties → **DTS Material**.
+  A material with no reflectance map exports a self-index one (never
+  `0xFFFFFFFF`, which crashes the engine).
+- **Reflectance (environment) maps** are the second image in the material,
+  feeding **Metallic**.  A DTS packs one there by putting it in the *alpha
+  channel* of the diffuse texture, so an env-mapped material imports as two
+  images — an RGB diffuse and a greyscale mask — and the **Combine Diffuse and
+  Reflectance** checkbox says which packing to write back.  On, the mask goes
+  into the diffuse's alpha; off, it becomes its own texture and its own entry
+  in the shape's material list.  Export writes a `.png` beside the `.dts` for
+  any texture that exists only in the .blend, and never for one loaded from
+  disk — so nothing in a game's `textures/` tree is touched.
 - Export emits triangulated, indexed **Triangles** primitives grouped per
   material — the same policy as the engine's own `.mdl` exporter.
 

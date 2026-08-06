@@ -39,7 +39,11 @@ def _armature():
 
 
 def _import_dts(name):
-    res = bpy.ops.io_scene_dts.import_dts(filepath=str(FIXTURES / name))
+    # every level: these are fidelity tests, and the operator now defaults
+    # to the visible detail only
+    res = bpy.ops.io_scene_dts.import_dts(
+        filepath=str(FIXTURES / name), import_details=True
+    )
     assert res == {"FINISHED"}, res
     return _armature()
 
@@ -236,7 +240,7 @@ def test_synthetic_scene_export():
     assert len(mesh0.verts) >= 4
     # re-import what we exported
     _reset()
-    res = bpy.ops.io_scene_dts.import_dts(filepath=out)
+    res = bpy.ops.io_scene_dts.import_dts(filepath=out, import_details=True)
     assert res == {"FINISHED"}, res
     assert any(o.type == "MESH" for o in bpy.context.scene.objects)
 
@@ -335,7 +339,7 @@ def test_material_cross_refs_survive():
     write_shape_file(shape, src_path, 24)
 
     _reset()
-    res = bpy.ops.io_scene_dts.import_dts(filepath=src_path)
+    res = bpy.ops.io_scene_dts.import_dts(filepath=src_path, import_details=True)
     assert res == {"FINISHED"}, res
     out = _tmp(".dts")
     res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="24")
@@ -350,22 +354,232 @@ def test_material_cross_refs_survive():
     assert abs(m.reflection_amount - 0.25) < 1e-6
 
 
+def _env_mapped_fixture(*, translucent=False, name="shrub"):
+    """A shape whose one material is env-mapped, beside a texture on disk.
+
+    Synthesised rather than shipped: 270 of the corpus's 3185 materials are
+    env-mapped, but none of the fixtures that carry their textures is one of
+    them.  ``shrub.png`` is the fixture with a genuinely varying alpha, which
+    is what a reflectance mask has to have to be worth splitting out.
+
+    Returns (dts path, texture path) in a fresh directory.
+    """
+    import shutil
+
+    sys.path.insert(0, str(REPO))
+    sys.path.insert(0, str(REPO / "tests"))
+    from test_synthetic import make_triangle_shape
+
+    from io_scene_dts.dtslib import Material, write_shape_file
+    from io_scene_dts.dtslib.types import MAT_S_WRAP, MAT_T_WRAP, MAT_TRANSLUCENT
+
+    flags = MAT_S_WRAP | MAT_T_WRAP | (MAT_TRANSLUCENT if translucent else 0)
+    shape = make_triangle_shape()
+    # reflectance pointing at itself with env-mapping on: the packing every
+    # material in the shipped Tribes 2 shapes uses
+    shape.materials = [Material(name=name, flags=flags, reflectance_map=0)]
+
+    directory = Path(tempfile.mkdtemp())
+    texture = directory / f"{name}.png"
+    shutil.copy(FIXTURES / "shrub.png", texture)
+    dts = directory / f"{name}.dts"
+    write_shape_file(shape, str(dts), 24)
+    return dts, texture
+
+
+def _material_of(name):
+    return next(m for m in bpy.data.materials if m.get("dts_name") == name)
+
+
+def _node_feeding(mat, socket):
+    from io_scene_dts.mapping.materials import _image_node_feeding
+
+    return _image_node_feeding(mat, socket)
+
+
+def test_a_self_reflectance_imports_as_two_images():
+    """One RGBA file arrives as an RGB diffuse and a greyscale mask."""
+    dts, texture = _env_mapped_fixture()
+    _reset()
+    assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
+
+    mat = _material_of("shrub")
+    diffuse = _node_feeding(mat, "Base Color")
+    reflectance = _node_feeding(mat, "Metallic")
+    assert diffuse is not None and reflectance is not None, "both maps must arrive"
+    assert diffuse.image is not reflectance.image
+    assert diffuse.image.packed_file and reflectance.image.packed_file, (
+        "a re-encode has no file, so it has to be packed or the .blend loses it"
+    )
+    assert reflectance.image.colorspace_settings.name == "Non-Color", (
+        "an alpha channel is data; an sRGB curve would change what the engine reads"
+    )
+
+    source = bpy.data.images.load(str(texture))
+    assert list(reflectance.image.pixels)[0::4] == list(source.pixels)[3::4]
+    assert set(list(diffuse.image.pixels)[3::4]) == {1.0}, "diffuse must read as opaque"
+
+
+def test_a_reflectance_round_trips_byte_identically():
+    """Taking the texture apart and putting it back must change nothing.
+
+    Combine defaults on, which is the packing the file already used, so the
+    material list has to come back field for field -- and no texture should be
+    written, because the file on disk already holds both maps.
+    """
+    dts, _ = _env_mapped_fixture()
+    _reset()
+    assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
+
+    out = Path(tempfile.mkdtemp()) / "out.dts"
+    assert bpy.ops.io_scene_dts.export_dts(filepath=str(out), version="24") == {"FINISHED"}
+
+    src = read_shape_file(dts)
+    dst = read_shape_file(out)
+    assert len(dst.materials) == len(src.materials) == 1
+    for field in ("name", "flags", "reflectance_map", "bump_map", "detail_map"):
+        assert getattr(dst.materials[0], field) == getattr(src.materials[0], field), field
+    assert list(out.parent.glob("*.png")) == [], "an untouched re-encode needs no file"
+
+
+def test_unticking_combine_splits_the_material_list():
+    """Off, the mask becomes its own texture and its own material entry.
+
+    And doing it again must not grow the list further: the second import finds
+    the reflectance entry as an ordinary material, so the third export points
+    at that rather than inventing another.
+    """
+    dts, _ = _env_mapped_fixture()
+    _reset()
+    assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
+    _material_of("shrub").dts_material.combine_reflectance = False
+
+    out = Path(tempfile.mkdtemp()) / "out.dts"
+    assert bpy.ops.io_scene_dts.export_dts(filepath=str(out), version="24") == {"FINISHED"}
+    dst = read_shape_file(out)
+    assert len(dst.materials) == 2, [m.name for m in dst.materials]
+    assert dst.materials[0].reflectance_map == 1
+    from io_scene_dts.dtslib.types import MAT_REFLECTANCE_MAP_ONLY
+
+    assert dst.materials[1].flags & MAT_REFLECTANCE_MAP_ONLY
+    written = sorted(p.name for p in out.parent.glob("*.png"))
+    assert len(written) == 2, written
+
+    _reset()
+    assert bpy.ops.io_scene_dts.import_dts(filepath=str(out), import_details=True) == {"FINISHED"}
+    again = Path(tempfile.mkdtemp()) / "again.dts"
+    assert bpy.ops.io_scene_dts.export_dts(filepath=str(again), version="24") == {"FINISHED"}
+    assert len(read_shape_file(again).materials) == 2, "the list must not keep growing"
+
+
+def test_an_env_mapped_translucent_material_keeps_its_transparency():
+    """One alpha channel, two meanings, and this material claims both.
+
+    Transparency wins -- 2015 corpus materials read the alpha that way and 6
+    read it the other -- so the texture is not split, and the mask is previewed
+    off the same node rather than a new one.
+    """
+    dts, _ = _env_mapped_fixture(translucent=True)
+    _reset()
+    assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
+
+    mat = _material_of("shrub")
+    links = [(l.from_socket.name, l.to_socket.name) for l in mat.node_tree.links]
+    assert ("Alpha", "Alpha") in links, links
+    assert ("Alpha", "Metallic") in links, links
+    assert _node_feeding(mat, "Base Color") == _node_feeding(mat, "Metallic"), (
+        "one node feeds both, so export keeps the combined packing"
+    )
+    assert len(read_shape_file(dts).materials) == 1
+    out = Path(tempfile.mkdtemp()) / "out.dts"
+    assert bpy.ops.io_scene_dts.export_dts(filepath=str(out), version="24") == {"FINISHED"}
+    assert len(read_shape_file(out).materials) == 1, "nothing to separate"
+
+
+def test_a_cross_referenced_reflectance_imports_as_the_other_materials_texture():
+    """A reflectance slot naming another entry loads that entry's texture."""
+    import shutil
+
+    sys.path.insert(0, str(REPO))
+    sys.path.insert(0, str(REPO / "tests"))
+    from test_synthetic import make_triangle_shape
+
+    from io_scene_dts.dtslib import Material, write_shape_file
+    from io_scene_dts.dtslib.types import MAT_NEVER_ENV_MAP, MAT_S_WRAP, MAT_T_WRAP
+
+    wrap = MAT_S_WRAP | MAT_T_WRAP
+    shape = make_triangle_shape()
+    shape.materials = [
+        Material(name="shrub", flags=wrap, reflectance_map=1),
+        # the target is not itself env-mapped -- it is there to be pointed at,
+        # so its own texture stays whole
+        Material(name="wall", flags=wrap | MAT_NEVER_ENV_MAP, reflectance_map=1),
+    ]
+    directory = Path(tempfile.mkdtemp())
+    for name in ("shrub", "wall"):
+        shutil.copy(FIXTURES / "shrub.png", directory / f"{name}.png")
+    dts = directory / "cross.dts"
+    write_shape_file(shape, str(dts), 24)
+
+    _reset()
+    assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
+    base, other = _material_of("shrub"), _material_of("wall")
+    reflectance = _node_feeding(base, "Metallic")
+    assert reflectance is not None, "the referenced texture must be loaded"
+    assert reflectance.image == _node_feeding(other, "Base Color").image, (
+        "it is the other material's own texture, not a copy"
+    )
+    assert base.dts_material.combine_reflectance is False
+
+    out = directory / "out.dts"
+    assert bpy.ops.io_scene_dts.export_dts(filepath=str(out), version="24") == {"FINISHED"}
+    dst = read_shape_file(out)
+    assert dst.materials[dst.materials[0].reflectance_map].name == "wall"
+    assert len(dst.materials) == 2, "the entry already exists; do not invent another"
+
+
+def test_export_does_not_overwrite_a_source_texture():
+    """Export writes textures that exist only in the .blend, and only those.
+
+    The alternative is writing over the user's art in a game's textures/ tree,
+    which is why the rule is 'has no file behind it' rather than a comparison
+    of paths.
+    """
+    dts, texture = _env_mapped_fixture()
+    before = texture.read_bytes()
+    _reset()
+    assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
+    mat = _material_of("shrub")
+    mat.dts_material.combine_reflectance = False
+    # export back into the directory the source texture lives in
+    out = texture.parent / "out.dts"
+    assert bpy.ops.io_scene_dts.export_dts(filepath=str(out), version="24") == {"FINISHED"}
+    assert texture.read_bytes() == before, "the source texture was overwritten"
+
+
 def test_texture_pairing():
     """Every material whose texture exists next to the .dts gets its own image."""
     _reset()
-    res = bpy.ops.io_scene_dts.import_dts(filepath=str(FIXTURES / "gman" / "v24_gman.dts"))
+    res = bpy.ops.io_scene_dts.import_dts(
+        filepath=str(FIXTURES / "gman" / "v24_gman.dts"), import_details=True
+    )
     assert res == {"FINISHED"}, res
     on_disk = {p.stem.lower() for p in (FIXTURES / "gman").glob("*.png")}
     paired = 0
     for m in bpy.data.materials:
         if "dts_name" not in m or not m.use_nodes:
             continue
-        images = [n.image for n in m.node_tree.nodes if n.type == "TEX_IMAGE" and n.image]
+        # the node feeding Base Color, not merely the first image node: a
+        # material with a reflectance map has two, and their order in the node
+        # list is not a fact about which is the diffuse
+        node = _node_feeding(m, "Base Color")
         stem = Path(str(m["dts_name"])).stem.lower()
         if stem in on_disk:
-            assert images, f"material {m['dts_name']!r} has a texture on disk but none loaded"
-            assert Path(images[0].filepath).stem.lower() == stem, (
-                f"material {m['dts_name']!r} got wrong image {images[0].filepath!r}"
+            assert node is not None, (
+                f"material {m['dts_name']!r} has a texture on disk but none loaded"
+            )
+            assert Path(node.image.filepath).stem.lower() == stem, (
+                f"material {m['dts_name']!r} got wrong image {node.image.filepath!r}"
             )
             paired += 1
     assert paired >= 10, f"only {paired} materials paired with their textures"
@@ -382,10 +596,19 @@ def test_uv_and_alpha():
     got = {(round(d.uv[0], 4), round(d.uv[1], 4)) for d in uv.data}
     assert got, "no UVs imported"
     assert got <= src_uvs, "imported UVs not a subset of source tverts"
-    # translucent material got its alpha wired
-    m = next(m for m in bpy.data.materials if m.get("dts_translucent"))
+    # translucent material got its alpha wired.  Found through the shader,
+    # since translucency is not stored as a prop at all
+    from io_scene_dts.mapping.materials import blend_flags_from_material
+
+    m = next(
+        m for m in bpy.data.materials
+        if "dts_name" in m and blend_flags_from_material(m) & 0x4
+    )
     links = [(l.from_node.type, l.to_socket.name) for l in m.node_tree.links]
     assert ("TEX_IMAGE", "Alpha") in links, links
+    # ...and only as transparency.  This material sets MAT_NEVER_ENV_MAP, so
+    # its alpha is not a reflectance mask and nothing should reach Metallic
+    assert ("TEX_IMAGE", "Metallic") not in links, links
 
 
 def test_reflectance_map_only_survives_the_int_prop_limit():
@@ -565,25 +788,95 @@ def test_subtractive_round_trips_through_the_invert_node():
 
 
 def test_shader_edit_reaches_the_exported_blend_flag():
-    """The material wins over dts_translucent -- this used to be frozen."""
+    """The shader is where translucency lives -- this used to be frozen."""
     from io_scene_dts.dtslib.types import MAT_TRANSLUCENT
+    from io_scene_dts.mapping.materials import blend_flags_from_material
 
     _reset()
     _import_dts("v24_shrub.dts")
     bmat = _mat_by_index(0)
-    assert bmat["dts_translucent"], "fixture is meant to start translucent"
+    assert blend_flags_from_material(bmat) & MAT_TRANSLUCENT, "fixture starts translucent"
+    # and it is not *also* recorded beside the shader, which is the bug the
+    # three blend props were: a stored copy that export threw away
+    for prop in ("dts_translucent", "dts_additive", "dts_subtractive"):
+        assert prop not in bmat.keys(), f"{prop} is stored as well as derived"
 
     bmat.surface_render_method = "DITHERED"  # the edit that used to do nothing
     out = _tmp(".dts")
     assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
     assert not read_shape_file(out).materials[0].flags & MAT_TRANSLUCENT, "shader edit ignored"
-    assert not bmat["dts_translucent"], "prop left contradicting the shader"
 
     bmat.surface_render_method = "BLENDED"
     out2 = _tmp(".dts")
     assert bpy.ops.io_scene_dts.export_dts(filepath=out2, version="24") == {"FINISHED"}
     assert read_shape_file(out2).materials[0].flags & MAT_TRANSLUCENT, "not translucent again"
-    assert bmat["dts_translucent"], "prop not resynced"
+
+
+def test_migration_drops_the_blend_props_saved_beside_the_shader():
+    """A scene from an older version carries dts_translucent and friends.
+
+    They were already ignored on export -- masked off and recomputed from the
+    graph -- so deleting them changes no exported file and removes the second
+    source of truth.
+    """
+    from io_scene_dts.props import migrate
+
+    _reset()
+    _import_dts("v24_shrub.dts")
+    bmat = _mat_by_index(0)
+    for prop in migrate.DERIVED_MATERIAL_KEYS:
+        bmat[prop] = True
+
+    migrate.migrate_all()
+    for prop in migrate.DERIVED_MATERIAL_KEYS:
+        assert prop not in bmat.keys(), f"{prop} survived migration"
+    # idempotent, and the flags it never owned are untouched
+    migrate.migrate_all()
+    assert bmat["dts_s_wrap"] is not None
+
+
+def test_a_translucent_sorted_mesh_records_no_mode():
+    """Export infers BSP from the material, so importing it would store a
+    second copy of something already decided elsewhere."""
+    _reset()
+    _import_dts("v21_xorg21.dts")
+    src = read_shape_file(FIXTURES / "v21_xorg21.dts")
+    assert any(m is not None and m.mesh_type == 3 for m in src.meshes), "fixture has no sorted mesh"
+
+    objs = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+    assert objs and all(o.dts_mesh.sorted_mode == "NONE" for o in objs), (
+        [o.dts_mesh.sorted_mode for o in objs]
+    )
+    # ...and it still comes back sorted, which is why storing it was pointless
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
+    dst = [m for m in read_shape_file(out).meshes if m is not None]
+    assert all(m.mesh_type == 3 for m in dst), [m.mesh_type for m in dst]
+
+
+def test_an_opaque_sorted_mesh_still_records_its_mode():
+    """The 15 corpus sorted meshes that are not translucent have no other way
+    to say so, so the choice is written down for them."""
+    from io_scene_dts.dtslib import write_shape_file
+    from io_scene_dts.dtslib.types import MAT_TRANSLUCENT
+
+    shape = read_shape_file(FIXTURES / "v21_xorg21.dts")
+    for mat in shape.materials:
+        mat.flags &= ~MAT_TRANSLUCENT
+    opaque = _tmp(".dts")
+    write_shape_file(shape, opaque, 23)
+
+    _reset()
+    assert bpy.ops.io_scene_dts.import_dts(filepath=opaque, import_details=True) == {"FINISHED"}
+    objs = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+    assert any(o.dts_mesh.sorted_mode == "BSP" for o in objs), (
+        [o.dts_mesh.sorted_mode for o in objs]
+    )
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
+    dst = [m for m in read_shape_file(out).meshes if m is not None]
+    assert sum(1 for m in dst if m.mesh_type == 3) == 3, [m.mesh_type for m in dst]
 
 
 def test_fading_an_opaque_material_does_not_make_it_translucent():
@@ -633,6 +926,136 @@ def _decal_triangles(shape, decal, slot, mesh):
         tuple(sorted(tuple(round(c, 4) for c in verts[i]) for i in tri[:3]))
         for tri in decode_primitives(mesh.decal_data)
     }
+
+
+def test_decals_can_import_as_meshes():
+    """The checkbox, on: the faces the *file* names, which a projector cannot.
+
+    Coverage is re-derived from the projector volume on export at recall 0.44,
+    so the shipped index list exists in Blender only in this form.  It is a way
+    to look at a file, not a way to author one -- there are no projectors, and
+    a decal is exported from a projector.
+    """
+    _reset()
+    res = bpy.ops.io_scene_dts.import_dts(
+        filepath=str(FIXTURES / "v23_bioderm_light.dts"),
+        decals_as_meshes=True,
+        import_details=True,
+    )
+    assert res == {"FINISHED"}, res
+    from io_scene_dts.mapping.decals import decal_objects
+    from io_scene_dts.mapping.shape_to_blender import decode_primitives
+
+    src = read_shape_file(FIXTURES / "v23_bioderm_light.dts")
+    assert decal_objects() == [], "meshes and projectors are alternatives, not both"
+    meshes = [o for o in bpy.data.objects if o.type == "MESH" and "dts_decal_name" in o]
+    assert len(meshes) == 144, len(meshes)
+    assert len({int(o["dts_decal_index"]) for o in meshes}) == len(src.decals) == 24
+
+    # each mesh is the file's own triangles, not a re-derivation
+    by_key = {(int(o["dts_decal_index"]), int(o["dts_decal_slot"])): o for o in meshes}
+    checked = 0
+    for di, decal in enumerate(src.decals):
+        _name, num, start, _oi, _sib = decal.raw
+        for j in range(num):
+            mesh = src.meshes[start + j]
+            if mesh is None or mesh.decal_data is None:
+                continue
+            bobj = by_key.get((di, j))
+            assert bobj is not None, (di, j)
+            want = {tuple(sorted(tri[:3])) for tri in decode_primitives(mesh.decal_data)}
+            assert len(bobj.data.polygons) == len(want), (di, j)
+            checked += 1
+    assert checked == 144, checked
+
+    # the decal material, and UVs that are the file's own texgen planes
+    # evaluated per vertex.  Not a range check: 36% of this shape's decal
+    # vertices project outside the 0..1 square, because the original exporter
+    # kept faces that merely clip it, so [0,1] would be the wrong bar
+    for (di, j), bobj in by_key.items():
+        assert bobj.data.materials and bobj.data.materials[0] is not None, bobj.name
+        dd = src.meshes[src.decals[di].raw[2] + j].decal_data
+        s, t = dd.texgen_s[0], dd.texgen_t[0]
+        me = bobj.data
+        uvs = me.uv_layers["UVMap"].data
+        for loop in me.loops:
+            v = me.vertices[loop.vertex_index].co
+            u = v[0] * s[0] + v[1] * s[1] + v[2] * s[2] + s[3]
+            w = 1.0 - (v[0] * t[0] + v[1] * t[1] + v[2] * t[2] + t[3])
+            got = uvs[loop.index].uv
+            assert abs(got[0] - u) < 1e-4 and abs(got[1] - w) < 1e-4, (
+                bobj.name, tuple(got), (u, w)
+            )
+
+    # and they are not exported -- neither as decals nor as phantom objects
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
+    dst = read_shape_file(out)
+    assert len(dst.decals) == 0, f"{len(dst.decals)} decals from meshes nothing reads"
+    assert len(dst.objects) == len(src.objects), (
+        f"{len(dst.objects)} objects against {len(src.objects)}: decal meshes "
+        f"came back as phantom objects"
+    )
+
+
+def test_import_can_leave_the_lods_out():
+    """The other checkbox, in its default state.
+
+    Every level stands at the same origin, so importing all ten is ten
+    overlapping copies.  Off, only the size-145 level is built.
+    """
+    _reset()
+    res = bpy.ops.io_scene_dts.import_dts(
+        filepath=str(FIXTURES / "v23_bioderm_light.dts")
+    )
+    assert res == {"FINISHED"}, res
+
+    meshes = [o for o in bpy.data.objects if o.type == "MESH"]
+    sizes = {int(o["dts_detail_size"]) for o in meshes}
+    assert sizes == {145}, sorted(sizes)
+
+    src = read_shape_file(FIXTURES / "v23_bioderm_light.dts")
+    full = [o for o in src.objects]
+    assert len(meshes) == sum(
+        1 for o in full
+        if src.meshes[o.start_mesh_index] is not None
+    ), len(meshes)
+
+    # decals still import, onto the one level that is there
+    from io_scene_dts.mapping.decals import decal_objects
+
+    assert len(decal_objects()) == 24
+    assert all(d.dts_decal.target["dts_detail_size"] == 145 for d in decal_objects())
+
+    # the detail *table* survives -- it is stored on the armature, so the
+    # exported shape still declares all ten levels, with geometry at one
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
+    dst = read_shape_file(out)
+    assert len(dst.details) == len(src.details)
+    assert len(dst.objects) == len(src.objects)
+
+
+def test_collision_details_survive_leaving_the_lods_out():
+    """A detail sized -1 is a collision hull, not a level of detail.
+
+    Dropping it would turn a re-exported shape into one the engine cannot
+    collide with, which is a far larger loss than the option is asking for.
+    """
+    _reset()
+    res = bpy.ops.io_scene_dts.import_dts(
+        filepath=str(FIXTURES / "v22_station_teleport.dts")
+    )
+    assert res == {"FINISHED"}, res
+    src = read_shape_file(FIXTURES / "v22_station_teleport.dts")
+    negative = sorted(int(d.size) for d in src.details if d.size < 0)
+    assert negative == [-2, -1], negative
+
+    sizes = sorted({int(o["dts_detail_size"]) for o in bpy.data.objects if o.type == "MESH"})
+    # Collision-2 is declared with no geometry behind it, so only -1 arrives --
+    # what matters is that a collision level is never treated as an LOD
+    assert -1 in sizes, sizes
+    assert [s for s in sizes if s >= 0] == [max(int(d.size) for d in src.details)], sizes
 
 
 def test_decal_meshes_are_not_exported_as_objects():
@@ -780,12 +1203,28 @@ def test_decals_import_as_projector_empties():
         mat = props.target.active_material
         label = f"DTS Decal {props.index:03d}"
         nodes = {n.type for n in mat.node_tree.nodes if n.label == label}
-        assert {"TEX_COORD", "MAPPING", "SEPXYZ", "MIX_SHADER"} <= nodes, nodes
+        assert {"TEX_COORD", "MAPPING", "SEPXYZ", "MIX_SHADER", "OBJECT_INFO"} <= nodes, nodes
         coord = next(
             n for n in mat.node_tree.nodes
             if n.label == label and n.type == "TEX_COORD"
         )
         assert coord.object is d, (coord.object, d)
+
+        # the object gate: this material is shared, so the projector volume on
+        # its own would draw the decal on every other object standing in it
+        same = next(
+            n for n in mat.node_tree.nodes
+            if n.label == label and n.type == "MATH" and n.operation == "COMPARE"
+        )
+        assert abs(same.inputs[1].default_value - props.target.pass_index) < 1e-6, (
+            d.name, same.inputs[1].default_value, props.target.pass_index
+        )
+
+    # every target answers to its own number, or the gate lets the wrong mesh in
+    hosts = [d.dts_decal.target for d in empties]
+    ids = {t.pass_index for t in hosts}
+    assert 0 not in ids
+    assert len(ids) == len({t.name for t in hosts}), sorted(ids)
 
     # No Attribute node anywhere: EEVEE caps how many attributes one material
     # may use, and every decal on a shape can land on a single material --
@@ -1565,25 +2004,49 @@ def test_sorted_meshes_survive_an_edit():
     src = read_shape_file(FIXTURES / "v21_xorg21.dts")
     assert any(m is not None and m.mesh_type == 3 for m in src.meshes), "fixture has no sorted mesh"
 
-    sorted_objs = [
-        o for o in bpy.context.scene.objects
-        if o.type == "MESH" and o.dts_mesh.sorted_mode != "NONE"
-    ]
-    assert sorted_objs, "sorted meshes did not record how to rebuild their tree"
-    assert not any(o.get("dts_strict_freeze") for o in sorted_objs), "still frozen"
+    src_sorted = [m for m in src.meshes if m is not None and m.mesh_type == 3]
+    # not selected by dts_sorted_mode: every sorted mesh in this fixture is on
+    # a translucent material, so export infers the mode and the importer
+    # deliberately records nothing
+    objs = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+    assert objs and not any(o.get("dts_strict_freeze") for o in objs), "still frozen"
 
-    for obj in sorted_objs:
+    for obj in objs:
         obj.data.vertices[0].co.x += 0.05
 
     out = _tmp(".dts")
     assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
     dst = read_shape_file(out)
     dst_sorted = [m for m in dst.meshes if m is not None and m.mesh_type == 3]
-    assert len(dst_sorted) == len(sorted_objs), (len(dst_sorted), len(sorted_objs))
+    assert len(dst_sorted) >= len(src_sorted), (len(dst_sorted), len(src_sorted))
     for mesh in dst_sorted:
         assert mesh.sorted_data is not None
         assert mesh.sorted_data.clusters, "no cluster tree was built"
         assert mesh.sorted_data.num_verts == [len(mesh.verts)]
+
+
+def test_an_imported_translucent_mesh_is_promoted_on_re_export():
+    """The promotion is unconditional -- it fires on a re-export too.
+
+    v24_shrub's one mesh arrives as a STANDARD_MESH on a translucent material
+    and leaves as a sorted one, so a plain round trip changes the mesh type.
+    That is the deliberate cost of inferring sorting from the material rather
+    than only honouring an explicit setting.
+    """
+    _reset()
+    _import_dts("v24_shrub.dts")
+    src = read_shape_file(FIXTURES / "v24_shrub.dts")
+    live = [m for m in src.meshes if m is not None]
+    assert all(m.mesh_type == 0 for m in live), "fixture should start standard"
+
+    obj = next(o for o in bpy.context.scene.objects if o.type == "MESH")
+    assert obj.dts_mesh.sorted_mode == "NONE", "nothing asked for sorting"
+
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
+    dst = [m for m in read_shape_file(out).meshes if m is not None]
+    assert all(m.mesh_type == 3 for m in dst), [m.mesh_type for m in dst]
+    assert all(m.sorted_data is not None and m.sorted_data.clusters for m in dst)
 
 
 def test_sorted_cluster_tree_walks_like_the_engine_reads_it():

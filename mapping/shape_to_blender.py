@@ -46,7 +46,7 @@ from ..dtslib.types import (
 
 from . import matframes
 from .decals import apply_default_states, import_decal_meshes, import_decals
-from .materials import material_to_blender, reset_texture_cache
+from .materials import is_translucent, material_to_blender, reset_texture_cache
 from .naming import object_display_name
 from .nla import scene_fps, stack_actions
 from .sequences import dts_local_matrix, import_sequences
@@ -90,7 +90,7 @@ def shape_to_blender(
         search_dir = Path(filepath).parent if filepath else None
         reset_texture_cache()
         bmats = [
-            material_to_blender(m, i, shape.materials, search_dir)
+            material_to_blender(m, i, shape.materials, search_dir, warnings)
             for i, m in enumerate(shape.materials)
         ]
 
@@ -557,12 +557,22 @@ def _store_sorted_mode(bobj, mesh: Mesh) -> None:
     A sorted mesh's BSP tables used to be the one thing that could not be
     re-derived, so the mesh carried a pickled copy of itself and refused to be
     edited.  dtslib/sorted_build.py generates them instead, which leaves only
-    the *choice* to record: whether this is a sorted mesh at all, and how deep
-    a tree to build.
+    the *choice* to record -- and most of the time not even that.
+
+    Export promotes any mesh on a translucent material to a sorted one, so for
+    a translucent sorted mesh the mode is already implied and recording it
+    would be a second source for one value.  352 of the corpus's 367 sorted
+    meshes are translucent, so this stores nothing for almost all of them.
+    The 15 that are not translucent still need the choice written down.
+
+    The consequence, which is the point rather than a wrinkle: making such a
+    mesh's material opaque makes it a standard mesh again, because the only
+    reason it was sorted was that it blended.
     """
     if mesh.mesh_type != SORTED_MESH:
         return
-    bobj.dts_mesh.sorted_mode = "BSP"
+    if not is_translucent(bobj):
+        bobj.dts_mesh.sorted_mode = "BSP"
     if mesh.sorted_data is not None and mesh.sorted_data.always_write_depth:
         bobj.dts_mesh.always_write_depth = True
 

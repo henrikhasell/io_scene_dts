@@ -14,6 +14,8 @@ from __future__ import annotations
 import bpy
 from bpy.types import Panel
 
+from ..dtslib.types import MAT_ADDITIVE, MAT_SUBTRACTIVE, MAT_TRANSLUCENT
+from ..mapping import materials
 from .operators import (
     DTS_OT_add_decal,
     DTS_OT_dismiss_migration_note,
@@ -278,10 +280,16 @@ class OBJECT_PT_dts_mesh(Panel):
         box = layout.box()
         box.label(text="Draw order")
         box.prop(props, "sorted_mode", text="")
-        if props.sorted_mode == "BSP":
+        # Standard plus a blended material still exports sorted.  Say so here
+        # rather than storing the mode on the mesh, which would be a second
+        # source for something the material already decides.
+        promoted = props.sorted_mode == "NONE" and materials.is_translucent(obj)
+        if promoted:
+            box.label(text="Sorted (BSP) on export: the material blends", icon="INFO")
+        if props.sorted_mode == "BSP" or promoted:
             box.prop(props, "sorted_depth")
             box.label(text="Each level doubles the index buffer", icon="INFO")
-        if props.sorted_mode != "NONE":
+        if props.sorted_mode != "NONE" or promoted:
             box.prop(props, "always_write_depth")
 
         box = layout.box()
@@ -328,13 +336,15 @@ class MATERIAL_PT_dts_material(Panel):
 
     @classmethod
     def poll(cls, context):
-        mat = getattr(context, "material", None)
-        return mat is not None and "dts_name" in mat
+        # any material, not just an imported one: a material built in a fresh
+        # scene has to be able to reach the Combine checkbox, or a reflectance
+        # map can be turned off and never on
+        return getattr(context, "material", None) is not None
 
     def draw(self, context):
         mat = context.material
         layout = self.layout
-        layout.label(text=f"DTS name: {mat['dts_name']}")
+        layout.label(text=f"DTS name: {mat.get('dts_name') or mat.name}")
 
         column = layout.column(align=True)
         column.label(text="Flags")
@@ -347,13 +357,31 @@ class MATERIAL_PT_dts_material(Panel):
                 row.enabled = False
                 row.label(text=f"{label} (unset)")
 
+        # computed at draw time rather than read from a prop: the graph is
+        # where these three live, and a stored copy would be a second source
+        blend = materials.blend_flags_from_material(mat)
         box = layout.box()
         box.label(text="Blend mode comes from the shader, not from here")
-        for prop in ("dts_translucent", "dts_additive", "dts_subtractive"):
-            if prop in mat:
-                row = box.row()
-                row.enabled = False
-                row.prop(mat, f'["{prop}"]', text=prop.removeprefix("dts_"))
+        names = [
+            name for name, bit in (
+                ("Translucent", MAT_TRANSLUCENT),
+                ("Additive", MAT_ADDITIVE),
+                ("Subtractive", MAT_SUBTRACTIVE),
+            ) if blend & bit
+        ]
+        box.label(text=", ".join(names) if names else "Opaque")
+
+        box = layout.box()
+        box.label(text="Reflectance (environment map)")
+        box.prop(mat.dts_material, "combine_reflectance")
+        node = materials.reflectance_image_node(mat)
+        if node is not None:
+            box.label(text=f"From {node.image.name}", icon="TEXTURE")
+        else:
+            box.label(
+                text="Link an image to Metallic to give this material one",
+                icon="INFO",
+            )
 
         column = layout.column(align=True)
         column.label(text="Maps (no preview; the Principled shader ignores them)")

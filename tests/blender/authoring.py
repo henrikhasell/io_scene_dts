@@ -149,6 +149,46 @@ def principled_material(name, *, colour=(0.8, 0.2, 0.2, 1.0)):
     return mat
 
 
+def generated_image(name, *, size=4, colour=(0.25, 0.5, 0.75), ramp=False):
+    """An image made in Blender, with no file behind it -- what a user has.
+
+    ``ramp`` varies the value across the image, which matters for a reflectance
+    mask: a mask whose values never change carries nothing, and the add-on
+    declines to split one out of a texture's alpha.
+    """
+    image = bpy.data.images.new(name, width=size, height=size, alpha=True)
+    pixels = []
+    for i in range(size * size):
+        value = i / (size * size - 1) if ramp else colour[0]
+        pixels.extend((value, value, value, 1.0) if ramp else (*colour, 1.0))
+    image.pixels = pixels
+    image.update()
+    image.pack()
+    return image
+
+
+def image_material(name, *, diffuse=None, reflectance=None, combine=None):
+    """A Principled material with images on Base Color and Metallic.
+
+    Metallic is where the add-on reads a reflectance map from, so this is how a
+    user gives a material one -- there is no property to set, and that is the
+    point: the shader is the only place it can live.
+    """
+    mat = principled_material(name)
+    nt = mat.node_tree
+    bsdf = nt.nodes.get("Principled BSDF")
+    for image, socket, y in ((diffuse, "Base Color", 300), (reflectance, "Metallic", -80)):
+        if image is None:
+            continue
+        node = nt.nodes.new("ShaderNodeTexImage")
+        node.image = image
+        node.location = (-350, y)
+        nt.links.new(node.outputs["Color"], bsdf.inputs[socket])
+    if combine is not None:
+        mat.dts_material.combine_reflectance = combine
+    return mat
+
+
 def export_dts(path=None, **kwargs):
     path = path or tmp(".dts")
     kwargs.setdefault("version", "24")

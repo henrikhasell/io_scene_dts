@@ -25,6 +25,7 @@ from io_scene_dts.dtslib.types import (  # noqa: E402
     MAT_ADDITIVE,
     MAT_NEVER_ENV_MAP,
     MAT_NO_MIP_MAP,
+    MAT_REFLECTANCE_MAP_ONLY,
     MAT_S_WRAP,
     MAT_SELF_ILLUMINATING,
     MAT_SUBTRACTIVE,
@@ -317,6 +318,136 @@ def test_a_material_without_maps_gets_engine_safe_defaults():
     assert mat.reflectance_map == 0
 
 
+def test_a_reflectance_map_is_authorable():
+    """A separate reflectance texture, from nothing.
+
+    The file has no way to name a texture that no mesh uses except as another
+    material-list entry, so export has to invent one and flag it
+    MAT_REFLECTANCE_MAP_ONLY -- which is what that bit is for.
+    """
+    A.reset()
+    arm = A.armature("Shiny")
+    mat = A.image_material(
+        "hull",
+        diffuse=A.generated_image("hull_diffuse"),
+        reflectance=A.generated_image("hull_refl", ramp=True),
+        combine=False,
+    )
+    A.mesh_object("body2", arm, bone="root", material=mat)
+
+    path = A.export_dts()
+    shape = A.read(path)
+    assert len(shape.materials) == 2, [m.name for m in shape.materials]
+    hull, refl = shape.materials
+    assert hull.name == "hull"
+    assert hull.reflectance_map == 1, hull.reflectance_map
+    assert not hull.flags & MAT_NEVER_ENV_MAP, "a reflectance map needs env-mapping on"
+    assert refl.flags & MAT_REFLECTANCE_MAP_ONLY, "the invented entry must say what it is"
+    assert refl.reflectance_map == 1, "self-index, never 0xFFFFFFFF"
+
+    beside = Path(path).parent
+    assert (beside / "hull.png").is_file()
+    assert (beside / f"{refl.name}.png").is_file(), sorted(p.name for p in beside.iterdir())
+
+
+def test_a_combined_reflectance_is_authorable():
+    """The other packing: the mask goes into the diffuse's alpha channel.
+
+    One material, one texture, reflectance pointing at itself -- which is what
+    every material in Tribes 2's own shapes looks like.
+    """
+    A.reset()
+    arm = A.armature("Shiny")
+    mat = A.image_material(
+        "hull",
+        diffuse=A.generated_image("hull_diffuse", colour=(0.25, 0.5, 0.75)),
+        reflectance=A.generated_image("hull_refl", ramp=True),
+        combine=True,
+    )
+    A.mesh_object("body2", arm, bone="root", material=mat)
+
+    path = A.export_dts()
+    shape = A.read(path)
+    assert len(shape.materials) == 1, [m.name for m in shape.materials]
+    assert shape.materials[0].reflectance_map == 0
+    assert not shape.materials[0].flags & MAT_NEVER_ENV_MAP
+
+    written = Path(path).parent / "hull.png"
+    assert written.is_file()
+    # the mask has to actually be in the alpha channel, not merely promised
+    combined = bpy.data.images.load(str(written))
+    alpha = list(combined.pixels)[3::4]
+    assert min(alpha) < 0.05 and max(alpha) > 0.95, sorted(set(alpha))
+
+
+def test_a_reflectance_material_is_env_mapped():
+    """Showing a reflectance map is how you ask for env-mapping.
+
+    A fresh material gets MAT_NEVER_ENV_MAP so it cannot crash the engine on a
+    null reflectance map.  One that *has* a reflectance map must not, or the
+    thing the user just authored is dead in the game.
+    """
+    A.reset()
+    arm = A.armature("Pair")
+    plain = A.principled_material("plain")
+    shiny = A.image_material(
+        "shiny",
+        diffuse=A.generated_image("shiny_diffuse"),
+        reflectance=A.generated_image("shiny_refl", ramp=True),
+        combine=True,
+    )
+    # ...and the checkbox does not get to contradict the map either
+    ticked = A.image_material(
+        "ticked",
+        diffuse=A.generated_image("ticked_diffuse"),
+        reflectance=A.generated_image("ticked_refl", ramp=True),
+        combine=True,
+    )
+    ticked["dts_never_env_map"] = True
+    for index, mat in enumerate((plain, shiny, ticked)):
+        A.mesh_object(f"part{index}_2", arm, bone="root", material=mat)
+
+    by_name = {m.name: m for m in A.read(A.export_dts()).materials}
+    assert by_name["plain"].flags & MAT_NEVER_ENV_MAP, "no map: env-mapping stays off"
+    assert not by_name["shiny"].flags & MAT_NEVER_ENV_MAP, "a map: env-mapping goes on"
+    assert not by_name["ticked"].flags & MAT_NEVER_ENV_MAP, (
+        "a reflectance map the engine is told never to read is not a feature"
+    )
+
+
+def test_a_reflectance_map_does_not_shift_primitive_material_indices():
+    """The invented entry goes on the end, where nothing points.
+
+    Every mat_index in the shape was decided before the material list existed,
+    so appending is safe -- but only if it really is appending.
+    """
+    A.reset()
+    arm = A.armature("Three")
+    first = A.principled_material("first")
+    middle = A.image_material(
+        "middle",
+        diffuse=A.generated_image("middle_diffuse"),
+        reflectance=A.generated_image("middle_refl", ramp=True),
+        combine=False,
+    )
+    last = A.principled_material("last")
+    for index, mat in enumerate((first, middle, last)):
+        A.mesh_object(f"part{index}_2", arm, bone="root", material=mat)
+
+    shape = A.read(A.export_dts())
+    names = [m.name for m in shape.materials]
+    assert names[:3] == ["first", "middle", "last"], names
+    assert len(names) == 4 and names[3].startswith("middle"), names
+
+    # each object's one mesh has one primitive, naming the material it was given
+    used = []
+    for obj in shape.objects:
+        mesh = shape.meshes[obj.start_mesh_index]
+        for prim in mesh.primitives:
+            used.append(names[prim.mat_index & 0x0FFFFFFF])
+    assert sorted(used) == ["first", "last", "middle"], used
+
+
 # ----------------------------------------------------------------------
 # mesh kinds
 # ----------------------------------------------------------------------
@@ -388,6 +519,86 @@ def test_a_sorted_mesh_is_authorable():
     assert mesh.sorted_data is not None
     assert len(mesh.sorted_data.clusters) > 1, "no tree was built"
     assert mesh.sorted_data.num_verts == [len(mesh.verts)]
+
+
+def _translucent_material(name="glass"):
+    """Blended in the shader, which is where export reads translucency from."""
+    mat = A.principled_material(name)
+    if hasattr(mat, "surface_render_method"):
+        mat.surface_render_method = "BLENDED"
+    if hasattr(mat, "blend_method"):
+        mat.blend_method = "BLEND"
+    return mat
+
+
+def test_a_translucent_mesh_is_promoted_to_a_sorted_one():
+    """Translucency is what sorted meshes are for, so it asks for one.
+
+    Nothing DTS-specific is set here: a material is made blended in the node
+    editor, and the mesh comes out of the file with a cluster tree.
+    """
+    A.reset()
+    arm = A.armature("Foliage")
+    verts, faces = A.cards_geometry(16)
+    A.mesh_object(
+        "leaves2", arm, bone="root", verts=verts, faces=faces,
+        material=_translucent_material(),
+    )
+
+    mesh = A.live_meshes(A.read(A.export_dts()))[0]
+    assert mesh.mesh_type == SORTED_MESH, mesh.mesh_type
+    assert mesh.sorted_data is not None
+    assert len(mesh.sorted_data.clusters) > 1, "promoted, but no tree was built"
+
+
+def test_an_opaque_mesh_is_left_standard():
+    """The other half of the rule, and the reason it is a rule at all."""
+    A.reset()
+    arm = A.armature("Foliage")
+    verts, faces = A.cards_geometry(16)
+    A.mesh_object(
+        "leaves2", arm, bone="root", verts=verts, faces=faces,
+        material=A.principled_material("solid"),
+    )
+
+    mesh = A.live_meshes(A.read(A.export_dts()))[0]
+    assert mesh.mesh_type == STANDARD_MESH, mesh.mesh_type
+    assert mesh.sorted_data is None
+
+
+def test_an_explicit_sorted_mode_outranks_the_promotion():
+    """FLAT means "sorted, but claim no ordering".  A promotion to BSP would
+    partition geometry the user said not to partition."""
+    A.reset()
+    arm = A.armature("Foliage")
+    verts, faces = A.cards_geometry(16)
+    obj = A.mesh_object(
+        "leaves2", arm, bone="root", verts=verts, faces=faces,
+        material=_translucent_material(),
+    )
+    obj.dts_mesh.sorted_mode = "FLAT"
+
+    mesh = A.live_meshes(A.read(A.export_dts()))[0]
+    assert mesh.mesh_type == SORTED_MESH
+    assert len(mesh.sorted_data.clusters) == 1, "FLAT is one cluster, not a tree"
+
+
+def test_a_translucent_skin_stays_a_skin():
+    """mesh_type is one field, so the promotion has to lose -- silently, since
+    nobody asked for it."""
+    A.reset()
+    arm = A.armature("Creature", bones=(("root", None), ("upper", "root")))
+    obj = A.mesh_object("skin2", arm, material=_translucent_material())
+    obj.parent_type = "OBJECT"
+    modifier = obj.modifiers.new("Armature", "ARMATURE")
+    modifier.object = arm
+    lower = obj.vertex_groups.new(name="root")
+    upper = obj.vertex_groups.new(name="upper")
+    for vertex in obj.data.vertices:
+        (upper if vertex.co.z > 0 else lower).add([vertex.index], 1.0, "REPLACE")
+
+    mesh = A.live_meshes(A.read(A.export_dts()))[0]
+    assert mesh.mesh_type == SKIN_MESH, mesh.mesh_type
 
 
 def test_a_sorted_mesh_walks_correctly():
@@ -912,6 +1123,107 @@ def test_moving_the_projector_moves_the_decal():
     assert any(abs(a - b) > 1e-4 for a, b in zip(before, after)), (before, after)
 
 
+def _feeds(socket, node) -> bool:
+    """Whether ``node``'s output reaches ``socket`` through the node tree.
+
+    Compared by name, not identity: ``nodes`` hands back a fresh wrapper every
+    time it is read, so ``is`` asks a question about Python objects rather than
+    about the node tree.
+    """
+    seen = set()
+    stack = [socket]
+    while stack:
+        current = stack.pop()
+        for link in current.links:
+            if link.from_node.name == node.name:
+                return True
+            if link.from_node.name in seen:
+                continue
+            seen.add(link.from_node.name)
+            stack += [i for i in link.from_node.inputs if i.is_linked]
+    return False
+
+
+def test_a_decal_previews_only_on_its_target():
+    """The preview draws in a *material*, and a material is shared.
+
+    A decal has no mesh, so its branch composites in the target's own shader,
+    masked by the projector volume -- and a volume says where, not what.  Every
+    other object using the same material and standing inside the box drew the
+    decal too, which in the corpus is 5999 of 6053 decals: light_male puts all
+    58 on the body material, and vehicle_land_mpbase 163 of them.  The gate is
+    an Object Info comparison, chosen over an Attribute node because EEVEE caps
+    how many attributes a material may use and a shape can put 58 decals on one.
+    """
+    from io_scene_dts.mapping.decals import (
+        DECAL_HOST_PROP,
+        PROJECTOR_PREFIX,
+        _branch_label,
+    )
+
+    A.reset()
+    arm = A.armature("Hull")
+    verts, faces = A.quad_geometry()
+    shared = A.principled_material("hull_skin")
+    # two *different* DTS objects, one material, both inside the projector box
+    target = A.mesh_object(
+        "hull2", arm, bone="root", verts=verts, faces=faces, material=shared
+    )
+    decoy_verts, decoy_faces = A.quad_geometry(z=-0.1)
+    decoy = A.mesh_object(
+        "fin2", arm, bone="root", verts=decoy_verts, faces=decoy_faces,
+        material=shared,
+    )
+    for polygon in target.data.polygons:
+        polygon.select = True
+    bpy.context.view_layer.objects.active = target
+    assert bpy.ops.io_scene_dts.add_decal(name="scorch") == {"FINISHED"}
+
+    projector = next(o for o in bpy.data.objects if o.name.startswith(PROJECTOR_PREFIX))
+    props = projector.dts_decal
+
+    # the id the shader compares against: assigned, remembered, and not shared
+    assert target.pass_index > 0, "the target was given no host id"
+    assert target[DECAL_HOST_PROP] == target.pass_index
+    assert decoy.pass_index != target.pass_index, (
+        "the decoy answers to the target's id, so the gate cannot tell them apart"
+    )
+
+    label = _branch_label(props.index)
+    branch = [n for n in shared.node_tree.nodes if n.label == label]
+    info = next(n for n in branch if n.type == "OBJECT_INFO")
+    same = next(n for n in branch if n.type == "MATH" and n.operation == "COMPARE")
+    assert same.inputs[0].links[0].from_node.name == info.name
+    assert same.inputs[0].links[0].from_socket.name == "Object Index"
+    assert abs(same.inputs[1].default_value - target.pass_index) < 1e-6, (
+        same.inputs[1].default_value, target.pass_index
+    )
+    # integers either side, so the window must not reach the next one
+    assert same.inputs[2].default_value < 1.0
+
+    mix = next(n for n in branch if n.type == "MIX_SHADER")
+    assert _feeds(mix.inputs["Fac"], same), "the gate does not reach the mix factor"
+
+    # the gate is preview only: the file is what it was without one
+    shape = A.read(A.export_dts())
+    decal = shape.decals[0]
+    covered = [
+        shape.meshes[decal.raw[2] + i]
+        for i in range(decal.raw[1])
+        if shape.meshes[decal.raw[2] + i] is not None
+    ]
+    assert len(covered) == 1 and covered[0].decal_data.indices
+    assert shape.name(shape.objects[decal.raw[3]].name_index) == "hull"
+    assert sorted(A.object_names(shape)) == ["fin", "hull"], A.object_names(shape)
+
+    # and retargeting moves it, or the decal keeps drawing on the mesh it left
+    props.target = decoy
+    assert decoy.pass_index > 0 and decoy.pass_index != target.pass_index
+    assert abs(same.inputs[1].default_value - decoy.pass_index) < 1e-6, (
+        same.inputs[1].default_value, decoy.pass_index
+    )
+
+
 def test_a_decal_is_authorable_by_hand():
     """The long way round, which the operator now wraps -- kept because it is
     exactly what the exporter reads, and a change to those property names
@@ -1113,7 +1425,9 @@ def test_a_fresh_shape_reimports():
     path = A.export_dts()
 
     A.reset()
-    assert bpy.ops.io_scene_dts.import_dts(filepath=path) == {"FINISHED"}
+    assert bpy.ops.io_scene_dts.import_dts(
+        filepath=path, import_details=True
+    ) == {"FINISHED"}
     meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
     assert meshes
     assert any(o.type == "ARMATURE" for o in bpy.context.scene.objects)

@@ -1,20 +1,39 @@
 """Blender material <-> dtslib.Material translation.
 
 The dts_* custom properties on the Blender material are the round-trip source
-of truth; viewport/shader settings are cosmetic.
+of truth for the bump and detail slots and the flag bits; viewport/shader
+settings are cosmetic.  Two things are the other way round -- the blend bits
+(see :func:`blend_flags_from_material`) and the reflectance map -- because a
+shader is the only place they can be edited.
 
 The reflectance/bump/detail map slots hold *indices into the material list*;
 they are stored on the Blender material as name references ("self", "none",
 or the referenced material's DTS name) so they survive reordering, and are
 resolved back to indices in a second pass on export.
+
+The reflectance map is the one the file packs strangely: its slot names another
+entry in the same material list, and the *alpha channel* of that entry's texture
+is the per-texel environment-map mask.  Every material in the corpus points the
+slot at itself, so one RGBA file is really two maps.  On import that file comes
+apart into an RGB diffuse and a greyscale mask (``mapping/texture_split.py``),
+and the material's Combine checkbox puts it back together on the way out.
 """
 
 from __future__ import annotations
 
+from array import array
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import bpy
 
+from .texture_split import (
+    TEXTURE_EXTENSIONS,
+    alpha_is_uniform,
+    merge_rgba,
+    reflectance_material_name,
+    split_rgba,
+)
 from ..dtslib.types import (
     MAT_ADDITIVE,
     MAT_BUMP_MAP_ONLY,
@@ -34,22 +53,23 @@ from ..dtslib.types import (
     Material,
 )
 
-_TEXTURE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tga", ".dds")
+_TEXTURE_EXTENSIONS = TEXTURE_EXTENSIONS
 
-# Every defined bit of the material flags word, each with its own checkbox.
+# Every bit of the material flags word the props own, each with its own
+# checkbox.  The three blend bits are *not* here: they are read off the node
+# graph by blend_flags_from_material, and a stored copy beside it would be a
+# second source for one value.
 #
 # There used to be a packed `dts_flags` beside these holding whatever had no
 # named property -- four bits nobody had named, plus a copy of the ten that
-# were.  That is two sources for one value, and it came with its own bug:
-# Blender's integer ID-properties are a C int, so MAT_REFLECTANCE_MAP_ONLY
-# (1 << 31) could not be stored in it at all and needed a special case.  With
-# every bit named, the word is assembled on export and nothing is packed.
+# were.  That was the same bug, and it came with one of its own: Blender's
+# integer ID-properties are a C int, so MAT_REFLECTANCE_MAP_ONLY (1 << 31)
+# could not be stored in it at all and needed a special case.  With every bit
+# either named or derived, the word is assembled on export and nothing is
+# packed.
 _FLAG_PROPS = {
     "dts_s_wrap": MAT_S_WRAP,
     "dts_t_wrap": MAT_T_WRAP,
-    "dts_translucent": MAT_TRANSLUCENT,
-    "dts_additive": MAT_ADDITIVE,
-    "dts_subtractive": MAT_SUBTRACTIVE,
     "dts_self_illuminating": MAT_SELF_ILLUMINATING,
     "dts_never_env_map": MAT_NEVER_ENV_MAP,
     "dts_no_mip_map": MAT_NO_MIP_MAP,
@@ -61,19 +81,27 @@ _FLAG_PROPS = {
     "dts_reflectance_map_only": MAT_REFLECTANCE_MAP_ONLY,
 }
 
-# derived from the shader, not the props -- see blend_flags_from_material
-_BLEND_BITS = MAT_TRANSLUCENT | MAT_ADDITIVE | MAT_SUBTRACTIVE
-
 _MAP_PROPS = ("dts_reflectance_map", "dts_bump_map", "dts_detail_map")
 
 
 # resolved textures/ dir -> {lowercase stem: path}, rebuilt per import
 _texture_index: dict[Path, dict[str, Path]] = {}
 
+# source texture path -> (diffuse image, reflectance image).  Real shapes reuse
+# one texture across many materials -- 23 in the worst corpus case -- and each
+# would otherwise re-encode it into its own pair of datablocks.
+_split_images: dict[str, tuple[bpy.types.Image, bpy.types.Image]] = {}
+
+# names the split image datablock it came from, so export can tell an untouched
+# re-encode (whose source file on disk already holds both maps) from one the
+# user has painted on
+SPLIT_SOURCE_PROP = "dts_split_source"
+
 
 def reset_texture_cache() -> None:
     """Drop the sibling-textures index so a re-import picks up new files."""
     _texture_index.clear()
+    _split_images.clear()
 
 
 def sibling_texture_dir(search_dir: Path) -> Path | None:
@@ -336,6 +364,179 @@ def blend_flags_from_material(bmat) -> int:
     return MAT_TRANSLUCENT if method in ("BLENDED", "BLEND") else 0
 
 
+# ----------------------------------------------------------------------
+# the reflectance map: one RGBA file, two maps
+# ----------------------------------------------------------------------
+
+
+def _pixels_of(img) -> array:
+    """An image's buffer as a flat array('f'), one memcpy."""
+    buf = array("f", [0.0]) * (img.size[0] * img.size[1] * img.channels)
+    img.pixels.foreach_get(buf)
+    return buf
+
+
+def _new_image(name: str, width: int, height: int, buf: array, *, colorspace: str, is_float: bool):
+    """A packed image datablock from a flat float buffer.
+
+    Packed, not saved: it has no file, and an unpacked generated image is lost
+    when the .blend is saved.  ``examples/build_examples.py`` writes one instead
+    because it is producing game data; this is scene data.
+
+    Colour management is the trap here.  ``pixels`` is not colour-converted on
+    the way in or out, so copying a buffer between two images of the same bit
+    depth is exact *provided the colorspace matches* -- which is why the caller
+    passes the source's rather than taking the default.
+    """
+    img = bpy.data.images.new(
+        name, width=width, height=height, alpha=True, float_buffer=is_float
+    )
+    img.colorspace_settings.name = colorspace
+    img.pixels.foreach_set(buf)
+    img.update()
+    img.pack()
+    return img
+
+
+def split_diffuse_and_reflectance(img):
+    """Re-encode one RGBA texture as an RGB diffuse and a greyscale mask.
+
+    None when there is nothing to split: no alpha channel, or an alpha that
+    does not vary.  That second case is the common one, not the exotic one --
+    practically all game art is RGBA and most of it is uniformly opaque, so
+    "has an alpha channel" is nearly always true and nearly always means
+    nothing.  Returning None there keeps the diffuse pointing at its file on
+    disk instead of replacing it with a packed copy of itself.
+
+    The mask is Non-Color: an alpha channel is data, and putting it through an
+    sRGB curve would change the numbers the engine reads back.
+    """
+    key = img.filepath or img.name
+    cached = _split_images.get(key)
+    if cached is not None:
+        return cached
+    if img.channels != 4 or not img.has_data:
+        return None
+    buf = _pixels_of(img)
+    if alpha_is_uniform(buf):
+        return None
+
+    diffuse_buf, refl_buf = split_rgba(buf)
+    width, height = img.size
+    stem = Path(img.name).stem or img.name
+    diffuse = _new_image(
+        f"{stem}.diffuse", width, height, diffuse_buf,
+        colorspace=img.colorspace_settings.name, is_float=img.is_float,
+    )
+    reflectance = _new_image(
+        f"{stem}.reflectance", width, height, refl_buf,
+        colorspace="Non-Color", is_float=img.is_float,
+    )
+    diffuse[SPLIT_SOURCE_PROP] = key
+    reflectance[SPLIT_SOURCE_PROP] = key
+    _split_images[key] = (diffuse, reflectance)
+    return diffuse, reflectance
+
+
+def merged_reflectance_image(diffuse_img, reflectance_img):
+    """The inverse of :func:`split_diffuse_and_reflectance`, for export.
+
+    None on a size mismatch -- two textures of different resolutions have no
+    single RGBA file, and the caller warns rather than silently resampling.
+    """
+    if diffuse_img is None or reflectance_img is None:
+        return None
+    try:
+        merged = merge_rgba(_pixels_of(diffuse_img), _pixels_of(reflectance_img))
+    except ValueError:
+        return None
+    width, height = diffuse_img.size
+    stem = Path(diffuse_img.name).stem or diffuse_img.name
+    return _new_image(
+        f"{stem}.combined", width, height, merged,
+        colorspace=diffuse_img.colorspace_settings.name,
+        is_float=diffuse_img.is_float,
+    )
+
+
+def is_untouched_split(diffuse_img, reflectance_img) -> bool:
+    """True when both halves came from one file and neither has been painted.
+
+    Re-combining them would reproduce that file byte for byte, so export has
+    nothing to write and the material can go on naming the texture it always
+    named.  ``pack()`` clears ``is_dirty`` and editing the buffer sets it, so
+    this notices an edited mask and falls through to writing a new file.
+    """
+    if diffuse_img is None or reflectance_img is None:
+        return False
+    source = diffuse_img.get(SPLIT_SOURCE_PROP)
+    if not source or reflectance_img.get(SPLIT_SOURCE_PROP) != source:
+        return False
+    return not diffuse_img.is_dirty and not reflectance_img.is_dirty
+
+
+def _image_node_feeding(bmat, socket_name: str):
+    """The Image Texture node reaching a Principled input, or None.
+
+    Follows a chain of single-input nodes, so a hand-built graph that runs the
+    map through an Invert or a Math node still reads back as that map.  There
+    is no Principled node on an additive material (:func:`_build_add_shader`
+    removes it), which is why those have no reflectance.
+    """
+    nt = getattr(bmat, "node_tree", None)
+    if nt is None:
+        return None
+    bsdf = next((n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"), None)
+    if bsdf is None or socket_name not in bsdf.inputs:
+        return None
+    socket = bsdf.inputs[socket_name]
+    seen = set()
+    while socket.is_linked:
+        node = socket.links[0].from_node
+        if node.type == "TEX_IMAGE":
+            return node if node.image is not None else None
+        if node.name in seen:
+            return None
+        seen.add(node.name)
+        upstream = next((i for i in node.inputs if i.is_linked), None)
+        if upstream is None:
+            return None
+        socket = upstream
+    return None
+
+
+def diffuse_image_node(bmat):
+    """The node feeding Base Color -- the material's own texture."""
+    return _image_node_feeding(bmat, "Base Color")
+
+
+def reflectance_image_node(bmat):
+    """The node feeding Metallic -- the material's reflectance map.
+
+    The *node*, not the image, because export has to tell "one node feeds both
+    sockets" (already combined) from "a second node" (separable).
+    """
+    return _image_node_feeding(bmat, "Metallic")
+
+
+def is_translucent(bobj) -> bool:
+    """Whether any material on an object blends.
+
+    Read off the shader through :func:`blend_flags_from_material`, not off a
+    stored prop, because the shader is what export writes -- a material
+    switched to OPAQUE in the node editor is not translucent whatever anything
+    else says.  Additive and subtractive count: both carry `MAT_TRANSLUCENT`.
+
+    Any slot, not all of them: one blended surface is enough to put a mesh's
+    triangles in the wrong order.  Both the export-side promotion to a sorted
+    mesh and the importer's decision not to record that promotion ask this.
+    """
+    return any(
+        slot.material is not None and blend_flags_from_material(slot.material) & MAT_TRANSLUCENT
+        for slot in bobj.material_slots
+    )
+
+
 def _map_ref(value: int, own_index: int, all_mats: list[Material]) -> str:
     if value == NO_MAP:
         return "none"
@@ -346,8 +547,91 @@ def _map_ref(value: int, own_index: int, all_mats: list[Material]) -> str:
     return "none"
 
 
+def _texture_node(bmat, name: str, search_dir: Path | None, location):
+    """An Image Texture node for a DTS material name, or None if not on disk."""
+    path = find_texture(name, search_dir)
+    if path is None:
+        return None
+    node = bmat.node_tree.nodes.new("ShaderNodeTexImage")
+    node.image = bpy.data.images.load(str(path), check_existing=True)
+    node.location = location
+    return node
+
+
+def _wire_textures(bmat, bsdf, mat, index, all_mats, search_dir, warnings):
+    """Build the diffuse and reflectance image nodes; return the diffuse one.
+
+    The alpha channel of a DTS texture means two different things and the file
+    says which only by implication.  When the material is env-mapped it is the
+    reflectance mask; otherwise it is transparency.  That is not a guess: the
+    engine's own upgrade rule for shapes older than v16 forces
+    ``MAT_NEVER_ENV_MAP`` onto every translucent material
+    (``dtslib/matlist.py``), which is the format saying the two readings are
+    exclusive.  270 of the 3185 materials in the corpus are env-mapped and 6 of
+    those are also translucent.
+    """
+    links = bmat.node_tree.links
+    props = getattr(bmat, "dts_material", None)
+
+    # the full name, not basename: the path prefix is the lookup hint
+    diffuse = _texture_node(bmat, mat.name, search_dir, (-350, 300))
+    if diffuse is None:
+        return None
+    links.new(diffuse.outputs["Color"], bsdf.inputs["Base Color"])
+
+    translucent = bool(mat.flags & MAT_TRANSLUCENT)
+    if translucent:
+        links.new(diffuse.outputs["Alpha"], bsdf.inputs["Alpha"])
+
+    # additive and subtractive materials lose their Principled node entirely
+    # (see _build_add_shader), so there is no Metallic input to reach.  None in
+    # the corpus is both additive and env-mapped.
+    if mat.flags & MAT_NEVER_ENV_MAP or mat.flags & (MAT_ADDITIVE | MAT_SUBTRACTIVE):
+        return diffuse
+
+    if mat.reflectance_map == index:
+        if translucent:
+            # one alpha, two meanings, and this material claims both.
+            # Transparency wins -- 2015 materials depend on that reading and 6
+            # on this one -- but the mask is still previewed off the same node,
+            # and export sees one node feeding both sockets and keeps the
+            # combined packing.
+            links.new(diffuse.outputs["Alpha"], bsdf.inputs["Metallic"])
+            warnings.append(
+                f"material {mat.name!r} is both env-mapped and translucent: its "
+                f"alpha is read as transparency, and as the reflectance mask only "
+                f"in preview"
+            )
+            return diffuse
+        split = split_diffuse_and_reflectance(diffuse.image)
+        if split is None:
+            return diffuse
+        diffuse.image, reflectance_img = split
+        reflectance = bmat.node_tree.nodes.new("ShaderNodeTexImage")
+        reflectance.image = reflectance_img
+        reflectance.location = (-350, -80)
+        links.new(reflectance.outputs["Color"], bsdf.inputs["Metallic"])
+        if props is not None:
+            props.combine_reflectance = True
+        return diffuse
+
+    if 0 <= mat.reflectance_map < len(all_mats):
+        reflectance = _texture_node(
+            bmat, all_mats[mat.reflectance_map].name, search_dir, (-350, -80)
+        )
+        if reflectance is not None:
+            links.new(reflectance.outputs["Color"], bsdf.inputs["Metallic"])
+            if props is not None:
+                props.combine_reflectance = False
+    return diffuse
+
+
 def material_to_blender(
-    mat: Material, index: int, all_mats: list[Material], search_dir: Path | None
+    mat: Material,
+    index: int,
+    all_mats: list[Material],
+    search_dir: Path | None,
+    warnings: list[str] | None = None,
 ) -> bpy.types.Material:
     bmat = bpy.data.materials.new(name=mat.basename or "material")
     bmat["dts_name"] = mat.name
@@ -366,17 +650,10 @@ def material_to_blender(
     bsdf = next(n for n in bmat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
     bsdf.inputs["Roughness"].default_value = 1.0
 
-    # the full name, not basename: the path prefix is the lookup hint
-    tex = None
-    tex_path = find_texture(mat.name, search_dir)
-    if tex_path is not None:
-        img = bpy.data.images.load(str(tex_path), check_existing=True)
-        tex = bmat.node_tree.nodes.new("ShaderNodeTexImage")
-        tex.image = img
-        tex.location = (-350, 300)
-        bmat.node_tree.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
-        if mat.flags & MAT_TRANSLUCENT:
-            bmat.node_tree.links.new(tex.outputs["Alpha"], bsdf.inputs["Alpha"])
+    tex = _wire_textures(
+        bmat, bsdf, mat, index, all_mats, search_dir,
+        warnings if warnings is not None else [],
+    )
 
     # the shader *is* the storage for these three flags; export reads it back
     if mat.flags & (MAT_ADDITIVE | MAT_SUBTRACTIVE):
@@ -396,29 +673,158 @@ def _flags_from_blender(bmat: bpy.types.Material) -> int:
         for prop, bit in _FLAG_PROPS.items():
             if bmat.get(prop):
                 flags |= bit
-    # ...and the material overrides both for the three blend bits
-    return (flags & ~_BLEND_BITS) | blend_flags_from_material(bmat)
+    # ...and the three blend bits come from the shader, which is the only
+    # place they are stored at all
+    return flags | blend_flags_from_material(bmat)
 
 
-def _sync_blend_props(bmat, flags: int) -> None:
-    """Write the derived blend bits back, so the props never contradict the
-    shader they no longer control."""
-    for prop, bit in (
-        ("dts_translucent", MAT_TRANSLUCENT),
-        ("dts_additive", MAT_ADDITIVE),
-        ("dts_subtractive", MAT_SUBTRACTIVE),
-    ):
-        bmat[prop] = bool(flags & bit)
+@dataclass
+class TextureWrite:
+    """An image export has to put on disk, and what to call it."""
+
+    image: bpy.types.Image
+    filename: str
+    owner: str  # the DTS material name, for the warning text
 
 
-def materials_from_blender(bmats: list[bpy.types.Material]) -> tuple[list[Material], list[str]]:
-    """Two-pass conversion: build the list, then resolve map references."""
+@dataclass
+class _Synthetic:
+    """A reflectance texture with no material-list entry of its own yet."""
+
+    image: bpy.types.Image
+    owners: list[int] = field(default_factory=list)
+
+
+def _png_name(dts_name: str) -> str:
+    """The file the engine will look for, given a material name."""
+    from .texture_split import strip_texture_extension
+
+    return strip_texture_extension(Material(name=dts_name).basename) + ".png"
+
+
+def _resolve_reflectance_images(mats, bmats, diffuse_nodes, refl_nodes, warnings):
+    """Point each reflectance slot at the image the material's shader shows.
+
+    Runs after the name-based slots have been resolved, so nothing here can
+    disturb them, and appends any entry it has to invent to the *end* of the
+    list.  That is safe because every ``mat_index`` a primitive or decal holds
+    was fixed before ``shape.materials`` was built at all
+    (``mapping/blender_to_shape.py``), so entries past the used ones cannot
+    move anything.
+
+    Returns the textures the caller has to write.
+    """
+    writes: list[TextureWrite] = []
+
+    # any material's own texture is a reflectance target for free
+    owner_of: dict[str, int] = {}
+    for i, node in enumerate(diffuse_nodes):
+        if node is not None and node.image is not None:
+            owner_of.setdefault(node.image.name, i)
+
+    synthetic: dict[str, _Synthetic] = {}
+    # materials whose own texture is already accounted for, either because a
+    # combined image was registered under its name or because the file it came
+    # from already holds both maps
+    handled: set[int] = set()
+
+    for i, bmat in enumerate(bmats):
+        reflectance, diffuse, mat = refl_nodes[i], diffuse_nodes[i], mats[i]
+        if reflectance is None:
+            continue
+        props = getattr(bmat, "dts_material", None)
+        combine = True if props is None else bool(props.combine_reflectance)
+
+        # the same image on both sockets is already the combined packing,
+        # whatever the checkbox says -- there is nothing to separate.  `==`,
+        # not `is`: bpy hands out a fresh Python wrapper per access, and only
+        # `==` compares the datablock behind it
+        if diffuse is not None and diffuse.image == reflectance.image:
+            mat.reflectance_map = i
+            continue
+
+        if combine:
+            mat.reflectance_map = i
+            if diffuse is None:
+                warnings.append(
+                    f"material {mat.name!r}: reflectance is combined into the "
+                    f"diffuse, but the material has no diffuse texture to hold it"
+                )
+                continue
+            if is_untouched_split(diffuse.image, reflectance.image):
+                # the source file already holds both maps; writing it back
+                # would only copy it next to the .dts
+                handled.add(i)
+                continue
+            merged = merged_reflectance_image(diffuse.image, reflectance.image)
+            if merged is None:
+                warnings.append(
+                    f"material {mat.name!r}: diffuse is {tuple(diffuse.image.size)} "
+                    f"and reflectance is {tuple(reflectance.image.size)}; they "
+                    f"cannot share one texture, so the reflectance was dropped"
+                )
+                continue
+            writes.append(TextureWrite(merged, _png_name(mat.name), mat.name))
+            handled.add(i)
+            continue
+
+        owner = owner_of.get(reflectance.image.name)
+        if owner is not None:
+            mat.reflectance_map = owner
+            continue
+        # matched on the image datablock rather than a name, so this stays out
+        # of the name-aliasing hazard the named map slots have
+        synthetic.setdefault(
+            reflectance.image.name, _Synthetic(reflectance.image)
+        ).owners.append(i)
+
+    for record in synthetic.values():
+        index = len(mats)
+        stem = Path(record.image.filepath).stem if record.image.filepath else None
+        name = reflectance_material_name(mats[record.owners[0]].name, stem)
+        mats.append(
+            Material(
+                name=name,
+                # env-mapping off on the entry itself: it exists to be pointed
+                # at, not drawn.  Self-index rather than NO_MAP for the reason
+                # the fresh-material branch gives.
+                flags=MAT_S_WRAP | MAT_T_WRAP | MAT_NEVER_ENV_MAP | MAT_REFLECTANCE_MAP_ONLY,
+                reflectance_map=index,
+                bump_map=NO_MAP,
+                detail_map=NO_MAP,
+            )
+        )
+        for owner in record.owners:
+            mats[owner].reflectance_map = index
+        if not record.image.filepath:
+            writes.append(TextureWrite(record.image, _png_name(name), name))
+
+    # and every ordinary texture that exists only in this .blend.  A material
+    # built in Blender names a texture the engine has to find on disk, and
+    # nothing else is going to put it there.
+    for i, node in enumerate(diffuse_nodes):
+        if i in handled or node is None or node.image is None or node.image.filepath:
+            continue
+        writes.append(TextureWrite(node.image, _png_name(mats[i].name), mats[i].name))
+
+    return writes
+
+
+def materials_from_blender(
+    bmats: list[bpy.types.Material],
+) -> tuple[list[Material], list[TextureWrite], list[str]]:
+    """Build the material list, resolve map references, resolve reflectance.
+
+    Four passes: build, resolve names, apply the stored slots, then let the
+    shader override the reflectance slot for any material that shows one.
+    """
     warnings: list[str] = []
     mats: list[Material] = []
+    diffuse_nodes = [diffuse_image_node(b) for b in bmats]
+    refl_nodes = [reflectance_image_node(b) for b in bmats]
     for bmat in bmats:
         name = str(bmat.get("dts_name") or bmat.name)
         flags = _flags_from_blender(bmat)
-        _sync_blend_props(bmat, flags)
         mats.append(
             Material(
                 name=name,
@@ -463,4 +869,12 @@ def materials_from_blender(bmats: list[bpy.types.Material]) -> tuple[list[Materi
             mat.detail_map = NO_MAP
             if not (mat.flags & MAT_NEVER_ENV_MAP) and "dts_never_env_map" not in bmat:
                 mat.flags |= MAT_NEVER_ENV_MAP
-    return mats, warnings
+        if refl_nodes[i] is not None:
+            # A reflectance map the engine is told never to read is not a
+            # feature, so showing one is how you ask for env-mapping -- and it
+            # outranks both the checkbox and the default just above, which is
+            # why that default needs no exception of its own.
+            mat.flags &= ~MAT_NEVER_ENV_MAP
+
+    writes = _resolve_reflectance_images(mats, bmats, diffuse_nodes, refl_nodes, warnings)
+    return mats, writes, warnings

@@ -58,6 +58,7 @@ from ..dtslib import (
     Shape,
 )
 from ..props.decal import SCHEMA_VERSION as DECAL_SCHEMA_VERSION
+from .materials import diffuse_image_node
 
 PROJECTOR_PREFIX = "decal_"
 # A decal is off when its state is negative (tsShapeInstance.cc: `if (decalMesh
@@ -447,7 +448,15 @@ def _target_verts(mesh):
 
 
 def _image_of(mat):
-    """The image a decal material projects, if it has one."""
+    """The image a decal material projects, if it has one.
+
+    The node feeding Base Color, not merely the first image node: a material
+    with a reflectance map has two, and which one comes first in the node list
+    is not something to project a decal from.
+    """
+    node = diffuse_image_node(mat)
+    if node is not None:
+        return node.image
     nt = getattr(mat, "node_tree", None)
     if nt is None:
         return None

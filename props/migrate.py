@@ -27,6 +27,7 @@ from .legacy import (
     parse_triggers,
 )
 from .decal import SCHEMA_VERSION as DECAL_SCHEMA_VERSION
+from .material import SCHEMA_VERSION as MATERIAL_SCHEMA_VERSION
 from .mesh import SCHEMA_VERSION as MESH_SCHEMA_VERSION
 from .shape import SCHEMA_VERSION
 
@@ -266,8 +267,37 @@ def migrate_decals(report: list) -> bool:
     return True
 
 
+# the blend bits are read off the node graph; an older version wrote them as
+# props beside it, which is two sources for one value
+DERIVED_MATERIAL_KEYS = ("dts_translucent", "dts_additive", "dts_subtractive")
+
+
+def migrate_materials() -> None:
+    """Stamp imported materials, and drop the props that became derived.
+
+    Nothing is converted and nothing is lost.  Reflectance images did not exist
+    before, so there is no old form to read; and the three blend keys were
+    already ignored on export -- ``_flags_from_blender`` masked them off and
+    recomputed them from the shader -- so deleting them changes no exported
+    file.  Reports nothing and does not count as a change for that reason.
+
+    The deletion is not gated on the schema version: the keys are the thing
+    being looked for, so their absence is the only idempotence needed.
+    """
+    for mat in bpy.data.materials:
+        for key in DERIVED_MATERIAL_KEYS:
+            if key in mat:
+                del mat[key]
+        props = mat.dts_material
+        if "dts_name" not in mat or props.schema_version >= MATERIAL_SCHEMA_VERSION:
+            continue
+        props.is_dts = True
+        props.schema_version = MATERIAL_SCHEMA_VERSION
+
+
 def migrate_all() -> list[str]:
     report: list[str] = []
+    migrate_materials()
     changed = migrate_meshes(report)
     changed |= migrate_decals(report)
     for obj in bpy.data.objects:

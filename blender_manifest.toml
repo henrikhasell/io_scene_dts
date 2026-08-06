@@ -15,7 +15,7 @@ blender_version_min = "4.2.0"
 license = ["SPDX:GPL-3.0-or-later"]
 
 [permissions]
-files = "Read/write .dts and .dsq files and load textures next to them"
+files = "Read/write .dts and .dsq files and textures beside them"
 
 [build]
 paths_exclude_pattern = [

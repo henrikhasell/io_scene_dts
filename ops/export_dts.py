@@ -1,9 +1,12 @@
+from pathlib import Path
+
 import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper
 
 from ..dtslib import DtsWriteError, strip_ground_frames, write_shape_file
 from ..mapping.blender_to_shape import ExportError, blender_to_shape
+from ..mapping.texture_io import write_textures
 
 
 class ExportDTS(bpy.types.Operator, ExportHelper):
@@ -40,6 +43,13 @@ class ExportDTS(bpy.types.Operator, ExportHelper):
         "(movement animations lose their ground speed!)",
         default=False,
     )
+    export_textures: BoolProperty(
+        name="Export Textures",
+        description="Write a .png beside the .dts for every texture that exists only "
+        "in this .blend.  Textures loaded from disk are referenced by name and never "
+        "copied, so nothing in a game's textures/ tree is touched",
+        default=True,
+    )
 
     def execute(self, context):
         arm_obj = context.active_object
@@ -49,7 +59,7 @@ class ExportDTS(bpy.types.Operator, ExportHelper):
             arm_obj = next((o for o in context.scene.objects if o.type == "ARMATURE"), None)
 
         try:
-            shape, warnings = blender_to_shape(
+            shape, texture_writes, warnings = blender_to_shape(
                 context,
                 arm_obj,
                 selected_only=self.selected_only,
@@ -67,10 +77,19 @@ class ExportDTS(bpy.types.Operator, ExportHelper):
         except DtsWriteError as e:
             self.report({"ERROR"}, str(e))
             return {"CANCELLED"}
+
+        # after the shape, and only after: a texture beside a .dts that failed
+        # to write would be litter
+        written = 0
+        if self.export_textures:
+            written = write_textures(texture_writes, Path(self.filepath).parent, warnings)
+
         for w in warnings:
             self.report({"WARNING"}, w)
+        textures = f", {written} texture(s)" if written else ""
         self.report({"INFO"}, f"Exported v{version}: {len(shape.nodes)} nodes, "
-                              f"{len(shape.objects)} objects, {len(shape.sequences)} sequences")
+                              f"{len(shape.objects)} objects, "
+                              f"{len(shape.sequences)} sequences{textures}")
         return {"FINISHED"}
 
 

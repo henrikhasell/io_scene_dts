@@ -86,11 +86,15 @@ MUTATIONS = {
         "        back_entry = front_entry",
         ["test_beats_the_shipped_median"],
     ),
+    # test_sorted_meshes_survive_an_edit used to catch this by selecting the
+    # objects that recorded a mode.  It cannot any more -- a translucent sorted
+    # mesh records nothing now, because export infers it -- so the mutation is
+    # pointed at the test that asserts the stored value directly.
     "sorted-mode": (
         "mapping/shape_to_blender.py",
         '    bobj.dts_mesh.sorted_mode = "BSP"',
         '    bobj.dts_mesh.sorted_mode = "NONE"',
-        ["test_sorted_meshes_survive_an_edit"],
+        ["test_an_opaque_sorted_mesh_still_records_its_mode"],
     ),
     "fresh-sorted": (
         "mapping/blender_to_shape.py",
@@ -147,6 +151,71 @@ MUTATIONS = {
         "            mat.reflectance_map = NO_MAP\n            mat.bump_map = NO_MAP",
         ["test_a_material_without_maps_gets_engine_safe_defaults"],
     ),
+    # -- reflectance maps -----------------------------------------------
+    "reflectance-import": (
+        "mapping/materials.py",
+        '        links.new(reflectance.outputs["Color"], bsdf.inputs["Metallic"])',
+        "        pass",
+        ["test_a_self_reflectance_imports_as_two_images"],
+    ),
+    # the gate in the *permissive* direction: without the env-map check a
+    # translucent material's alpha would be read as a reflectance mask too,
+    # which is the one thing the disambiguation rule exists to prevent
+    "reflectance-alpha-gate": (
+        "mapping/materials.py",
+        "    if mat.flags & MAT_NEVER_ENV_MAP or mat.flags & (MAT_ADDITIVE | MAT_SUBTRACTIVE):",
+        "    if mat.flags & (MAT_ADDITIVE | MAT_SUBTRACTIVE):",
+        ["test_uv_and_alpha"],
+    ),
+    "fresh-reflectance-entry": (
+        "mapping/materials.py",
+        "        index = len(mats)",
+        "        index = 0",
+        ["test_a_reflectance_map_is_authorable"],
+    ),
+    "reflectance-forces-envmap": (
+        "mapping/materials.py",
+        "            mat.flags &= ~MAT_NEVER_ENV_MAP",
+        "            pass",
+        ["test_a_reflectance_material_is_env_mapped"],
+    ),
+    "reflectance-source-texture": (
+        "mapping/texture_io.py",
+        "        if resolved in sources:",
+        "        if False:",
+        ["test_export_does_not_overwrite_a_source_texture"],
+    ),
+    "sorted-promote-translucent": (
+        "mapping/blender_to_shape.py",
+        '    promoted = mode == "NONE" and is_translucent(bobj)',
+        "    promoted = False",
+        [
+            "test_a_translucent_mesh_is_promoted_to_a_sorted_one",
+            "test_an_imported_translucent_mesh_is_promoted_on_re_export",
+        ],
+    ),
+    # the other direction: promoting everything would make the rule vacuous
+    "sorted-promote-gate": (
+        "mapping/materials.py",
+        "        slot.material is not None and blend_flags_from_material(slot.material) & MAT_TRANSLUCENT",
+        "        slot.material is not None",
+        ["test_an_opaque_mesh_is_left_standard"],
+    ),
+    # the importer must not write down what export already infers...
+    "sorted-mode-not-stored": (
+        "mapping/shape_to_blender.py",
+        "    if not is_translucent(bobj):\n        bobj.dts_mesh.sorted_mode = \"BSP\"",
+        '    if True:\n        bobj.dts_mesh.sorted_mode = "BSP"',
+        ["test_a_translucent_sorted_mesh_records_no_mode"],
+    ),
+    # the other direction is `sorted-mode` above, which breaks the value
+    # stored for a mesh that genuinely needs one
+    "blend-props-not-stored": (
+        "props/migrate.py",
+        "            if key in mat:\n                del mat[key]",
+        "            if False:\n                del mat[key]",
+        ["test_migration_drops_the_blend_props_saved_beside_the_shader"],
+    ),
     "fresh-winding": (
         "mapping/blender_to_shape.py",
         "        a, b, c = (corner_index[li] for li in reversed(tri.loops))",
@@ -197,6 +266,37 @@ MUTATIONS = {
         "        if (normal_matrix @ polygon.normal).normalized().dot(axis) < min_cos:",
         "        if False:",
         ["test_a_decal_does_not_reach_the_far_side"],
+    ),
+    # the two import checkboxes.  Both trade fidelity for a workable scene, and
+    # both are invisible until export, so each needs a test that notices
+    "import-lod-skip": (
+        "mapping/shape_to_blender.py",
+        "    kept_slots = None if do_import_details else _slots_to_import(shape)",
+        "    kept_slots = None",
+        ["test_import_can_leave_the_lods_out"],
+    ),
+    "import-decal-meshes": (
+        "mapping/shape_to_blender.py",
+        "    if shape.decals and decals_as_meshes:",
+        "    if False:",
+        ["test_decals_can_import_as_meshes"],
+    ),
+    # a collision hull is not a level of detail; dropping it with the LODs
+    # would quietly make a re-exported shape one the engine cannot collide with
+    "import-keeps-collision": (
+        "mapping/shape_to_blender.py",
+        "        kept |= {(sub, d.object_detail_num) for d in mine if d.size < 0}",
+        "        pass",
+        ["test_collision_details_survive_leaving_the_lods_out"],
+    ),
+    # a decal's branch lives in a material and a material is shared, so without
+    # the object gate the projector box draws the decal on every other mesh
+    # standing in it -- which is 5999 of the corpus's 6053 decals
+    "decal-object-gate": (
+        "mapping/decals.py",
+        "    host = decal_host_id(props.target) if props.target is not None else 0",
+        "    host = 0",
+        ["test_a_decal_previews_only_on_its_target"],
     ),
     # import fits the rule to each decal's own stored faces; without it the
     # default rule applies and round-trip coverage drops from 0.43 to 0.23

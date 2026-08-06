@@ -41,7 +41,7 @@ from ..dtslib.types import (
 from ..props import migrate
 from . import matframes
 from .decals import blender_lookup_of, build_decals
-from .materials import materials_from_blender
+from .materials import is_translucent, materials_from_blender
 from .naming import (
     detail_name_for_size,
     dts_object_and_size,
@@ -62,7 +62,8 @@ def blender_to_shape(
     arm_obj: bpy.types.Object,
     selected_only: bool = False,
     do_export_sequences: bool = True,
-) -> tuple[Shape, list[str]]:
+) -> tuple[Shape, list, list[str]]:
+    """The shape, the textures export has to write beside it, and warnings."""
     if arm_obj is None or arm_obj.type != "ARMATURE":
         raise ExportError("select an armature (the DTS shape root)")
 
@@ -300,9 +301,20 @@ def blender_to_shape(
         target_lookups=decal_target_lookups,
         slot_objects=decal_slot_objects,
     )
+    if not decal_index_map:
+        # a scene imported with "Import Decals as Meshes" has decals in it and
+        # exports none, because nothing here reads a mesh.  Silence would make
+        # that look like a shape that never had any
+        orphans = [o for o in context.scene.objects if "dts_decal_name" in o]
+        if orphans:
+            warnings.append(
+                f"{len(orphans)} decal mesh object(s) were not exported: a decal "
+                f"is exported from its projector empty, and these have none.  "
+                f"Run Migrate DTS Scene to turn them into projectors"
+            )
 
     # -- materials ----------------------------------------------------
-    shape.materials, mat_warnings = materials_from_blender(_used_materials)
+    shape.materials, texture_writes, mat_warnings = materials_from_blender(_used_materials)
     warnings += mat_warnings
 
     # -- IFL materials (preserved shape-level) ------------------------
@@ -350,7 +362,7 @@ def blender_to_shape(
             shape, arm_obj, actions, node_index_by_bone, object_index_by_name, decal_index_map
         )
 
-    return shape, warnings
+    return shape, texture_writes, warnings
 
 
 _QUAT_LSB_SLACK = 2  # Quat16 components are int16; a matrix round-trip drifts a little
@@ -409,12 +421,12 @@ def _ordered_bones(arm_obj) -> list:
 def _gather_mesh_objects(context, arm_obj, selected_only):
     """Mesh objects belonging to this shape.
 
-    A decal is an empty now, so nothing here has to filter one out.  The
-    ``dts_decal_name`` guard remains for the window in which a .blend written
-    by an older version is open but ``props/migrate.py`` has not run yet: those
-    files still hold decal meshes parented to the armature exactly like their
-    targets, and letting one through exports the decal twice, once as a phantom
-    object with its own geometry and detail levels.
+    A decal is an empty, so the ``dts_decal_name`` guard is not about the
+    ordinary case.  It covers the two ways decal *meshes* can be in a scene:
+    a .blend written by an older version whose ``props/migrate.py`` has not run
+    yet, and an import made with ``Import Decals as Meshes``.  Both park meshes
+    on the armature exactly like their targets, and letting one through exports
+    it as a phantom object with its own geometry and detail levels.
     """
     objs = []
     pool = context.selected_objects if selected_only else context.scene.objects
@@ -690,27 +702,42 @@ def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warn
 
 
 def _sorted_mode(bobj, is_skin: bool, has_frames: bool, warnings) -> str:
-    """Which sorted-mesh treatment this object asked for.
+    """Which sorted-mesh treatment this mesh gets.
 
-    Never inferred from the material.  Translucency is what sorted meshes are
-    *for*, but turning every translucent mesh in a scene into one would change
-    how the engine draws it without anybody asking.
+    A translucent mesh is promoted to a BSP-sorted one.  Sorting is what
+    translucency needs -- without it the engine draws the triangles in storage
+    order and a tree or a canopy blends back-to-front from some angles and not
+    others -- and every one of the 367 sorted meshes in the corpus sits on a
+    translucent material.
+
+    The promotion is not free and it is not subtle: 5462 of the corpus's 34077
+    standard meshes are on a translucent material, so this makes far more
+    sorted meshes than the shipped art has, and it fires on re-export of an
+    imported shape as well.  Setting the mode explicitly still wins, and
+    `NONE` is not a way to opt out -- it is the value being promoted from.
     """
     mode = bobj.dts_mesh.sorted_mode
+    promoted = mode == "NONE" and is_translucent(bobj)
+    if promoted:
+        mode = "BSP"
     if mode == "NONE":
         return "NONE"
-    # mesh_type is one field: a mesh is a skin or it is sorted, never both
+    # mesh_type is one field: a mesh is a skin or it is sorted, never both.
+    # A promotion that cannot happen is not worth a warning -- nobody asked
+    # for it, and a translucent skin would produce one on every export.
     if is_skin:
-        warnings.append(
-            f"mesh {bobj.name!r} is skinned, so it cannot also be sorted; "
-            f"exporting as a skin"
-        )
+        if not promoted:
+            warnings.append(
+                f"mesh {bobj.name!r} is skinned, so it cannot also be sorted; "
+                f"exporting as a skin"
+            )
         return "NONE"
     if has_frames:
-        warnings.append(
-            f"mesh {bobj.name!r} has vertex-animation frames, which the sorted "
-            f"cluster tables do not address; exporting as a standard mesh"
-        )
+        if not promoted:
+            warnings.append(
+                f"mesh {bobj.name!r} has vertex-animation frames, which the sorted "
+                f"cluster tables do not address; exporting as a standard mesh"
+            )
         return "NONE"
     return mode
 
