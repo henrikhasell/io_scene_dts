@@ -216,9 +216,12 @@ the tracks from `dts_object_anim` / `dts_decal_anim` JSON and never looked at
 the curves the drivers read: the blob was the authored form and the keys were
 decoration.  `mapping/objectstate.py`
 
-Object **visibility** and **decals** used to be on this list.  Both are now
-previewed through per-object drivers into alpha, and round-trip through DTS —
-see the README.  Both are still blind in one direction: see §4.
+Object **visibility** and **decals** used to be on this list.  Visibility is
+previewed through per-object drivers into alpha.  A decal is previewed by a
+branch in its *target's* material — a Texture Coordinate reading the projector
+empty's object space, masked by a face attribute so it shows only where the
+exported file will name it — with its state driving the branch.  Both still
+lose something: see §4.
 
 **Translucent and additive** materials are no longer blind either.  Both are
 carried by the shader the importer builds — `surface_render_method` for
@@ -226,19 +229,15 @@ translucency, `Transparent BSDF + Emission -> Add Shader` for additive — and
 export reads the flags back out of it, so editing the material in the node
 editor changes the file. `mapping/materials.py:318`
 
-Two caveats specific to decals, neither of which occurs in the Tribes 2 corpus
-or changes what renders:
+One caveat specific to decals, which does not occur in the Tribes 2 corpus:
 
 - **Multi-frame decals import only their first frame**, and the rest are lost
   on export (warned).  A decal frame is a whole alternative projection *and*
-  face subset, so previewing more than one would mean a mesh per frame.  All
-  10,584 decal meshes across the 240-shape corpus are single-frame.
-- **Decal indices may alias to a coincident vertex.**  Export re-derives them
-  by matching faces onto the target's vertices, and a mesh splits vertices at
-  UV seams, so a position can name several.  Round-tripping bioderm_light's
-  144 decal meshes, the covered triangles are identical *by position* but 2
-  of 23 name a different duplicate index.  The engine reads position alone,
-  so the render is unchanged.
+  face subset, and a decal is a single projector empty, which has one of each.
+  All 10,584 decal meshes across the 240-shape corpus are single-frame.
+
+The larger decal caveat -- that the covered faces themselves are not preserved
+-- is a *dropped* item and is in §4.
 
 ---
 
@@ -255,7 +254,7 @@ or changes what renders:
   and a multi-frame mesh's array runs past the shared prefix into its frame
   blocks.  A multi-frame mesh can still be a *parent*.  14 meshes in the whole
   corpus share a skin, so this costs almost nothing.
-  `mapping/blender_to_shape.py:466`
+  `mapping/blender_to_shape.py:498`
 - **Sequences re-export larger than they were read.**  `gman`'s node rotations
   go from 13,556 to 18,588 entries, which is most of that shape's growth.  This
   predates the geometry work and is not caused by it: the exporter writes a key
@@ -267,11 +266,41 @@ or changes what renders:
   so a merge entry pointing at one has nothing left to name and is dropped with
   a warning — 15 of 61 entries on `weapon_energy_vehicle`'s first mesh.  The
   entries that survive are remapped exactly.  An unedited mesh still round-trips
-  the whole table through the payload. `mapping/blender_to_shape.py:649`
+  the whole table through the payload. `mapping/blender_to_shape.py:650`
+- **Which faces a decal covers.**  This is the big one.  A `TSDecalMesh`
+  stores an authored list of target triangles (`dtslib/mesh_io.py:196`), and a
+  decal is a projector empty, which cannot hold one.  Export therefore
+  *recomputes* coverage from the projector volume, and that does not reproduce
+  what the shipped files say.  Measured over the 18,484 decal mesh slots in the
+  corpus, as recall of the faces the file actually covers:
+
+  | rule | depth 0.5 | depth 1.0 | depth 4.0 |
+  | --- | --- | --- | --- |
+  | **centre inside** (authoring default) | 0.319 | 0.444 | 0.541 |
+  | any corner inside | 0.372 | 0.513 | 0.608 |
+  | all corners inside | 0.122 | 0.152 | 0.163 |
+
+  The exact index set comes back **0.9%** of the time, and **4.1%** even when
+  the depth window is handed the answer — the format stores no depth axis for
+  it to be recovered from, so `_depth_row` invents one.  Shipped decal coverage
+  was picked by hand and is not a function of the projector.
+
+  Import does not simply impose the default, because it has something
+  authoring never does: the list of faces the file actually covers.  It fits
+  the rule and depth to each decal against that list (`fit_coverage`), which is
+  worth more than any single rule — on `bioderm_light`, recall 0.434 and
+  precision 0.312, against 0.418/0.259 for a fixed *any corner* and 0.229 for
+  the *centre inside* default.
+
+  Everything else about that round trip is exact: all 24 decals, their names,
+  owners, states, materials, `decal_matters` bits and texgen planes.  What the
+  loss costs in the engine is a burn mark covering a different patch of the
+  same surface, not a missing decal, and `Coverage` and `Depth` on the empty
+  tune it.  `mapping/decals.py` (`covered_faces`)
 - **Decal faces that do not sit on the target mesh.**  A decal can only cover
   its target's own geometry, since the engine indexes the target's vertex
-  array; a face moved off it is dropped with a warning.
-  `mapping/decals.py` (`_decal_mesh_from_blender`)
+  array; a face that cannot be matched is dropped with a warning.
+  `mapping/decals.py` (`_decal_mesh_from_faces`)
 - **Scale animation in a DSQ, both directions.**  `dtslib` reads and writes
   the DSQ scale tables, but `mapping/dsq.py` never touches them, so importing
   a scale-animated DSQ loses the scale and exporting one never writes it.  The
@@ -337,7 +366,8 @@ exist, so adding a bone channel marks its node instead of being ignored.
   and *that* is what export reads — so on a faded material, switching the
   render method by hand does not reach the file.  Delete the property to make
   the current setting count.  `mapping/materials.py:286`,
-  `mapping/visibility.py:185`, `mapping/decals.py:242`
+  `mapping/visibility.py:185`.  Decals no longer force a blend state at all:
+  the decal branch mixes two opaque shaders, so it never had to.
 
 ---
 
@@ -367,11 +397,11 @@ exist, so adding a bone channel marks its node instead of being ignored.
 
 Two Blender suites, and the difference between them is the point.
 
-`tests/blender/test_operators.py` (74 tests) imports real fixtures, edits them
+`tests/blender/test_operators.py` (76 tests) imports real fixtures, edits them
 and exports.  That covers reading files the add-on did not write, and it is the
 only way to check a feature no fixture-free scene can produce.
 
-`tests/blender/test_authoring.py` (55 tests) never imports anything.  Every test
+`tests/blender/test_authoring.py` (58 tests) never imports anything.  Every test
 builds a shape from nothing — armature, meshes, materials, actions — exports it,
 and reads the feature back out of the file.  This is the suite that answers
 "can a user *make* one of these", which a round-trip cannot: the exporter may be
@@ -387,7 +417,7 @@ variant no shipped shape uses, sorted meshes in both modes, skins, vertex
 animation, material frames, sequences, triggers, ground frames, object-state
 tracks, node scale, DSQ export, IFL entries, decals and both output versions.
 
-`scripts/mutate.py` (27 mutations) disables one capability at a time and checks
+`scripts/mutate.py` (28 mutations) disables one capability at a time and checks
 the matching test notices.  It has caught its own drift three times — a
 mutation that stopped biting when the code moved, and two that were never
 testing what they claimed.  Run it when adding a feature; a test that survives

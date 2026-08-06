@@ -652,9 +652,16 @@ def test_decal_meshes_are_not_exported_as_objects():
     assert dst_names == src_names
 
 
-def test_decals_roundtrip_through_uv_projection():
-    """Decals are not replayed from a payload: the texgen planes are read back
-    off the projector empty and the indices re-derived from the faces."""
+def test_decals_roundtrip_through_their_projectors():
+    """Everything about a decal round-trips except which faces it covers.
+
+    A decal is a projector empty now, so the planes come back off its matrix
+    exactly.  The index list does not: the file's is authored and an empty
+    cannot hold one, so export recomputes coverage.  This asserts the identity
+    and the projection survive, and pins coverage to a floor -- see
+    test_decal_coverage_recall_has_a_floor for why it is a floor and not
+    equality.
+    """
     _reset()
     _import_dts("v23_bioderm_light.dts")
     src = read_shape_file(FIXTURES / "v23_bioderm_light.dts")
@@ -666,27 +673,28 @@ def test_decals_roundtrip_through_uv_projection():
     src_names = [src.name(d.raw[0]) for d in src.decals]
     dst_names = [dst.name(d.raw[0]) for d in dst.decals]
     assert dst_names == src_names
+    # the owning object of each decal, in order
+    assert [d.raw[3] for d in dst.decals] == [d.raw[3] for d in src.decals]
 
     compared = 0
     for d_src, d_dst in zip(src.decals, dst.decals):
+        assert d_dst.raw[1] == d_src.raw[1]  # same number of detail slots
         for j in range(d_src.raw[1]):
             m_src = src.meshes[d_src.raw[2] + j]
             m_dst = dst.meshes[d_dst.raw[2] + j]
-            assert (m_src is None) == (m_dst is None)
             if m_src is None or m_src.decal_data is None:
                 continue
+            if m_dst is None or m_dst.decal_data is None:
+                continue  # coverage is recomputed; a slot may come back empty
             compared += 1
-            # the same faces are covered
-            assert _decal_triangles(dst, d_dst, j, m_dst) == _decal_triangles(
-                src, d_src, j, m_src
-            ), (src_names[0], j)
-            # and the same projection lands on them
+            # the projection itself is exact: it is the empty's matrix
             a, b = m_src.decal_data, m_dst.decal_data
             for pa, pb in zip(a.texgen_s + a.texgen_t, b.texgen_s + b.texgen_t):
                 for x, y in zip(pa, pb):
                     assert abs(x - y) < 1e-5, (x, y)
             assert (b.material_index & 0x0FFFFFFF) == (a.material_index & 0x0FFFFFFF)
-    assert compared == 144, compared
+            assert b.indices, "a decal that covers nothing should not be written"
+    assert compared >= 120, compared
     # default decal states survive
     assert dst.decal_states[: len(dst.decals)] == src.decal_states[: len(src.decals)]
     # the Damage sequence's decal track survives
@@ -699,52 +707,85 @@ def test_decals_roundtrip_through_uv_projection():
     assert dst_track == src_track
 
 
-def test_decals_import_as_projected_uvs():
-    """Each decal becomes the faces it covers plus a projector empty, and the
-    projected UVs must reproduce the engine's own texgen dot product."""
+def test_decal_coverage_recall_has_a_floor():
+    """Coverage is recomputed, so it drifts -- but it must not silently rot.
+
+    Measured on this fixture the round trip recalls 0.434 of the covered
+    triangles at precision 0.312, with the rule and depth fitted per decal at
+    import (fit_coverage).  A fixed CENTRE rule scores 0.229 and a fixed ANY
+    0.418, so this also guards the fitting: drop it and the floor fails.
+    """
     _reset()
     _import_dts("v23_bioderm_light.dts")
     src = read_shape_file(FIXTURES / "v23_bioderm_light.dts")
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
+    dst = read_shape_file(out)
 
-    empties = [o for o in bpy.data.objects if o.type == "EMPTY" and "dts_decal_name" in o]
-    meshes = [o for o in bpy.data.objects if o.type == "MESH" and "dts_decal_name" in o]
+    recall = precision = 0.0
+    n = 0
+    for d_src, d_dst in zip(src.decals, dst.decals):
+        for j in range(d_src.raw[1]):
+            m_src = src.meshes[d_src.raw[2] + j]
+            m_dst = dst.meshes[d_dst.raw[2] + j]
+            if m_src is None or m_src.decal_data is None:
+                continue
+            if m_dst is None or m_dst.decal_data is None:
+                continue
+            want = _decal_triangles(src, d_src, j, m_src)
+            got = _decal_triangles(dst, d_dst, j, m_dst)
+            if not want or not got:
+                continue
+            hit = len(want & got)
+            recall += hit / len(want)
+            precision += hit / len(got)
+            n += 1
+    assert n >= 120, n
+    assert recall / n > 0.35, recall / n
+    assert precision / n > 0.25, precision / n
+
+
+def test_decals_import_as_projector_empties():
+    """A decal imports as one empty and no mesh at all.
+
+    The empty carries the whole decal, and the target's shader carries the
+    preview: a Texture Coordinate reading the empty's object space, masked by
+    the coverage attribute so Blender shows the decal only where the exported
+    file will name it.
+    """
+    _reset()
+    _import_dts("v23_bioderm_light.dts")
+    from io_scene_dts.mapping.decals import coverage_attribute, decal_objects
+
+    empties = decal_objects()
     assert len(empties) == 24, len(empties)
-    assert meshes
+    # the representation this replaced: no decal is a mesh object any more
+    assert not [o for o in bpy.data.objects if o.type == "MESH" and "dts_decal_name" in o]
+    assert not [
+        o for o in bpy.data.objects
+        if any(m.type == "UV_PROJECT" for m in o.modifiers)
+    ]
 
-    for o in meshes:
-        mods = [m.type for m in o.modifiers]
-        assert "UV_PROJECT" in mods, (o.name, mods)
-        uvp = next(m for m in o.modifiers if m.type == "UV_PROJECT")
-        assert uvp.projectors[0].object is not None
-        assert uvp.projectors[0].object.get("dts_decal_name") == o["dts_decal_name"]
+    assert len({d.dts_decal.index for d in empties}) == 24
+    for d in empties:
+        props = d.dts_decal
+        assert props.target is not None and props.target.type == "MESH"
+        # the coverage cache the shader masks by
+        attr = props.target.data.attributes.get(coverage_attribute(props.index))
+        assert attr is not None, (d.name, props.index)
+        assert attr.domain == "FACE"
+        assert sum(1 for v in attr.data if v.value > 0.5) > 0, d.name
 
-    dg = bpy.context.evaluated_depsgraph_get()
-    worst, checked = 0.0, 0
-    for decal in src.decals:
-        name = src.name(decal.raw[0])
-        for j in range(decal.raw[1]):
-            m = src.meshes[decal.raw[2] + j]
-            if m is None or m.decal_data is None or not m.decal_data.texgen_s:
-                continue
-            cand = [o for o in meshes
-                    if o.get("dts_decal_name") == name and o.get("dts_decal_slot") == j]
-            if not cand:
-                continue
-            ob = cand[0]
-            S, T = m.decal_data.texgen_s[0], m.decal_data.texgen_t[0]
-            ev = ob.evaluated_get(dg).data
-            uvl = ev.uv_layers[0].data
-            base = ob.data.vertices  # undisplaced: the lift is a preview modifier
-            for poly in ev.polygons:
-                for li in poly.loop_indices:
-                    p = base[ev.loops[li].vertex_index].co
-                    want = (S[0]*p.x + S[1]*p.y + S[2]*p.z + S[3],
-                            1.0 - (T[0]*p.x + T[1]*p.y + T[2]*p.z + T[3]))
-                    got = uvl[li].uv
-                    worst = max(worst, abs(want[0]-got[0]), abs(want[1]-got[1]))
-            checked += 1
-    assert checked == 144, checked
-    assert worst < 1e-3, worst
+        # and the branch that draws it, in the *target's* material
+        mat = props.target.active_material
+        label = f"DTS Decal {props.index:03d}"
+        nodes = {n.type for n in mat.node_tree.nodes if n.label == label}
+        assert {"TEX_COORD", "MAPPING", "ATTRIBUTE", "MIX_SHADER"} <= nodes, nodes
+        coord = next(
+            n for n in mat.node_tree.nodes
+            if n.label == label and n.type == "TEX_COORD"
+        )
+        assert coord.object is d, (coord.object, d)
 
 
 def test_decals_start_at_the_states_the_file_stores():
@@ -767,15 +808,27 @@ def test_decals_start_at_the_states_the_file_stores():
         assert decal_prop(i, name) in arm.keys(), (i, name)
         assert arm[decal_prop(i, name)] == float(states[i]), (i, name)
 
-    # the ones resting on must actually be drawn, and the ones off must not
+    # the ones resting on must actually be drawn, and the ones off must not.
+    # With no decal object the state gates the branch's Value node instead of
+    # object alpha, so that is what is read back.
+    from io_scene_dts.mapping.decals import decal_objects
+
     bpy.context.scene.frame_set(1)
     bpy.context.view_layer.update()
-    dg = bpy.context.evaluated_depsgraph_get()
-    for o in bpy.data.objects:
-        if o.type != "MESH" or "dts_decal_name" not in o:
-            continue
-        want = 1.0 if states[int(o["dts_decal_index"])] >= 0 else 0.0
-        assert abs(o.evaluated_get(dg).color[3] - want) < 1e-6, (o.name, want)
+    checked = 0
+    for d in decal_objects():
+        props = d.dts_decal
+        mat = props.target.active_material
+        label = f"DTS Decal {props.index:03d}"
+        value = next(
+            (n for n in mat.node_tree.nodes if n.label == label and n.type == "VALUE"),
+            None,
+        )
+        assert value is not None, (d.name, label)
+        want = 1.0 if states[props.index] >= 0 else 0.0
+        assert abs(value.outputs[0].default_value - want) < 1e-6, (d.name, want)
+        checked += 1
+    assert checked == len(src.decals), checked
 
 
 def test_decal_identity_is_the_index_not_the_name():
@@ -790,18 +843,20 @@ def test_decal_identity_is_the_index_not_the_name():
     names = [src.name(d.raw[0]) for d in src.decals]
     assert len(set(names)) < len(names), "fixture must have duplicate names"
 
+    from io_scene_dts.mapping.decals import coverage_attribute, decal_objects
+
     # one property and one projector per decal, not per name
     assert len([k for k in arm.keys() if k.startswith("dts_decal_")]) == len(src.decals)
-    empties = [o for o in bpy.data.objects if o.type == "EMPTY" and "dts_decal_name" in o]
+    empties = decal_objects()
     assert len(empties) == len(src.decals), len(empties)
-    assert len({int(o["dts_decal_index"]) for o in empties}) == len(src.decals)
+    assert len({d.dts_decal.index for d in empties}) == len(src.decals)
 
-    # each decal's meshes point at that decal's own projector
-    for o in bpy.data.objects:
-        if o.type != "MESH" or "dts_decal_name" not in o:
-            continue
-        uvp = next(m for m in o.modifiers if m.type == "UV_PROJECT")
-        assert int(uvp.projectors[0].object["dts_decal_index"]) == int(o["dts_decal_index"])
+    # each decal's coverage cache is keyed by its own index, so two decals
+    # sharing a name and a target still mask different faces
+    for d in empties:
+        props = d.dts_decal
+        attr = coverage_attribute(props.index)
+        assert props.target.data.attributes.get(attr) is not None, (d.name, attr)
 
     # and they all survive a round trip, distinctly
     out = _tmp(".dts")
@@ -815,9 +870,9 @@ def test_decal_identity_is_the_index_not_the_name():
 
 
 def test_decals_follow_their_state_through_a_sequence():
-    """The meshes read the state through a driver into alpha, so one strip
-    drives pose and damage together."""
-    from io_scene_dts.mapping.decals import decal_prop
+    """Each decal branch reads the state through a driver, so one strip drives
+    pose and damage together."""
+    from io_scene_dts.mapping.decals import decal_objects, decal_prop
     from io_scene_dts.mapping.visibility import _do_refresh
 
     _reset()
@@ -825,10 +880,20 @@ def test_decals_follow_their_state_through_a_sequence():
     src = read_shape_file(FIXTURES / "v23_bioderm_light.dts")
     names = [src.name(d.raw[0]) for d in src.decals]
 
-    meshes = [o for o in bpy.data.objects if o.type == "MESH" and "dts_decal_name" in o]
-    for o in meshes:
-        paths = {(d.data_path, d.array_index) for d in o.animation_data.drivers}
-        assert ("color", 3) in paths, (o.name, paths)
+    # every decal's Value node is driven, and by that decal's own property
+    driven = 0
+    for d in decal_objects():
+        props = d.dts_decal
+        mat = props.target.active_material
+        want = decal_prop(props.index, props.decal_name)
+        for drv in mat.node_tree.animation_data.drivers:
+            var = drv.driver.variables[0]
+            if var.targets[0].data_path.strip('[]"') == want:
+                driven += 1
+                break
+        else:
+            raise AssertionError(f"{d.name}: no driver for {want}")
+    assert driven == len(src.decals), driven
 
     # the timer that rebuilds driver relations does not fire in background mode
     _do_refresh()
@@ -1325,6 +1390,63 @@ def test_legacy_blend_migrates():
 
     # idempotent
     assert migrate.migrate_all() == []
+
+
+def test_legacy_decal_meshes_migrate_to_their_empty():
+    """A .blend from before decals became empties must not export phantoms.
+
+    The old form kept the covered faces as a mesh object parented to the
+    armature exactly like its target, so the exporter cannot tell it from a
+    real mesh: left in place, every decal comes back as an extra shape object
+    with its own geometry and detail levels.  Migration removes them and moves
+    what only they held -- the target and the material -- onto the empty.
+    """
+    sys.path.insert(0, str(REPO / "tests" / "blender"))
+    import authoring as A
+
+    from io_scene_dts.mapping.decals import decal_objects
+    from io_scene_dts.props import migrate
+
+    A.reset()
+    arm = A.armature("Wall")
+    verts, faces = A.quad_geometry()
+    target = A.mesh_object("wall2", arm, bone="root", verts=verts, faces=faces)
+    decal_mat = bpy.data.materials.new("scorch")
+
+    legacy = A.mesh_object(
+        "scorch2", arm, bone="root", verts=verts, faces=faces, material=decal_mat
+    )
+    legacy["dts_decal_name"] = "scorch"
+    legacy["dts_decal_index"] = 0
+    legacy["dts_decal_object"] = "wall"
+    legacy["dts_decal_slot"] = 0
+    legacy["dts_decal_target"] = target.name
+
+    empty = bpy.data.objects.new("decal_scorch", None)
+    bpy.context.scene.collection.objects.link(empty)
+    empty["dts_decal_name"] = "scorch"
+    empty["dts_decal_index"] = 0
+    empty["dts_decal_object"] = "wall"
+    empty.matrix_world = target.matrix_world
+
+    assert migrate.migrate_all()
+
+    # the mesh is gone and the empty carries the decal
+    assert "scorch2" not in bpy.data.objects
+    decals = decal_objects()
+    assert len(decals) == 1
+    props = decals[0].dts_decal
+    assert props.decal_name == "scorch"
+    assert props.target is target
+    assert props.material is decal_mat
+    assert "dts_decal_name" not in empty.keys()
+
+    # and the export has no phantom object for it
+    out = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
+    shape = read_shape_file(out)
+    assert [shape.name(o.name_index) for o in shape.objects] == ["wall"]
+    assert len(shape.decals) == 1
 
 
 def _dts_panels():

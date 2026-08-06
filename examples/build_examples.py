@@ -533,10 +533,10 @@ def build_decals():
     """Battle damage: decals switched on as a Damage sequence advances, which
     is what 47 of the 49 decal-bearing Tribes 2 shapes do.
 
-    The plate is subdivided so a decal can cover *part* of it.  Sizing the
-    projector is create_decal's job -- moving or scaling the empty afterwards
-    pushes the covered faces outside the 0..1 square, and the decal then
-    samples its own texture's transparent border and renders nothing.
+    The plate is subdivided so a decal can cover *part* of it.  The face
+    selection below only sizes the projector: the decal is the empty
+    create_decal leaves behind, and which faces it covers is recomputed from
+    that empty on export, so moving or scaling it moves the burn.
     """
     arm = A.armature("Hull", bones=(("root", None), ("shell", "root")))
     hull_mat = textured_material("hullplate", checker)
@@ -655,8 +655,6 @@ def build_dsq_animation():
 
 
 UNWRAP_EXEMPT = {"08_material_frames"}
-# decal meshes get their UVs from the projector, not from an unwrap
-SKIP_UNWRAP_PROP = "dts_decal_name"
 
 
 def build(name, out_dir: Path, export_dir: Path | None):
@@ -666,8 +664,6 @@ def build(name, out_dir: Path, export_dir: Path | None):
     if name not in UNWRAP_EXEMPT:
         for obj in bpy.data.objects:
             if obj.type != "MESH" or not obj.data.uv_layers:
-                continue
-            if SKIP_UNWRAP_PROP in obj:
                 continue
             box_unwrap(obj)
     bpy.context.view_layer.objects.active = arm

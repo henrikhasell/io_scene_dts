@@ -238,6 +238,9 @@ def blender_to_shape(
 
     # target Blender object name -> Blender position to DTS index, for decals
     decal_target_lookups: dict[str, dict] = {}
+    # DTS object name -> {detail slot: Blender object}, so a decal can reach
+    # every detail level of its owner and not just the one it points at
+    decal_slot_objects: dict[str, dict] = {}
 
     for s in range(len(subshapes)):
         shape.sub_shape_first_object.append(len(shape.objects))
@@ -256,11 +259,12 @@ def blender_to_shape(
                 if "dts_object_num_meshes" in b
             ]
             num_meshes = max([max_odn + 1] + stored_counts)
-            node_index, obj_lookups = _export_object_meshes(
+            node_index, obj_lookups, obj_slots = _export_object_meshes(
                 shape, base, odn_map, num_meshes, arm_obj, node_index_by_bone,
                 node_arm_matrix, warnings,
             )
             decal_target_lookups.update(obj_lookups)
+            decal_slot_objects[base] = obj_slots
             obj = Object(
                 name_index=shape.add_name(base),
                 num_meshes=num_meshes,
@@ -294,6 +298,7 @@ def blender_to_shape(
     decal_index_map = build_decals(
         shape, arm_obj, object_index_by_name, _material_slot_index, warnings,
         target_lookups=decal_target_lookups,
+        slot_objects=decal_slot_objects,
     )
 
     # -- materials ----------------------------------------------------
@@ -402,13 +407,14 @@ def _ordered_bones(arm_obj) -> list:
 
 
 def _gather_mesh_objects(context, arm_obj, selected_only):
-    """Mesh objects belonging to this shape, excluding decals.
+    """Mesh objects belonging to this shape.
 
-    A decal mesh hangs off the armature exactly like its target does — that is
-    what keeps it stuck to the right bone during animation — so it looks like
-    an ordinary shape mesh here.  It is not one: build_decals emits it into the
-    decal table instead, and letting it through as well exports every decal
-    twice, once as a phantom object with its own geometry and detail levels.
+    A decal is an empty now, so nothing here has to filter one out.  The
+    ``dts_decal_name`` guard remains for the window in which a .blend written
+    by an older version is open but ``props/migrate.py`` has not run yet: those
+    files still hold decal meshes parented to the armature exactly like their
+    targets, and letting one through exports the decal twice, once as a phantom
+    object with its own geometry and detail levels.
     """
     objs = []
     pool = context.selected_objects if selected_only else context.scene.objects
@@ -453,7 +459,10 @@ def _export_object_meshes(
     precede its children in the mesh table for the reader to have seen it
     (dtslib/reader.py:251-253).
 
-    Returns (node index, {target Blender object name: decal vertex lookup}).
+    Returns (node index, {target Blender object name: decal vertex lookup},
+    {detail slot: Blender object}).  A decal covers every detail level of its
+    owner, so it needs the slot map to find the other levels; the object it
+    points at is only one of them.
     """
     pool = VertexPool()
     built = {}
@@ -495,7 +504,7 @@ def _export_object_meshes(
             lookups[odn_map[odn].name] = blender_lookup_of(odn_map[odn], bvert_to_dts)
         if node_index < 0:
             node_index = mesh_node
-    return node_index, lookups
+    return node_index, lookups, dict(odn_map)
 
 
 def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warnings, pool=None):

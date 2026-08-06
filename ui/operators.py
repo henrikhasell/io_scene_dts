@@ -118,17 +118,18 @@ def _armature_of(obj):
 class DTS_OT_add_decal(Operator):
     """Make a decal from the faces selected on a DTS mesh.
 
-    Nine exactly-named properties across three datablocks, none of them
-    discoverable, is not something a user can be asked to type.  Decals are the
-    add-on's showcase mapping -- projections in Blender, mesh data in the file
-    -- and until this existed they could be imported and edited but not made.
+    The selection is what the projector gets *fitted to*; the decal itself is
+    the empty this leaves behind, and moving that empty afterwards is what
+    moves the decal.  Decals are the add-on's showcase mapping -- a projection
+    in Blender, indices and planes in the file -- and until this existed they
+    could be imported and edited but not made.
     """
 
     bl_idname = "io_scene_dts.add_decal"
     bl_label = "Add DTS Decal"
     bl_description = (
-        "Cover the selected faces with a decal: a copy of those faces plus a "
-        "projector empty.  Move the empty to move the decal"
+        "Fit a decal projector to the selected faces.  The decal is the empty "
+        "this creates: move or scale it to move the decal"
     )
     bl_options = {"REGISTER", "UNDO"}
 
@@ -155,7 +156,6 @@ class DTS_OT_add_decal(Operator):
         return (
             obj is not None
             and obj.type == "MESH"
-            and "dts_decal_name" not in obj
             and _armature_of(obj) is not None
         )
 
@@ -174,7 +174,7 @@ class DTS_OT_add_decal(Operator):
 
         material = target.active_material
         try:
-            index, made = create_decal(
+            index, projector = create_decal(
                 arm, target, name=self.name, material=material,
                 all_details=self.all_details,
             )
@@ -182,10 +182,43 @@ class DTS_OT_add_decal(Operator):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
 
-        self.report(
-            {"INFO"},
-            f"decal {self.name!r} (#{index}) over {len(made)} detail level(s)",
-        )
+        self.report({"INFO"}, f"decal {self.name!r} (#{index}): {projector.name}")
+        return {"FINISHED"}
+
+
+class DTS_OT_refresh_decal(Operator):
+    """Recompute which faces a decal covers, from where its empty now is.
+
+    Coverage is derived, so the preview mask has to be told to catch up.
+    Export never reads the cache -- it calls covered_faces() itself -- so this
+    only ever changes what you see, never what you get.
+    """
+
+    bl_idname = "io_scene_dts.refresh_decal"
+    bl_label = "Refresh DTS Decal Coverage"
+    bl_description = (
+        "Recompute the faces this decal covers from its current position, size "
+        "and depth.  Affects the viewport preview only; export recomputes anyway"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    all_decals: BoolProperty(
+        name="Every Decal",
+        description="Refresh every decal in the scene, not just the selected one",
+        default=False,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.object
+        return obj is not None and obj.type == "EMPTY" and obj.dts_decal.is_dts
+
+    def execute(self, context):
+        from ..mapping.decals import decal_objects, refresh_coverage
+
+        targets = decal_objects() if self.all_decals else [context.object]
+        faces = sum(refresh_coverage(d) for d in targets)
+        self.report({"INFO"}, f"{len(targets)} decal(s), {faces} face(s) covered")
         return {"FINISHED"}
 
 
@@ -239,6 +272,7 @@ def list_buttons(layout, path: str, *, move: bool = False) -> None:
 
 CLASSES = (
     DTS_OT_add_decal,
+    DTS_OT_refresh_decal,
     DTS_OT_list_add,
     DTS_OT_list_remove,
     DTS_OT_list_move,

@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 import bpy
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO.parent))
@@ -914,8 +914,11 @@ def test_moving_the_projector_moves_the_decal():
 
 def test_a_decal_is_authorable_by_hand():
     """The long way round, which the operator now wraps -- kept because it is
-    what the exporter actually reads, and a change to those property names
-    should fail here rather than silently at export time."""
+    exactly what the exporter reads, and a change to those property names
+    should fail here rather than silently at export time.
+
+    The whole decal is one empty: no mesh, no face list, no material slot.
+    """
     from io_scene_dts.mapping.decals import PROJECTOR_PREFIX, decal_prop
 
     A.reset()
@@ -923,22 +926,17 @@ def test_a_decal_is_authorable_by_hand():
     verts, faces = A.quad_geometry()
     target = A.mesh_object("wall2", arm, bone="root", verts=verts, faces=faces)
 
-    decal_mat = A.principled_material("scorch")
-    decal = A.mesh_object(
-        "scorch2", arm, bone="root", verts=verts, faces=faces, material=decal_mat
-    )
-    decal["dts_decal_name"] = "scorch"
-    decal["dts_decal_index"] = 0
-    decal["dts_decal_object"] = "wall"
-    decal["dts_decal_slot"] = 0
-    decal["dts_decal_target"] = target.name
-
     projector = bpy.data.objects.new(f"{PROJECTOR_PREFIX}scorch", None)
     bpy.context.scene.collection.objects.link(projector)
-    projector["dts_decal_name"] = "scorch"
-    projector["dts_decal_index"] = 0
-    projector["dts_decal_object"] = "wall"
     projector.matrix_world = target.matrix_world
+
+    props = projector.dts_decal
+    props.is_dts = True
+    props.decal_name = "scorch"
+    props.index = 0
+    props.object_name = "wall"
+    props.target = target
+    props.material = A.principled_material("scorch")
     arm[decal_prop(0, "scorch")] = 0.0
 
     shape = A.read(A.export_dts())
@@ -955,6 +953,90 @@ def test_a_decal_is_authorable_by_hand():
     assert covered[0].decal_data.texgen_s and covered[0].decal_data.texgen_t
     # and it is not also a shape object
     assert A.object_names(shape) == ["wall"], A.object_names(shape)
+
+
+def test_decal_coverage_is_what_the_export_writes():
+    """The preview mask and the exported index list come from one function.
+
+    Coverage is recomputed rather than stored, so the face attribute the shader
+    masks by is a cache.  If it could disagree with what export derives, the
+    viewport would be showing a decal that is not the one in the file.
+    """
+    from io_scene_dts.mapping.decals import (
+        coverage_attribute,
+        covered_faces,
+        decal_objects,
+    )
+
+    A.reset()
+    arm = A.armature("Wall")
+    # a grid, not a single quad: with one face every rule agrees trivially
+    verts, faces = [], []
+    n = 4
+    for row in range(n + 1):
+        for col in range(n + 1):
+            verts.append(((col / n - 0.5) * 2.0, (row / n - 0.5) * 2.0, 0.0))
+    for row in range(n):
+        for col in range(n):
+            a = row * (n + 1) + col
+            faces += [(a, a + 1, a + n + 2), (a, a + n + 2, a + n + 1)]
+    target = A.mesh_object("wall2", arm, bone="root", verts=verts, faces=faces)
+    target.data.materials.append(A.principled_material("scorch"))
+    for polygon in target.data.polygons:
+        polygon.select = True
+    bpy.context.view_layer.objects.active = target
+    assert bpy.ops.io_scene_dts.add_decal(name="scorch") == {"FINISHED"}
+
+    decal = decal_objects()[0]
+    props = decal.dts_decal
+    derived = set(
+        covered_faces(target, decal.matrix_world, depth=props.depth, rule=props.rule)
+    )
+    attr = target.data.attributes[coverage_attribute(props.index)]
+    cached = {i for i, v in enumerate(attr.data) if v.value > 0.5}
+    assert cached == derived, (sorted(cached), sorted(derived))
+    assert derived, "the decal covers nothing"
+
+
+def test_moving_the_projector_changes_the_covered_faces():
+    """Scaling the empty down must shrink the decal in the exported file.
+
+    The old representation stored the faces, so this could only ever change the
+    texgen planes.  Coverage is derived now, which is the whole point of the
+    empty being the decal: shrink it and it covers fewer faces.
+    """
+    from io_scene_dts.mapping.decals import decal_objects
+
+    A.reset()
+    arm = A.armature("Wall")
+    verts, faces = A.quad_geometry()
+    target = A.mesh_object("wall2", arm, bone="root", verts=verts, faces=faces)
+    target.data.materials.append(A.principled_material("scorch"))
+    for polygon in target.data.polygons:
+        polygon.select = True
+    bpy.context.view_layer.objects.active = target
+    assert bpy.ops.io_scene_dts.add_decal(name="scorch") == {"FINISHED"}
+
+    def covered_count():
+        shape = A.read(A.export_dts())
+        decal = shape.decals[0]
+        return sum(
+            len(shape.meshes[decal.raw[2] + i].decal_data.indices) // 3
+            for i in range(decal.raw[1])
+            if shape.meshes[decal.raw[2] + i] is not None
+            and shape.meshes[decal.raw[2] + i].decal_data is not None
+        )
+
+    before = covered_count()
+    assert before > 0, before
+
+    projector = decal_objects()[0]
+    # far too small to reach any face centre or corner of the quad
+    projector.matrix_world = projector.matrix_world @ Matrix.Scale(0.01, 4)
+    bpy.context.view_layer.update()
+
+    after = covered_count()
+    assert after < before, (before, after)
 
 
 # ----------------------------------------------------------------------

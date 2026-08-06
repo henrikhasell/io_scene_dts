@@ -26,6 +26,7 @@ from .legacy import (
     parse_node_transforms,
     parse_triggers,
 )
+from .decal import SCHEMA_VERSION as DECAL_SCHEMA_VERSION
 from .mesh import SCHEMA_VERSION as MESH_SCHEMA_VERSION
 from .shape import SCHEMA_VERSION
 
@@ -195,9 +196,80 @@ def migrate_meshes(report: list) -> bool:
     return bool(touched)
 
 
+def migrate_decals(report: list) -> bool:
+    """Decals: from one mesh object per detail level to just the empty.
+
+    The old form kept the covered faces as a copied mesh, so the empty was only
+    a handle on the projection.  Coverage is recomputed from the empty now, so
+    the meshes are not data any more -- and leaving them would be worse than
+    useless: they hang off the armature exactly like their targets and the
+    exporter would emit each one again as a phantom object.
+
+    The empty keeps the decal.  What the meshes still hold that it does not --
+    the target and the material -- moves across before they go.
+    """
+    empties = [
+        obj
+        for obj in bpy.data.objects
+        if obj.type == "EMPTY" and "dts_decal_index" in obj
+    ]
+    meshes = [
+        obj
+        for obj in bpy.data.objects
+        if obj.type == "MESH" and "dts_decal_name" in obj
+    ]
+    if not empties and not meshes:
+        return False
+
+    by_index = {}
+    for mesh in meshes:
+        by_index.setdefault(int(mesh.get("dts_decal_index", -1)), []).append(mesh)
+
+    for empty in empties:
+        props = empty.dts_decal
+        if props.schema_version >= DECAL_SCHEMA_VERSION:
+            continue
+        index = int(empty.get("dts_decal_index", 0))
+        props.is_dts = True
+        props.schema_version = DECAL_SCHEMA_VERSION
+        props.decal_name = str(empty.get("dts_decal_name", ""))
+        props.index = index
+        props.object_name = str(empty.get("dts_decal_object", ""))
+
+        # slot 0 is the highest-detail level, and its target is the one worth
+        # pointing at; the others are found by walking the object's LODs
+        kin = sorted(by_index.get(index, []), key=lambda m: int(m.get("dts_decal_slot", 0)))
+        if kin:
+            target = bpy.data.objects.get(str(kin[0].get("dts_decal_target", "")))
+            props.target = target if target is not None and target.type == "MESH" else None
+            props.subshape = int(kin[0].get("dts_subshape", 0))
+            if kin[0].material_slots and kin[0].material_slots[0].material:
+                props.material = kin[0].material_slots[0].material
+        for key in ("dts_decal_name", "dts_decal_object", "dts_decal_index",
+                    "dts_decal_state"):
+            if key in empty:
+                del empty[key]
+
+    for mesh in meshes:
+        data = mesh.data
+        bpy.data.objects.remove(mesh)
+        if data.users == 0:
+            bpy.data.meshes.remove(data)
+
+    if meshes:
+        report.append(
+            f"{len(meshes)} decal mesh object(s) were removed: a decal is the "
+            f"projector empty now, and the faces it covers are recomputed from "
+            f"that empty rather than stored. Which faces an imported decal "
+            f"covers will not survive unchanged -- check the projectors."
+        )
+    return True
+
+
 def migrate_all() -> list[str]:
     report: list[str] = []
     changed = migrate_meshes(report)
+    changed |= migrate_decals(report)
     for obj in bpy.data.objects:
         if obj.type == "ARMATURE":
             changed |= migrate_armature(obj, report)

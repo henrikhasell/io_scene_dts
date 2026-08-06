@@ -158,6 +158,51 @@ class OBJECT_PT_dts_names(Panel):
         )
 
 
+class OBJECT_PT_dts_decal(Panel):
+    """A decal, which is now entirely this empty.
+
+    Everything here used to be an ID custom property spread across the decal's
+    mesh objects, so none of it could be changed without typing exact names
+    into the Custom Properties panel.  Depth and Coverage never existed at all:
+    they decide which faces the exported decal names, and the file has no
+    stored answer for them to be recovered from.
+    """
+
+    bl_label = "DTS Decal"
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "object"
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.object
+        return obj is not None and obj.type == "EMPTY" and obj.dts_decal.is_dts
+
+    def draw(self, context):
+        from .operators import DTS_OT_refresh_decal
+
+        props = context.object.dts_decal
+        layout = self.layout
+
+        column = layout.column(align=True)
+        column.prop(props, "decal_name")
+        column.prop(props, "index")
+
+        column = layout.column(align=True)
+        column.prop(props, "target")
+        column.prop(props, "material")
+
+        box = layout.box()
+        box.label(text="Covered Faces", icon="FACESEL")
+        box.prop(props, "rule")
+        box.prop(props, "depth")
+        box.operator(DTS_OT_refresh_decal.bl_idname, icon="FILE_REFRESH")
+        box.label(
+            text="Recomputed on export; the file's own list is not kept",
+            icon="INFO",
+        )
+
+
 class BONE_PT_dts_node(Panel):
     bl_label = "DTS Node"
     bl_space_type = "PROPERTIES"
@@ -407,6 +452,7 @@ CLASSES = (
     OBJECT_PT_dts_ifl,
     OBJECT_PT_dts_names,
     OBJECT_PT_dts_mesh,
+    OBJECT_PT_dts_decal,
     BONE_PT_dts_node,
     MATERIAL_PT_dts_material,
     DOPESHEET_PT_dts_sequence,

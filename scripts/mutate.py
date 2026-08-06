@@ -50,11 +50,16 @@ MUTATIONS = {
         "            warnings, pool=None,",
         ["test_lod_vertex_sharing_is_rederived"],
     ),
+    # A decal is an empty now, so the "dts_decal_name" guard in
+    # _gather_mesh_objects is dead for any migrated scene -- mutating it caught
+    # nothing, which the harness reported.  What still protects against phantom
+    # decal objects is migration deleting the legacy meshes, so that is what
+    # this mutates instead.
     "decal-objects": (
-        "mapping/blender_to_shape.py",
-        '        if o.type != "MESH" or "dts_decal_name" in o:',
-        '        if o.type != "MESH":',
-        ["test_decal_meshes_are_not_exported_as_objects"],
+        "props/migrate.py",
+        "        bpy.data.objects.remove(mesh)",
+        "        pass",
+        ["test_legacy_decal_meshes_migrate_to_their_empty"],
     ),
     "matframes-store": (
         "mapping/matframes.py",
@@ -156,8 +161,8 @@ MUTATIONS = {
     ),
     "fresh-decal": (
         "mapping/decals.py",
-        "            by_index.setdefault(index, []).append(obj)",
-        "            pass",
+        "    projectors = {d.dts_decal.index: d for d in decal_objects()}",
+        "    projectors = {}",
         ["test_a_decal_is_authorable_by_hand"],
     ),
     "fresh-lod-sharing": (
@@ -166,19 +171,38 @@ MUTATIONS = {
         "            and False",
         ["test_lod_meshes_share_a_vertex_array"],
     ),
-    # the UV Project modifier is preview only -- export reads the empty's
-    # matrix -- so this mutates the read-back, not the modifier
     "decal-texgen": (
         "mapping/decals.py",
         "            s, t = projector_to_texgen(projector.matrix_world, bobj.matrix_world)",
         "            s, t = projector_to_texgen(Matrix.Identity(4), bobj.matrix_world)",
         ["test_moving_the_projector_moves_the_decal"],
     ),
-    "decal-all-details": (
+    # coverage is derived now, so this is the mutation that matters most: if
+    # covered_faces stops finding faces there is no stored list to fall back on
+    "decal-coverage": (
         "mapping/decals.py",
-        "            faces = faces_under_projector(other, projector_matrix)",
-        "            faces = []",
-        ["test_an_operator_decal_covers_every_detail_level"],
+        "        if inside:\n            hits.append(polygon.index)",
+        "        if False:\n            hits.append(polygon.index)",
+        [
+            "test_an_operator_decal_covers_every_detail_level",
+            "test_decal_coverage_is_what_the_export_writes",
+        ],
+    ),
+    # the preview mask must come from the same predicate export uses; a cache
+    # that is never written shows a decal nowhere while the file has one
+    # import fits the rule to each decal's own stored faces; without it the
+    # default rule applies and round-trip coverage drops from 0.43 to 0.23
+    "decal-fit": (
+        "mapping/decals.py",
+        "                projector.dts_decal.rule = rule",
+        "                projector.dts_decal.rule = projector.dts_decal.rule",
+        ["test_decal_coverage_recall_has_a_floor"],
+    ),
+    "decal-coverage-cache": (
+        "mapping/decals.py",
+        "        attr.data[polygon.index].value = 1.0 if polygon.index in wanted else 0.0",
+        "        attr.data[polygon.index].value = 0.0",
+        ["test_decal_coverage_is_what_the_export_writes"],
     ),
     "decal-projector-fit": (
         "mapping/decals.py",

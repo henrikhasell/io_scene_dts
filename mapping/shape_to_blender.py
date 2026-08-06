@@ -43,7 +43,7 @@ from ..dtslib.types import (
 )
 
 from . import matframes
-from .decals import apply_default_states, import_decals, wire_decal_drivers
+from .decals import apply_default_states, import_decals
 from .materials import material_to_blender, reset_texture_cache
 from .naming import object_display_name
 from .nla import scene_fps, stack_actions
@@ -166,7 +166,7 @@ def shape_to_blender(
     arm_obj["dts_exporter_version"] = shape.exporter_version
 
     if shape.decals:
-        n_decals, n_meshes = import_decals(
+        n_decals, n_targets = import_decals(
             shape,
             arm_obj,
             bmats,
@@ -180,7 +180,7 @@ def shape_to_blender(
         # exist before import_sequences keyframes them.
         apply_default_states(arm_obj, shape)
         warnings.append(
-            f"decals: {n_decals} projector(s) across {n_meshes} mesh(es)"
+            f"decals: {n_decals} projector(s) covering {n_targets} mesh(es)"
         )
 
     if do_import_sequences and shape.sequences:
@@ -201,11 +201,11 @@ def shape_to_blender(
             )
         if shape.decals:
             # re-seed the states here, after the sequences have created their
-            # fcurves, and wire immediately after: a driver whose target
-            # property has not been written since the fcurve appeared never
-            # gets a relation to it and evaluates stale forever
+            # fcurves: a driver whose target property has not been written since
+            # the fcurve appeared never gets a relation to it and evaluates
+            # stale forever.  The drivers themselves live on the decal branches
+            # in the target materials, wired when the projector was built.
             apply_default_states(arm_obj, shape)
-            wire_decal_drivers(arm_obj, warnings)
         _, skipped = stack_actions(arm_obj, actions, scene_fps(context))
         for action in skipped:
             warnings.append(
