@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -361,15 +362,41 @@ def _run_blender(work: Path, tests, blender: str) -> tuple[set, set]:
     return named("FAIL "), named("PASS ")
 
 
+def _pytest_python() -> str:
+    """The interpreter that actually has this project's pytest.
+
+    Not `sys.executable`: this tool is documented as `scripts/mutate.py`, whose
+    shebang is the system python, while the fast test loop lives in the
+    checkout's .venv.  Getting it wrong fails silently in the worst direction --
+    the subprocess dies on "No module named pytest", no FAILED lines are
+    parsed, and the mutation reads as uncaught when it was never tried.
+    """
+    candidate = REPO / ".venv" / "bin" / "python"
+    return str(candidate) if candidate.exists() else sys.executable
+
+
 def _run_pytest(work: Path, tests) -> tuple[set, set]:
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "--no-header", "-p", "no:cacheprovider",
+        [_pytest_python(), "-m", "pytest", "-q", "--no-header", "-p", "no:cacheprovider",
          "-m", "not corpus", *[f"-k={t}" for t in tests[:1]], "tests"],
         cwd=work,
         capture_output=True,
         text=True,
     )
     out = proc.stdout
+    # Demand positive evidence that tests ran, rather than inferring it from
+    # the absence of failures -- reporting "passed" for a run that never
+    # happened is how a broken harness certifies itself healthy, which is the
+    # one thing it must never do.  The exit code alone is not enough: a missing
+    # pytest exits 1, the same as an honest test failure.  A summary line
+    # naming passed/failed/error is the thing only a real run produces.
+    ran = re.search(r"\b\d+ (passed|failed|error)", out)
+    if proc.returncode not in (0, 1) or not ran:
+        tail = (proc.stderr or out).strip().splitlines()
+        print(f"       pytest exited {proc.returncode} without running: "
+              f"{tail[-1] if tail else 'no output'}")
+        return set(), set()
+
     failed = {t for t in tests if f"::{t}" in out and "FAILED" in out}
     # pytest names failures as path::Class::test, so match on the leaf
     for line in out.splitlines():

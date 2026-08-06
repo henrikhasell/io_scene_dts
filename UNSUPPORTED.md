@@ -604,8 +604,18 @@ that stopped biting when the code moved, two that were never testing what they
 claimed, and a redundant guard in the reflectance export path that no mutation
 could make fail because the line after it already did the same job.
 
-Run it when adding a feature; a test that survives its
-own mutation is not a test.
+It also, once, caught *itself*.  `sorted-threading` is the only mutation
+verified by pytest rather than Blender, and its runner shelled
+`sys.executable` — the system python, since this tool is documented as
+`scripts/mutate.py`, whose shebang is `/usr/bin/env python3`, while the fast
+test loop lives in `.venv`.  pytest was never importable there, so the run died
+with `No module named pytest`, no `FAILED` lines were parsed, and the mutation
+reported itself uncaught for as long as it had been run the documented way.  A
+missing pytest exits 1, indistinguishable from an honest test failure, so the
+runner now demands a summary line naming passed/failed/error before it will
+call anything passed.  Run it when adding a feature; a test that survives its
+own mutation is not a test, and a harness that certifies itself healthy is
+worse than no harness.
 
 `examples/` carries one `.blend` per feature, built from nothing by
 `examples/build_examples.py`, and `examples/verify_in_tribes2.sh` loads them
