@@ -30,6 +30,39 @@ shape from nothing, exports, and reads the feature back out of the file.  It
 never calls the importer.  **Add to it whenever you touch a feature** — a
 round-trip test is not a substitute, and passing one is not evidence of (3).
 
+## What may be imported at all
+
+**Do not preserve what the user cannot reconstruct.**  The test for whether
+something may come in is not "would it be lost otherwise" — it is:
+
+> Can it be imported in a form the user could also have *created themselves*?
+> If not, it should not be imported.
+
+This is (3) pointed at the importer.  A feature that arrives in a shape no
+fresh scene could produce is not supported, it is stored, and storing it is
+worse than dropping it: it looks supported, it cannot be edited, and it is a
+second source of truth that will eventually disagree with the first.  Drop it
+and say so in `UNSUPPORTED.md` instead.
+
+**No opaque JSON blobs and no pickling.**  Both were tried and both were
+removed.  Mesh data that Blender could not rebuild used to ride through a
+`.blend` as a base64'd `pickle.dumps` of a `dtslib.Mesh`, replayed verbatim on
+export — invisible, uneditable, and `pickle.loads` on a path fed by whatever
+file the user opens.  Everything it carried is derived on export now: vertex
+sharing by `mapping/vertex_pool.py`, cluster trees by `dtslib/sorted_build.py`,
+strip packing not at all (measured at ×1.00).  `tests/test_no_pickle.py` keeps
+it that way.  The name table, detail table, material order, IFL entries, ground
+frames, triggers and node rest transforms were JSON strings for the same
+reason; they are typed collections with UILists now (`props/`), because those a
+user *can* author.  This is why the **opaque** tier of `UNSUPPORTED.md` is
+empty, and it should stay empty.
+
+The corollary cuts the other way too: **if the exporter can compute it, do not
+import it.**  A stored copy of something that gets recomputed anyway is the
+same two-sources-of-truth bug in a smaller package — the packed `dts_flags`
+word beside the named flag props was exactly this, and so is any `dts_*`
+property whose value export overwrites before reading.
+
 ## Keep UNSUPPORTED.md current
 
 `UNSUPPORTED.md` is the inventory of what this add-on does *not* do, sorted
@@ -45,15 +78,25 @@ Update it in the same commit whenever a change:
 - **changes a cited line** enough that the `file:line` reference no longer
   points at the deciding line.
 
-Two rules for the content:
+Three rules for the content:
 
 1. **Read the code, don't recall it.**  Every claim carries a `file:line`, and
    those references are the reason the file is trustworthy.  Verify them —
    `sed -n "${line}p" "$file"` over the whole list takes seconds and catches
-   drift from unrelated edits.
+   drift from unrelated edits.  `scripts/check_citations.py` only proves a line
+   is not blank; that a line says the *right* thing is still yours to check.
 2. **Say which tier and why.**  "Not supported" is useless to a reader deciding
    whether to attempt something.  Whether it errors, silently drops data, or
    round-trips invisibly is the whole question.
+3. **A limit of the format is not an unsupported feature.**  A tier is work
+   this add-on could do and has not.  If a `.dsq` has no field for object
+   states, or `TSIntegerSet` has no bit for a 193rd node, that is the shape of
+   the problem and no amount of work here would change it — the same goes for
+   what Blender cannot represent and what a lossy texture format has already
+   discarded.  Those belong in §7, which exists so the tiers do not overstate
+   what is left to do.  The *behaviour* around such a limit can still be a
+   tier: that a `.dsq` cannot carry object states is §7, that the add-on drops
+   them without warning is §6.
 
 The Coverage section at the bottom names the test count and what is and is not
 tested; it goes stale quietly, so check it when adding tests.
