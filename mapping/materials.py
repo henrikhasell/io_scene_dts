@@ -94,12 +94,6 @@ _texture_index: dict[tuple, dict[str, Path]] = {}
 # would otherwise re-encode it into its own pair of datablocks.
 _split_images: dict[str, tuple[bpy.types.Image, bpy.types.Image]] = {}
 
-# names the split image datablock it came from, so export can tell an untouched
-# re-encode (whose source file on disk already holds both maps) from one the
-# user has painted on
-SPLIT_SOURCE_PROP = "dts_split_source"
-
-
 def reset_texture_cache() -> None:
     """Drop the sibling-textures index so a re-import picks up new files."""
     _texture_index.clear()
@@ -466,8 +460,6 @@ def split_diffuse_and_reflectance(img):
         f"{stem}.reflectance", width, height, refl_buf,
         colorspace="Non-Color", is_float=img.is_float,
     )
-    diffuse[SPLIT_SOURCE_PROP] = key
-    reflectance[SPLIT_SOURCE_PROP] = key
     _split_images[key] = (diffuse, reflectance)
     return diffuse, reflectance
 
@@ -491,22 +483,6 @@ def merged_reflectance_image(diffuse_img, reflectance_img):
         colorspace=diffuse_img.colorspace_settings.name,
         is_float=diffuse_img.is_float,
     )
-
-
-def is_untouched_split(diffuse_img, reflectance_img) -> bool:
-    """True when both halves came from one file and neither has been painted.
-
-    Re-combining them would reproduce that file byte for byte, so export has
-    nothing to write and the material can go on naming the texture it always
-    named.  ``pack()`` clears ``is_dirty`` and editing the buffer sets it, so
-    this notices an edited mask and falls through to writing a new file.
-    """
-    if diffuse_img is None or reflectance_img is None:
-        return False
-    source = diffuse_img.get(SPLIT_SOURCE_PROP)
-    if not source or reflectance_img.get(SPLIT_SOURCE_PROP) != source:
-        return False
-    return not diffuse_img.is_dirty and not reflectance_img.is_dirty
 
 
 def _image_node_feeding(bmat, socket_name: str):
@@ -943,7 +919,7 @@ def ifl_materials_from_blender(shape, bmats):
             # once per *distinct* image: a flipbook repeats its frames -- 210
             # lines over 6 textures in the corpus's largest -- and registering
             # a write per line would warn about a collision on every repeat
-            if not frame.image.filepath and frame.image.name not in seen_images:
+            if frame.image.name not in seen_images:
                 seen_images.add(frame.image.name)
                 writes.append(
                     TextureWrite(frame.image, _ifl_frame_filename(frame.image), dts_name)
@@ -1067,11 +1043,9 @@ def _resolve_reflectance_images(mats, bmats, diffuse_nodes, refl_nodes, warnings
                     f"diffuse, but the material has no diffuse texture to hold it"
                 )
                 continue
-            if is_untouched_split(diffuse.image, reflectance.image):
-                # the source file already holds both maps; writing it back
-                # would only copy it next to the .dts
-                handled.add(i)
-                continue
+            # an untouched split re-combines to the file it came from, so this
+            # is a copy rather than a change -- which is the point, since the
+            # engine needs that file beside the .dts either way
             merged = merged_reflectance_image(diffuse.image, reflectance.image)
             if merged is None:
                 warnings.append(
@@ -1112,14 +1086,13 @@ def _resolve_reflectance_images(mats, bmats, diffuse_nodes, refl_nodes, warnings
         )
         for owner in record.owners:
             mats[owner].reflectance_map = index
-        if not record.image.filepath:
-            writes.append(TextureWrite(record.image, _png_name(name), name))
+        writes.append(TextureWrite(record.image, _png_name(name), name))
 
-    # and every ordinary texture that exists only in this .blend.  A material
-    # built in Blender names a texture the engine has to find on disk, and
-    # nothing else is going to put it there.
+    # and every ordinary texture, whether it was made in Blender or loaded from
+    # somewhere else on disk.  A material names a texture the engine looks for
+    # beside the .dts, and nothing else is going to put it there.
     for i, node in enumerate(diffuse_nodes):
-        if i in handled or node is None or node.image is None or node.image.filepath:
+        if i in handled or node is None or node.image is None:
             continue
         writes.append(TextureWrite(node.image, _png_name(mats[i].name), mats[i].name))
 

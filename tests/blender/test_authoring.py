@@ -935,6 +935,38 @@ def test_export_textures_gates_images_but_not_the_ifl():
     assert shape.name(shape.ifl_materials[0].raw[0]) == "flame.ifl"
 
 
+def test_a_texture_loaded_from_disk_is_copied_beside_the_dts():
+    """Open a .png, put it on a material, export: the .png comes along.
+
+    Authorable in the sense CLAUDE.md means -- no import anywhere, just a user
+    who has a texture somewhere on disk and points a material at it.  The .dts
+    names it by bare filename and the engine looks beside the shape, so an
+    export that referenced it where it lay would name a file that is not there.
+    """
+    import tempfile
+
+    A.reset()
+    # a .png somewhere else on disk, which is all a source texture ever is
+    source_dir = Path(tempfile.mkdtemp())
+    scratch = A.generated_image("hull", ramp=True)
+    scratch.file_format = "PNG"
+    scratch.save(filepath=str(source_dir / "hull.png"))
+    loaded = bpy.data.images.load(str(source_dir / "hull.png"))
+    assert loaded.filepath, "the fixture has to be file-backed or it proves nothing"
+
+    arm = A.armature("Hull")
+    mat = A.image_material("hull", diffuse=loaded)
+    A.mesh_object("body2", arm, bone="root", material=mat)
+
+    beside = Path(tempfile.mkdtemp())
+    path = A.export_dts(str(beside / "hull.dts"))
+    assert (beside / "hull.png").is_file(), sorted(p.name for p in beside.iterdir())
+    assert A.read(path).materials[0].name == "hull"
+    # and the datablock still points where it came from: export copies, it does
+    # not re-home the scene's images
+    assert Path(bpy.path.abspath(loaded.filepath)).parent == source_dir
+
+
 def test_an_ifl_material_without_frames_still_gets_its_entry():
     """A shape whose .ifl could not be found still flips in the engine; losing
     its table entry because the sidecar was missing would be the worse answer."""

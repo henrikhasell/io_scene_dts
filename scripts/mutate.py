@@ -180,11 +180,34 @@ MUTATIONS = {
         "            pass",
         ["test_a_reflectance_material_is_env_mapped"],
     ),
-    "reflectance-source-texture": (
+    # every texture is copied now, not just the ones with no file behind them.
+    # This restores the old gate, which is the exact bug the change was made to
+    # fix: a shape exported to a mod tree with none of its art.
+    "texture-copies-file-backed": (
+        "mapping/materials.py",
+        "        if i in handled or node is None or node.image is None:",
+        "        if i in handled or node is None or node.image is None or node.image.filepath:",
+        ["test_a_texture_loaded_from_disk_is_copied_beside_the_dts"],
+    ),
+    # the ordinary diffuse loop above is not the only way out: an env-mapped
+    # material -- which is most of a real shape -- writes its texture as the
+    # recombined pair instead, and used to skip that when the split was
+    # untouched.  Every shipped material this add-on is aimed at goes this way.
+    "texture-copies-recombined": (
+        "mapping/materials.py",
+        "            writes.append(TextureWrite(merged, _png_name(mat.name), mat.name))",
+        "            pass",
+        [
+            "test_export_copies_an_imported_texture_beside_the_dts",
+            "test_a_reflectance_round_trips_byte_identically",
+        ],
+    ),
+    # ...and the checkbox is the only thing that stops it, so it has to bite
+    "texture-overwrite": (
         "mapping/texture_io.py",
-        "        if resolved in sources:",
-        "        if False:",
-        ["test_export_does_not_overwrite_a_source_texture"],
+        "                    write.image.save(filepath=str(target))",
+        "                    pass",
+        ["test_export_overwrites_a_source_texture"],
     ),
     "sorted-promote-translucent": (
         "mapping/blender_to_shape.py",

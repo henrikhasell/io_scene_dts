@@ -105,8 +105,10 @@ Disk.  For development, symlink this checkout into
   Reflectance** checkbox says which packing to write back.  On, the mask goes
   into the diffuse's alpha; off, it becomes its own texture and its own entry
   in the shape's material list.  Export writes a `.png` beside the `.dts` for
-  any texture that exists only in the .blend, and never for one loaded from
-  disk — so nothing in a game's `textures/` tree is touched.
+  every texture the shape names — made in Blender or loaded from disk — so an
+  exported shape carries its art with it.  Existing files are overwritten, so
+  exporting *into* a game's `textures/` tree rewrites the art there; untick
+  **Export Textures** to write the `.dts` alone.
 - **IFL materials** are animated flipbooks.  The file names a `.ifl` sidecar
   listing `<texture> <hold>` per line; that list imports as a frame collection
   on the material, previews as a keyframed switch between its images, and is

@@ -202,13 +202,13 @@ way to check your work short of re-reading the exported file.
   Neither is used anywhere in the 852-file corpus — 0 materials of 3185 set
   either slot, and `detail_scale` is 1.0 in all of them.  A map referencing a
   material that was not exported is dropped with a warning.
-  `mapping/materials.py:1149`
+  `mapping/materials.py:1121`
   Two further ways a map slot can be lost or silently retargeted are in §4.
   The reflectance map is no longer on this list; see below.
 - **`reflection_amount`**, the scalar the engine multiplies the whole
   reflection by.  Round-trips as a custom prop and previews as nothing at all —
   it is 1.0 in 265 of the 270 env-mapped corpus materials, 0.5 in 3 and 0.1 in
-  2. `mapping/materials.py:1135`
+  2. `mapping/materials.py:1122`
 - **Material flags.**  Eleven of the fourteen bits have a checkbox, in Material
   Properties → DTS Material.  Four of them —`MAT_MIP_MAP_ZERO_BORDER` (8),
   `MAT_IFL_FRAME` (28), `MAT_DETAIL_MAP_ONLY` (29) and `MAT_BUMP_MAP_ONLY`
@@ -227,7 +227,7 @@ way to check your work short of re-reading the exported file.
   the shader is the source of truth for *which image is the reflectance* — the
   same reason the blend bits live in the graph rather than in a property — and
   so a bright mask looks reflective in the viewport.  It is a handle, not a
-  render. `mapping/materials.py:547`
+  render. `mapping/materials.py:523`
 
 
 All three object-state channels — `vis`, `frame` and `matframe` — plus decal
@@ -257,7 +257,7 @@ still lose something: see §4.
 carried by the shader the importer builds — `surface_render_method` for
 translucency, `Transparent BSDF + Emission -> Add Shader` for additive — and
 export reads the flags back out of it, so editing the material in the node
-editor changes the file. `mapping/materials.py:380`
+editor changes the file. `mapping/materials.py:374`
 
 One caveat specific to decals, which does not occur in the Tribes 2 corpus:
 
@@ -403,21 +403,27 @@ is invisible until you export.
   exports as `bump=NO_MAP, detail=NO_MAP`, with no warning.  Adding
   `dts_reflectance_map` as well makes all three take effect; imported materials
   always carry all three, so they are unaffected.
-  `mapping/materials.py:1163`  Reflectance is the exception now that the shader
+  `mapping/materials.py:1145`  Reflectance is the exception now that the shader
   owns it: an image feeding `Metallic` sets that slot whether or not any of the
   props are there.
-- **A reflectance texture that already lives on disk is referenced, not
-  copied.**  Export writes a `.png` beside the `.dts` only for an image with no
-  file behind it — a re-encoded import that has since been painted on, or
-  something built in Blender.  The alternative is writing into a game's
-  `textures/` tree over the user's own art, which is worse.  It does mean that
-  moving an exported `.dts` to another machine without its texture tree leaves
-  both maps unresolvable, exactly as it did before this feature.
-  `mapping/texture_io.py:34`
-- **The second of two textures that would write the same file**, and any write
-  that would land on a texture this scene loaded.  Both are skipped with a
-  warning rather than overwriting.  Material names are not unique in real
-  shapes — 104 of 630 corpus files reuse one. `mapping/texture_io.py:54`
+- **Whatever texture was already sitting where an export lands.**  Export
+  writes a `.png` for every texture the shape names — made in Blender or loaded
+  from disk, painted on or untouched — and overwrites without warning.
+  Exporting into a game's `textures/` tree therefore rewrites the art there,
+  re-encoded as PNG through Blender, and for a `.dds` or a `.bm8` source that
+  re-encode is not reversible (§7).  The add-on cannot tell a game tree from a
+  mod's own, so the only protection is the Export Textures checkbox, which
+  suppresses every image (but not the `.ifl`, which is shape data rather than
+  art).  This is a deliberate trade against the previous rule, which copied
+  only images with no file behind them and so produced shapes that rendered
+  nowhere but the machine that made them: the engine looks for a texture beside
+  the `.dts` by bare filename, and a stale one left in place is a wrong render
+  that looks like a right one.  `mapping/texture_io.py:26`
+- **The second of two textures that would write the same file.**  Skipped with
+  a warning rather than overwritten — within one export neither of the two is
+  the stale one, so there is no basis for picking.  Material names are not
+  unique in real shapes: 104 of 630 corpus files reuse one.
+  `mapping/texture_io.py:52`
 - **`firstFrame` and `firstFrameOffTime` on an IFL entry.**  Written as zeros
   rather than round-tripped.  They are engine load-time scratch, filled from
   the `.ifl` after it is read, and 53 of the corpus's 64 entries carry
@@ -426,26 +432,26 @@ is invisible until you export.
   already writes zeros and 11 shipped entries already are zero, so this is a
   shape the engine demonstrably accepts; it is still a byte change on
   re-export.  `numFrames` is the one of the three that is real, and it becomes
-  the length of the frame list.  `mapping/materials.py:915`
+  the length of the frame list.  `mapping/materials.py:901`
 - **An IFL material whose `.ifl` cannot be found imports with no frames.**  The
   material keeps its checkbox and still gets its table entry, so the shape is
   not silently un-animated, but there is nothing to preview and export writes
   no `.ifl`.  All 35 the corpus names do resolve — but only from a tree where
   `shapes/` and `textures/` are siblings, which is not how every game lays them
-  out. `mapping/materials.py:671`
+  out. `mapping/materials.py:647`
 - **The identity of a map target whose name is not unique.**  Map slots are
   stored as material *names* so they survive reordering, and resolved back
   through `index_by_name = {m.name.lower(): i ...}`, where a later entry
   overwrites an earlier one.  Material names are not unique in real shapes —
   the importer says so itself, and keys material identity on
-  `dts_material_index` for that reason (`mapping/materials.py:845`) — so a slot
+  `dts_material_index` for that reason (`mapping/materials.py:821`) — so a slot
   pointing at the *first* of two materials named `glass` comes back pointing at
   the last, silently.  104 of the 630 corpus shapes have duplicate material
   names, but none of them has a map slot targeting a duplicated name, so no
-  real file is currently mistranslated. `mapping/materials.py:1139,1149`
+  real file is currently mistranslated. `mapping/materials.py:1126,1135`
   Reflectance slots resolved from the shader do not join this hazard: they are
   matched on the image *datablock*, whose name Blender does keep unique.
-  `mapping/materials.py:1030`
+  `mapping/materials.py:1067`
 
 ---
 
@@ -472,18 +478,18 @@ exist, so adding a bone channel marks its node instead of being ignored.
   rather than three checkboxes.  They are not stored on the material at all:
   a prop beside the graph would be a second source for one value, and older
   scenes have theirs deleted on load (`props/migrate.py:301`).
-  `mapping/materials.py:957`  `MAT_NEVER_ENV_MAP` is a fourth exception, but in
+  `mapping/materials.py:964`  `MAT_NEVER_ENV_MAP` is a fourth exception, but in
   one direction only: a material with an image feeding `Metallic` exports with
   env-mapping *on* however the box is set, because a reflectance map the engine
   is told never to read is not a feature.  With no such image the checkbox
-  still wins. `mapping/materials.py:1179`
+  still wins. `mapping/materials.py:1166`
 - **The blend state of a material that fades.**  The visibility and decal
   wiring force `surface_render_method = BLENDED` so a fade renders at all,
   which on an opaque material would otherwise read back as `MAT_TRANSLUCENT`.
   The state from before the fade is recorded once in `dts_blend_before_fade`,
   and *that* is what export reads — so on a faded material, switching the
   render method by hand does not reach the file.  Delete the property to make
-  the current setting count.  `mapping/materials.py:357`,
+  the current setting count.  `mapping/materials.py:351`,
   `mapping/visibility.py:185`.  Decals no longer force a blend state at all:
   the decal branch mixes two opaque shaders, so it never had to.
 
@@ -553,7 +559,7 @@ the same answer either way, and because someone will otherwise try to fix them.
   bit is what this add-on reads it by.  270 of the 3185 corpus materials are
   env-mapped and 6 of those are also translucent; on those 6 transparency wins,
   the texture is not taken apart, and a warning says so.
-  `mapping/materials.py:623`
+  `mapping/materials.py:599`
 
 ### Blender
 
@@ -568,7 +574,7 @@ the same answer either way, and because someone will otherwise try to fix them.
   back.  It round-trips exactly; it does not render the way the engine draws
   it, and no viewport setting would make it.  No shape in the 630-file corpus
   is subtractive, so the encoding has never been checked against real art.
-  `mapping/materials.py:299`
+  `mapping/materials.py:293`
 - **`Mesh.uv_layers` caps at 8**, silently — `uv_layers.new()` returns without
   adding — while real shapes reach 62 material frames.  That cap is why frames
   1..n-1 are `FLOAT2` point attributes rather than UV layers, which is in turn
@@ -581,7 +587,7 @@ the same answer either way, and because someone will otherwise try to fix them.
   texture lookup is extension-agnostic.  What is not exact is the data:
   splitting a compressed texture into diffuse and reflectance and recombining
   it cannot reproduce bits the compressor already discarded.
-  `mapping/materials.py:435`
+  `mapping/materials.py:429`
 
 ---
 
@@ -589,11 +595,11 @@ the same answer either way, and because someone will otherwise try to fix them.
 
 Two Blender suites, and the difference between them is the point.
 
-`tests/blender/test_operators.py` (91 tests) imports real fixtures, edits them
+`tests/blender/test_operators.py` (93 tests) imports real fixtures, edits them
 and exports.  That covers reading files the add-on did not write, and it is the
 only way to check a feature no fixture-free scene can produce.
 
-`tests/blender/test_authoring.py` (69 tests) never imports anything.  Every test
+`tests/blender/test_authoring.py` (71 tests) never imports anything.  Every test
 builds a shape from nothing — armature, meshes, materials, actions — exports it,
 and reads the feature back out of the file.  This is the suite that answers
 "can a user *make* one of these", which a round-trip cannot: the exporter may be
@@ -612,8 +618,8 @@ animation, material frames, sequences, triggers, ground frames, object-state
 tracks, node scale, DSQ export, IFL flipbooks in both directions including
 the .ifl sidecar, decals and both output versions.
 
-`scripts/mutate.py` (49 mutations) disables one capability at a time and checks
-the matching test notices.  It has caught its own drift four times — a mutation
+`scripts/mutate.py` (52 mutations) disables one capability at a time and checks
+the matching test notices.  It has caught its own drift five times — a mutation
 that stopped biting when the code moved, two that were never testing what they
 claimed, and a redundant guard in the reflectance export path that no mutation
 could make fail because the line after it already did the same job.

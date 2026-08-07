@@ -45,10 +45,11 @@ class ExportDTS(bpy.types.Operator, ExportHelper):
     )
     export_textures: BoolProperty(
         name="Export Textures",
-        description="Write a .png beside the .dts for every texture that exists only "
-        "in this .blend.  Textures loaded from disk are referenced by name and never "
-        "copied, so nothing in a game's textures/ tree is touched.  A material's .ifl "
-        "is written either way -- it is animation data, not art",
+        description="Write a .png beside the .dts for every texture the shape names, "
+        "whether it was made in Blender or loaded from disk.  Existing files are "
+        "overwritten, so exporting into a game's textures/ tree rewrites the art "
+        "there.  A material's .ifl is written either way -- it is animation data, "
+        "not art",
         default=True,
     )
 
@@ -80,7 +81,8 @@ class ExportDTS(bpy.types.Operator, ExportHelper):
             return {"CANCELLED"}
 
         # after the shape, and only after: a texture beside a .dts that failed
-        # to write would be litter
+        # to write would be litter, and overwriting art for a shape that never
+        # got written would be worse than litter
         # unconditional: the checkbox gates images, not the generated .ifl
         # sidecars, which are shape data the .dts names by filename
         written = write_textures(

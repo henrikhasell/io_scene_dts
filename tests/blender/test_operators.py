@@ -424,8 +424,9 @@ def test_a_reflectance_round_trips_byte_identically():
     """Taking the texture apart and putting it back must change nothing.
 
     Combine defaults on, which is the packing the file already used, so the
-    material list has to come back field for field -- and no texture should be
-    written, because the file on disk already holds both maps.
+    material list has to come back field for field, and the recombined texture
+    is written beside the new .dts -- the shape names it, and the engine has
+    nowhere else to look for it.
     """
     dts, _ = _env_mapped_fixture()
     _reset()
@@ -439,7 +440,9 @@ def test_a_reflectance_round_trips_byte_identically():
     assert len(dst.materials) == len(src.materials) == 1
     for field in ("name", "flags", "reflectance_map", "bump_map", "detail_map"):
         assert getattr(dst.materials[0], field) == getattr(src.materials[0], field), field
-    assert list(out.parent.glob("*.png")) == [], "an untouched re-encode needs no file"
+    assert [p.name for p in out.parent.glob("*.png")] == ["shrub.png"], (
+        "the material names shrub, so shrub.png has to be beside the shape"
+    )
 
 
 def test_unticking_combine_splits_the_material_list():
@@ -538,23 +541,70 @@ def test_a_cross_referenced_reflectance_imports_as_the_other_materials_texture()
     assert len(dst.materials) == 2, "the entry already exists; do not invent another"
 
 
-def test_export_does_not_overwrite_a_source_texture():
-    """Export writes textures that exist only in the .blend, and only those.
+def test_export_copies_an_imported_texture_beside_the_dts():
+    """A shape exported somewhere new takes its textures with it.
 
-    The alternative is writing over the user's art in a game's textures/ tree,
-    which is why the rule is 'has no file behind it' rather than a comparison
-    of paths.
+    The imported material's image is file-backed and was never painted on, so
+    every rule this add-on used to have said 'reference it, do not copy it'.
+    That produced a .dts that only rendered on the machine it was made on: the
+    engine looks for the texture beside the shape, by bare filename, and there
+    was nothing there.
     """
     dts, texture = _env_mapped_fixture()
-    before = texture.read_bytes()
     _reset()
     assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
+
+    # somewhere else entirely, the way an export into a mod tree is
+    destination = Path(tempfile.mkdtemp())
+    out = destination / "out.dts"
+    assert bpy.ops.io_scene_dts.export_dts(filepath=str(out), version="24") == {"FINISHED"}
+    assert (destination / "shrub.png").is_file(), sorted(
+        p.name for p in destination.iterdir()
+    )
+
+
+def test_export_overwrites_a_source_texture():
+    """...and it overwrites, including back into the tree it was read from.
+
+    This is a deliberate trade rather than an oversight, and the expensive half
+    of it: exporting into a game's textures/ tree rewrites the art there, since
+    the add-on cannot tell that directory from a mod's own.  Leaving a stale
+    texture beside a new .dts is the failure this is chosen over -- a wrong
+    render that looks like a right one.
+    """
+    dts, texture = _env_mapped_fixture()
+    _reset()
+    assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
+    # paint on the mask, so the bytes that come back are provably ours and not
+    # a byte-identical re-encode of the file already there
     mat = _material_of("shrub")
-    mat.dts_material.combine_reflectance = False
+    reflectance = _node_feeding(mat, "Metallic")
+    reflectance.image.pixels = [0.5] * len(reflectance.image.pixels)
+    reflectance.image.update()
+
+    before = texture.read_bytes()
     # export back into the directory the source texture lives in
     out = texture.parent / "out.dts"
     assert bpy.ops.io_scene_dts.export_dts(filepath=str(out), version="24") == {"FINISHED"}
-    assert texture.read_bytes() == before, "the source texture was overwritten"
+    assert texture.read_bytes() != before, "the source texture was left alone"
+
+
+def test_export_textures_unticked_leaves_a_source_texture_alone():
+    """The checkbox is the whole of the protection, so it has to be real."""
+    dts, texture = _env_mapped_fixture()
+    _reset()
+    assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
+    mat = _material_of("shrub")
+    reflectance = _node_feeding(mat, "Metallic")
+    reflectance.image.pixels = [0.5] * len(reflectance.image.pixels)
+    reflectance.image.update()
+
+    before = texture.read_bytes()
+    out = texture.parent / "out.dts"
+    assert bpy.ops.io_scene_dts.export_dts(
+        filepath=str(out), version="24", export_textures=False
+    ) == {"FINISHED"}
+    assert texture.read_bytes() == before, "unticked, and it wrote anyway"
 
 
 def test_texture_pairing():
@@ -2086,8 +2136,10 @@ def test_an_ifl_round_trips_through_its_material():
     assert len(lines) == 210 and lines[:3] == [
         "jetflare00.png 1", "jetflare03.png 1", "jetflare01.png 1"
     ], lines[:3]
-    # the frame textures came off disk, so they are referenced, not copied
-    assert not list(out.parent.glob("*.png"))
+    # the frame textures came off disk, and go with the .ifl that lists them:
+    # a flipbook whose frames are somewhere else is a flipbook of nothing
+    beside = {p.name for p in out.parent.glob("*.png")}
+    assert {line.split()[0] for line in lines} <= beside, sorted(beside)
 
 
 def test_ifl_preserved():
