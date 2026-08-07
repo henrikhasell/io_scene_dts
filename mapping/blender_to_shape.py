@@ -41,7 +41,7 @@ from ..dtslib.types import (
 from ..props import migrate
 from . import matframes
 from .decals import blender_lookup_of, build_decals
-from .materials import is_translucent, materials_from_blender
+from .materials import ifl_materials_from_blender, is_translucent, materials_from_blender
 from .naming import (
     detail_name_for_size,
     dts_object_and_size,
@@ -317,19 +317,15 @@ def blender_to_shape(
     shape.materials, texture_writes, mat_warnings = materials_from_blender(_used_materials)
     warnings += mat_warnings
 
-    # -- IFL materials (preserved shape-level) ------------------------
-    for entry in arm_obj.dts_shape.ifl_materials:
-        shape.ifl_materials.append(
-            IflMaterial(
-                (
-                    shape.add_name(entry.name),
-                    entry.material_slot,
-                    entry.first_frame,
-                    entry.first_frame_off_time,
-                    entry.num_frames,
-                )
-            )
-        )
+    # -- IFL materials (derived from the materials that flip) ---------
+    # In material-list order, because the sequences' ifl_matters bits are
+    # positional: bit i means "the i'th entry of this table".
+    ifl_materials, ifl_writes, ifl_warnings = ifl_materials_from_blender(
+        shape, _used_materials
+    )
+    shape.ifl_materials = ifl_materials
+    texture_writes += ifl_writes
+    warnings += ifl_warnings
 
 
     # engine scratch links, derivable from the hierarchy we just built

@@ -35,6 +35,7 @@ from .texture_split import (
     split_rgba,
 )
 from ..dtslib.types import (
+    IflMaterial,
     MAT_ADDITIVE,
     MAT_BUMP_MAP_ONLY,
     MAT_DETAIL_MAP_ONLY,
@@ -54,11 +55,13 @@ from ..dtslib.types import (
 )
 
 _TEXTURE_EXTENSIONS = TEXTURE_EXTENSIONS
+IFL_EXTENSIONS = (".ifl",)
 
 # Every bit of the material flags word the props own, each with its own
-# checkbox.  The three blend bits are *not* here: they are read off the node
-# graph by blend_flags_from_material, and a stored copy beside it would be a
-# second source for one value.
+# checkbox.  Four bits are *not* here.  The three blend bits are read off the
+# node graph by blend_flags_from_material, and MAT_IFL_MATERIAL is read off
+# `dts_material.is_ifl`; a stored copy beside either would be a second source
+# for one value.
 #
 # There used to be a packed `dts_flags` beside these holding whatever had no
 # named property -- four bits nobody had named, plus a copy of the ten that
@@ -74,7 +77,6 @@ _FLAG_PROPS = {
     "dts_never_env_map": MAT_NEVER_ENV_MAP,
     "dts_no_mip_map": MAT_NO_MIP_MAP,
     "dts_mip_map_zero_border": MAT_MIP_MAP_ZERO_BORDER,
-    "dts_ifl_material": MAT_IFL_MATERIAL,
     "dts_ifl_frame": MAT_IFL_FRAME,
     "dts_detail_map_only": MAT_DETAIL_MAP_ONLY,
     "dts_bump_map_only": MAT_BUMP_MAP_ONLY,
@@ -85,7 +87,7 @@ _MAP_PROPS = ("dts_reflectance_map", "dts_bump_map", "dts_detail_map")
 
 
 # resolved textures/ dir -> {lowercase stem: path}, rebuilt per import
-_texture_index: dict[Path, dict[str, Path]] = {}
+_texture_index: dict[tuple, dict[str, Path]] = {}
 
 # source texture path -> (diffuse image, reflectance image).  Real shapes reuse
 # one texture across many materials -- 23 in the worst corpus case -- and each
@@ -150,14 +152,19 @@ def _prefixed_dir(tex_dir: Path, prefix: str) -> Path | None:
     return resolved
 
 
-def _indexed(root: Path) -> dict[str, Path]:
+def _indexed(root: Path, extensions=_TEXTURE_EXTENSIONS) -> dict[str, Path]:
     """Case-insensitive stem -> path over a texture tree, cached.
 
     Textures sit in subdirectories (``textures/skins/foo.png``), so the index
     is keyed on the bare stem and built recursively; it is the fallback for
     when a material's own path prefix does not locate the file.
+
+    The extension set is a parameter because ``.ifl`` sidecars live in the same
+    trees and are found the same way -- all 35 the corpus names resolve under a
+    ``textures/skins/`` directory, exactly where the material's path prefix
+    says to look.
     """
-    key = root.resolve()
+    key = (root.resolve(), extensions)
     cached = _texture_index.get(key)
     if cached is not None:
         return cached
@@ -165,13 +172,13 @@ def _indexed(root: Path) -> dict[str, Path]:
     # sort so a stem present more than once (case-variant duplicates exist in
     # real game data) always resolves to the same file
     for p in sorted(root.rglob("*"), key=lambda q: (len(q.parts), str(q).lower())):
-        if p.suffix.lower() in _TEXTURE_EXTENSIONS and p.is_file():
+        if p.suffix.lower() in extensions and p.is_file():
             index.setdefault(p.stem.lower(), p)
     _texture_index[key] = index
     return index
 
 
-def _match_keys(name: str) -> list[str]:
+def _match_keys(name: str, extensions=_TEXTURE_EXTENSIONS) -> list[str]:
     """Index keys to try for a material name, best first.
 
     Material names routinely contain dots that are *not* extensions
@@ -181,7 +188,7 @@ def _match_keys(name: str) -> list[str]:
     extension.
     """
     keys = [name.lower()]
-    if Path(name).suffix.lower() in _TEXTURE_EXTENSIONS:
+    if Path(name).suffix.lower() in extensions:
         keys.append(Path(name).stem.lower())
     return keys
 
@@ -200,24 +207,51 @@ def find_texture(name: str, search_dir: Path | None) -> Path | None:
     The sibling hop only happens when the shape lives in a directory named
     ``shapes``.
     """
+    return _find_beside(name, search_dir, _TEXTURE_EXTENSIONS)
+
+
+def find_ifl(name: str, search_dir: Path | None) -> Path | None:
+    r"""Find the ``.ifl`` an IFL material names, by the same rules.
+
+    Same search as :func:`find_texture` and for the same reason: the sidecars
+    sit in the very trees the textures do.  All 35 the corpus references
+    resolve -- usually at ``textures/skins/<name>.ifl``, which the material's
+    own ``skins\`` prefix points straight at, and sometimes flat beside the
+    ``.dts``, which the local-directory-first rule catches.
+    """
+    return _find_beside(name, search_dir, IFL_EXTENSIONS)
+
+
+def _find_beside(name: str, search_dir: Path | None, extensions) -> Path | None:
     if search_dir is None or not search_dir.is_dir():
         return None
     prefix, bare = _split_material_name(name)
-    keys = _match_keys(bare)
+    keys = _match_keys(bare, extensions)
     local = {
         p.stem.lower(): p
         for p in sorted(search_dir.iterdir(), key=lambda q: str(q).lower())
-        if p.suffix.lower() in _TEXTURE_EXTENSIONS
+        if p.suffix.lower() in extensions
     }
     for key in keys:
         if key in local:
             return local[key]
+
+    roots = []
+    # the name's own prefix, relative to the shape's directory.  Tribes 2 keeps
+    # shapes/ and textures/ apart, but an exported shape often ships with its
+    # own skins/ beside it, and `skins\foo` points straight at it
+    beside = _prefixed_dir(search_dir, prefix)
+    if beside is not None:
+        roots.append(beside)
     tex_dir = sibling_texture_dir(search_dir)
-    if tex_dir is None:
-        return None
-    sub = _prefixed_dir(tex_dir, prefix)
-    for root in ([sub] if sub is not None else []) + [tex_dir]:
-        index = _indexed(root)
+    if tex_dir is not None:
+        sub = _prefixed_dir(tex_dir, prefix)
+        if sub is not None:
+            roots.append(sub)
+        roots.append(tex_dir)
+
+    for root in roots:
+        index = _indexed(root, extensions)
         for key in keys:
             if key in index:
                 return index[key]
@@ -626,6 +660,177 @@ def _wire_textures(bmat, bsdf, mat, index, all_mats, search_dir, warnings):
     return diffuse
 
 
+# ----------------------------------------------------------------------
+# IFL: the material's own flipbook
+# ----------------------------------------------------------------------
+
+IFL_VALUE_NODE = "dts_ifl_frame"
+IFL_NODE_LABEL = "dts_ifl"
+
+
+def load_ifl_frames(bmat, dts_name: str, search_dir: Path | None, warnings) -> int:
+    """Read the material's ``.ifl`` into its frame list.  Returns frame count.
+
+    The frames are the authored data -- the file's own IFL table says only
+    *which* material flips -- so they come in as a typed collection the user
+    can edit, and export writes them back out as the ``.ifl``.
+
+    A sidecar that cannot be found is a warning, not a failure: the material is
+    still an IFL material and still needs its table entry, it just has no
+    frames to show.  All 35 the corpus names do resolve.
+    """
+    from .ifl import ifl_name_for, parse_ifl
+
+    props = getattr(bmat, "dts_material", None)
+    if props is None:
+        return 0
+    props.is_ifl = True
+    props.ifl_frames.clear()
+
+    path = find_ifl(ifl_name_for(dts_name), search_dir)
+    if path is None:
+        warnings.append(
+            f"material {dts_name!r} is an IFL material but {ifl_name_for(dts_name)!r} "
+            f"was not found; its frames are missing and export will write none"
+        )
+        return 0
+    try:
+        text = path.read_text(errors="replace")
+    except OSError as e:
+        warnings.append(f"material {dts_name!r}: could not read {path}: {e}")
+        return 0
+
+    missing = 0
+    for name, duration in parse_ifl(text):
+        frame = props.ifl_frames.add()
+        frame.duration = duration
+        # beside the .ifl first: a flipbook's frames usually ship with the list
+        # that names them, which is not always where the shape's own texture is
+        tex = find_texture(name, path.parent) or find_texture(name, search_dir)
+        if tex is None:
+            missing += 1
+            continue
+        frame.image = bpy.data.images.load(str(tex), check_existing=True)
+    if missing:
+        warnings.append(
+            f"material {dts_name!r}: {missing} of {len(props.ifl_frames)} IFL frame "
+            f"texture(s) were not found beside the shape"
+        )
+    return len(props.ifl_frames)
+
+
+def _clear_ifl_preview(nt) -> None:
+    """Drop a previous preview, so a re-import does not stack graphs."""
+    for node in [n for n in nt.nodes if n.label == IFL_NODE_LABEL]:
+        nt.nodes.remove(node)
+
+
+def build_ifl_preview(bmat) -> int:
+    """Show the flipbook: the frame list as a keyframed switch of images.
+
+    Derived, and regenerated rather than stored -- the durations are what the
+    user edits and this is only their running total, the same relationship the
+    decal coverage attribute has to its projector.
+
+    Keyframes rather than a driver.  A driver expression cannot look a schedule
+    up, and Blender only evaluates *bare* comparisons natively, falling back to
+    full Python -- which silently yields 0.0 without auto-run -- for anything
+    richer (``mapping/decals.py``).  Blender's own image sequences cannot
+    express this either: the order is not monotonic and the holds vary.
+
+    One Image Texture node per *distinct* image, not per frame: the corpus's
+    worst file is 210 frames over 6 textures.
+    """
+    from .ifl import frame_schedule
+
+    props = getattr(bmat, "dts_material", None)
+    nt = getattr(bmat, "node_tree", None)
+    if props is None or nt is None:
+        return 0
+    _clear_ifl_preview(nt)
+    frames = [f for f in props.ifl_frames if f.image is not None]
+    # where the flipbook's colour goes.  An additive material has no Principled
+    # node -- _build_add_shader removes it -- and its colour is the emission,
+    # which is exactly what an IFL flare is: 46 of the 64 corpus IFL materials
+    # are additive, so this is the common case rather than the exception.
+    bsdf = next((n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"), None)
+    emission = emission_of_add_shader(nt)
+    if emission is not None:
+        target = emission.inputs["Color"]
+    elif bsdf is not None:
+        target = bsdf.inputs["Base Color"]
+        emission = bsdf  # only for laying the nodes out relative to something
+    else:
+        return 0
+    if not frames:
+        return 0
+    bsdf = emission
+
+    slots: list = []
+    slot_of: dict[str, int] = {}
+    for frame in frames:
+        if frame.image.name not in slot_of:
+            slot_of[frame.image.name] = len(slots)
+            slots.append(frame.image)
+
+    value = nt.nodes.new("ShaderNodeValue")
+    value.name = value.label = IFL_VALUE_NODE
+    value.location = (bsdf.location.x - 1200, bsdf.location.y + 400)
+
+    def _texture(image, row):
+        node = nt.nodes.new("ShaderNodeTexImage")
+        node.image = image
+        node.label = IFL_NODE_LABEL
+        node.location = (bsdf.location.x - 900, bsdf.location.y + 400 - row * 300)
+        return node
+
+    accumulated = _texture(slots[0], 0).outputs["Color"]
+    for slot, image in enumerate(slots[1:], start=1):
+        compare = nt.nodes.new("ShaderNodeMath")
+        compare.operation = "COMPARE"
+        compare.label = IFL_NODE_LABEL
+        compare.location = (bsdf.location.x - 620, bsdf.location.y + 400 - slot * 300)
+        nt.links.new(value.outputs[0], compare.inputs[0])
+        compare.inputs[1].default_value = float(slot)
+        # the index is an integer, so half a unit is the whole window
+        compare.inputs[2].default_value = 0.5
+
+        mix = nt.nodes.new("ShaderNodeMix")
+        mix.data_type = "RGBA"
+        mix.label = IFL_NODE_LABEL
+        mix.location = (bsdf.location.x - 400, bsdf.location.y + 400 - slot * 300)
+        sockets = [i for i in mix.inputs if i.enabled]
+        nt.links.new(compare.outputs[0], sockets[0])
+        nt.links.new(accumulated, sockets[1])
+        nt.links.new(_texture(image, slot).outputs["Color"], sockets[2])
+        accumulated = next(o for o in mix.outputs if o.enabled)
+
+    nt.links.new(accumulated, target)
+
+    value.label = IFL_VALUE_NODE  # not IFL_NODE_LABEL: the keyframes live here
+    for tick, index in frame_schedule([(f.image.name, f.duration) for f in frames]):
+        value.outputs[0].default_value = float(slot_of[frames[index].image.name])
+        value.outputs[0].keyframe_insert("default_value", frame=tick + 1)
+    _make_constant(nt)
+    return len(frames)
+
+
+def _make_constant(nt) -> None:
+    """A frame index does not interpolate; a frame between two frames is not
+    a frame."""
+    from .sequences import _iter_fcurves
+
+    action = getattr(getattr(nt, "animation_data", None), "action", None)
+    if action is None:
+        return
+    for fcurve in _iter_fcurves(action):
+        if IFL_VALUE_NODE not in fcurve.data_path:
+            continue
+        for point in fcurve.keyframe_points:
+            point.interpolation = "CONSTANT"
+        fcurve.update()
+
+
 def material_to_blender(
     mat: Material,
     index: int,
@@ -660,7 +865,98 @@ def material_to_blender(
         _build_add_shader(bmat, tex, subtractive=bool(mat.flags & MAT_SUBTRACTIVE))
     if mat.flags & (MAT_TRANSLUCENT | MAT_ADDITIVE | MAT_SUBTRACTIVE):
         _set_blended(bmat)
+
+    # an IFL material does not name a texture, it names a flipbook.  The
+    # shape's table records only that this material flips; the frames are in
+    # the .ifl beside it, and without them there is nothing to preview and
+    # nothing a user could have authored.
+    if mat.flags & MAT_IFL_MATERIAL:
+        loaded = load_ifl_frames(
+            bmat, mat.name, search_dir, warnings if warnings is not None else []
+        )
+        if loaded:
+            build_ifl_preview(bmat)
     return bmat
+
+
+def ifl_materials_from_blender(shape, bmats):
+    """Derive the shape's IFL table from the materials that flip.
+
+    The file's entry is (name, material slot, three ints).  Both real fields
+    are implied by the material -- an entry exists *because* a material flips,
+    and its name is that material's name plus ``.ifl``, which holds byte for
+    byte across all 64 corpus entries -- so nothing about the table is stored
+    beside the material that already says it.
+
+    The last three ints are written as zero.  They are engine load-time scratch
+    filled from the ``.ifl`` itself: 53 of the 64 corpus entries carry
+    uninitialised memory there (``0xCDCDCDCD``, float bit patterns, a
+    ``numFrames`` of -2147483648 for a 120-line file), the pre-v18 upgrade path
+    already writes zeros, and 11 shipped entries are already zero.  ``numFrames``
+    is the one that is real, and it is ``len(frames)``.
+
+    Built in material-list order, because the sequences' ``ifl_matters`` bits
+    are positional.
+
+    Returns (entries, texture writes, warnings).
+    """
+    from .ifl import format_ifl, ifl_name_for
+
+    entries: list[Material] = []
+    writes: list[TextureWrite] = []
+    warnings: list[str] = []
+    for slot, bmat in enumerate(bmats):
+        props = getattr(bmat, "dts_material", None)
+        if props is None or not props.is_ifl:
+            continue
+        dts_name = str(bmat.get("dts_name") or bmat.name)
+        ifl_name = ifl_name_for(dts_name)
+        frames = list(props.ifl_frames)
+        entries.append(
+            IflMaterial((shape.add_name(ifl_name), slot, 0, 0, len(frames)))
+        )
+        if not frames:
+            warnings.append(
+                f"material {dts_name!r} is an IFL material with no frames; the "
+                f"shape names {ifl_name!r} and export writes no such file"
+            )
+            continue
+
+        lines = []
+        seen_images: set[str] = set()
+        for frame in frames:
+            if frame.image is None:
+                warnings.append(
+                    f"material {dts_name!r}: an IFL frame has no image and was skipped"
+                )
+                continue
+            lines.append((_ifl_frame_filename(frame.image), frame.duration))
+            # once per *distinct* image: a flipbook repeats its frames -- 210
+            # lines over 6 textures in the corpus's largest -- and registering
+            # a write per line would warn about a collision on every repeat
+            if not frame.image.filepath and frame.image.name not in seen_images:
+                seen_images.add(frame.image.name)
+                writes.append(
+                    TextureWrite(frame.image, _ifl_frame_filename(frame.image), dts_name)
+                )
+        writes.append(
+            TextureWrite(format_ifl(lines), Material(name=ifl_name).basename, dts_name)
+        )
+    return entries, writes, warnings
+
+
+def ifl_filename(bmat) -> str:
+    """The .ifl this material's frames are written to, bare filename."""
+    from .ifl import ifl_name_for
+
+    dts_name = str(bmat.get("dts_name") or bmat.name)
+    return Material(name=ifl_name_for(dts_name)).basename
+
+
+def _ifl_frame_filename(image) -> str:
+    """What an IFL line calls a frame: a bare filename with an extension."""
+    stem = Path(image.filepath).stem if image.filepath else Path(image.name).stem
+    return f"{stem or image.name}.png"
 
 
 def _flags_from_blender(bmat: bpy.types.Material) -> int:
@@ -673,16 +969,27 @@ def _flags_from_blender(bmat: bpy.types.Material) -> int:
         for prop, bit in _FLAG_PROPS.items():
             if bmat.get(prop):
                 flags |= bit
-    # ...and the three blend bits come from the shader, which is the only
-    # place they are stored at all
+    # ...and the derived bits, each owned by the one place it can be edited:
+    # the blend bits by the node graph, MAT_IFL_MATERIAL by the checkbox that
+    # also owns the frame list.  An ID property only the importer writes could
+    # be cleared and never set, which is what made IFL unauthorable.
+    props = getattr(bmat, "dts_material", None)
+    if props is not None and props.is_ifl:
+        flags |= MAT_IFL_MATERIAL
     return flags | blend_flags_from_material(bmat)
 
 
 @dataclass
 class TextureWrite:
-    """An image export has to put on disk, and what to call it."""
+    """Something export has to put on disk beside the .dts, and what to call it.
 
-    image: bpy.types.Image
+    ``image`` is an image datablock, or the text of a generated sidecar -- an
+    ``.ifl`` has no datablock to be, and routing it through the same list is
+    what gives it the same collision rule and the same refusal to overwrite
+    art the scene loaded.
+    """
+
+    image: object
     filename: str
     owner: str  # the DTS material name, for the warning text
 

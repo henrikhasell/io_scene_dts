@@ -36,13 +36,14 @@ class DTS_UL_material_order(UIList):
             row.label(text="(missing)", icon="ERROR")
 
 
-class DTS_UL_ifl_materials(UIList):
+class DTS_UL_ifl_frames(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_prop, index):
         row = layout.row(align=True)
-        row.prop(item, "name", text="", emboss=False, icon="TEXTURE")
+        row.label(text=item.image.name if item.image else "(no image)",
+                  icon="TEXTURE" if item.image else "ERROR")
         sub = row.row(align=True)
         sub.alignment = "RIGHT"
-        sub.label(text=f"{item.num_frames} frame(s)")
+        sub.label(text=f"hold {item.duration}")
 
 
 class DTS_UL_ground(UIList):
@@ -63,14 +64,15 @@ class DTS_UL_triggers(UIList):
 
 class DTS_UL_ifl_matters(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_prop, index):
-        layout.prop(item, "index", text="entry", emboss=False)
+        layout.label(text=item.material.name if item.material else "(none)",
+                     icon="MATERIAL" if item.material else "ERROR")
 
 
 CLASSES = (
     DTS_UL_names,
     DTS_UL_details,
     DTS_UL_material_order,
-    DTS_UL_ifl_materials,
+    DTS_UL_ifl_frames,
     DTS_UL_ground,
     DTS_UL_triggers,
     DTS_UL_ifl_matters,

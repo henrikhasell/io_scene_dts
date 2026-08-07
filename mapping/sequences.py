@@ -42,6 +42,7 @@ from ..dtslib.types import (
 from .decals import decal_names_by_index, read_decal_tracks, write_decal_fcurves
 from ..props.legacy import pack_trigger, parse_trigger_state
 from ..props.sequence import SCHEMA_VERSION
+from .ifl import material_name_for
 from .objectstate import read_tracks, write_tracks
 
 
@@ -95,7 +96,7 @@ def _iter_fcurves(action: bpy.types.Action):
 # ----------------------------------------------------------------------
 
 
-def import_sequences(shape: Shape, arm_obj: bpy.types.Object, bone_name_by_node: dict[int, str]) -> list[bpy.types.Action]:
+def import_sequences(shape: Shape, arm_obj: bpy.types.Object, bone_name_by_node: dict[int, str], bmats=()) -> list[bpy.types.Action]:
     rest_local = _rest_local_matrices(shape)
     decal_names = decal_names_by_index(shape)
     actions = []
@@ -105,7 +106,7 @@ def import_sequences(shape: Shape, arm_obj: bpy.types.Object, bone_name_by_node:
         # a sequence only ever plays from an NLA strip, and deleting that track
         # must not take the action with it
         action.use_fake_user = True
-        _store_sequence_props(action, seq, shape)
+        _store_sequence_props(action, seq, shape, bmats)
         bag, _slot = _action_channelbag(action, arm_obj)
 
         n = seq.num_keyframes
@@ -281,7 +282,7 @@ def _object_state_tracks(shape: Shape, seq: Sequence) -> dict[str, dict[str, lis
     return tracks
 
 
-def _store_sequence_props(action: bpy.types.Action, seq: Sequence, shape: Shape) -> None:
+def _store_sequence_props(action, seq: Sequence, shape: Shape, bmats) -> None:
     action["dts_sequence"] = True
     action["dts_flags"] = seq.flags
     action["dts_cyclic"] = bool(seq.flags & SEQ_CYCLIC)
@@ -315,9 +316,15 @@ def _store_sequence_props(action: bpy.types.Action, seq: Sequence, shape: Shape)
         item.invert_on_reverse = fields["invert_on_reverse"]
         item.pos = trigger.pos
 
+    # a bit per entry in the shape's IFL table; the entry names a material
+    # slot, and that material is what the sequence actually advances
     props.ifl_matters.clear()
     for index in sorted(seq.ifl_matters.indices()):
-        props.ifl_matters.add().index = index
+        if index >= len(shape.ifl_materials):
+            continue
+        slot = shape.ifl_materials[index].raw[1]
+        if 0 <= slot < len(bmats):
+            props.ifl_matters.add().material = bmats[slot]
 
     if seq.flags & SEQ_ANY_SCALE:
         # only the mode; the factors themselves become pose-bone scale curves
@@ -342,6 +349,13 @@ def export_sequences(
     decal_index_map: dict[int, int] | None = None,
 ) -> list[str]:
     """Append sequences built from actions to shape.  Returns warnings."""
+    # the IFL table is derived and already built by the time this runs, so a
+    # material pointer resolves through its entry name -- which is the
+    # material's own name plus .ifl, exact for every entry in the corpus
+    ifl_index_of = {
+        material_name_for(shape.name(entry.raw[0])): i
+        for i, entry in enumerate(shape.ifl_materials)
+    }
     warnings = []
     decal_index_map = decal_index_map or {}
     rest_local = _rest_local_matrices(shape)
@@ -474,12 +488,24 @@ def export_sequences(
                     ObjectState(float(vis[kf]), int(frame[kf]), int(matframe[kf]))
                 )
 
-        # ifl membership (entries preserved shape-level in armature JSON)
-        ifl_indices = [item.index for item in action.dts_sequence_props.ifl_matters]
+        # ifl membership.  The file stores a bit per entry in the shape's IFL
+        # table, and that table is derived from the materials in list order, so
+        # a material pointer resolves to its position in it.
         iset = TSIntegerSet()
-        for i in ifl_indices:
-            if i < len(shape.ifl_materials):
-                iset.set(int(i))
+        for item in action.dts_sequence_props.ifl_matters:
+            dts_name = (
+                str(item.material.get("dts_name") or item.material.name)
+                if item.material else None
+            )
+            index = ifl_index_of.get(dts_name) if dts_name else None
+            if index is None:
+                warnings.append(
+                    f"action {action.name!r}: IFL entry "
+                    f"{item.material.name if item.material else '<empty>'!r} is not an "
+                    f"IFL material of this shape; the sequence will not advance it"
+                )
+                continue
+            iset.set(index)
         seq.ifl_matters = iset
 
         # decal-state tracks, likewise

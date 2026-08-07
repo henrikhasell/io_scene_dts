@@ -224,7 +224,7 @@ def shape_to_blender(
         )
 
     if do_import_sequences and shape.sequences:
-        actions = import_sequences(shape, arm_obj, bone_name_by_node)
+        actions = import_sequences(shape, arm_obj, bone_name_by_node, bmats)
         # one driver per mesh built from an animated object — a DTS object is
         # one Blender mesh per detail level, so this fans out across LODs
         names = animated_object_names(actions)
@@ -288,14 +288,6 @@ def _store_shape_tables(arm_obj, shape: Shape) -> None:
         item.max_error = detail.max_error
         item.poly_count = detail.poly_count
 
-    props.ifl_materials.clear()
-    for ifl in shape.ifl_materials:
-        item = props.ifl_materials.add()
-        item.name = shape.name(ifl.raw[0])
-        item.material_slot = ifl.raw[1]
-        item.first_frame = ifl.raw[2]
-        item.first_frame_off_time = ifl.raw[3]
-        item.num_frames = ifl.raw[4]
 
 
 def _store_material_order(arm_obj, bmats) -> None:

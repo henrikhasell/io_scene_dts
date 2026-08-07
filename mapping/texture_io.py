@@ -70,11 +70,17 @@ def write_textures(writes, texture_dir: Path | None, warnings: list[str]) -> int
             continue
 
         try:
-            write.image.file_format = "PNG"
-            # the filepath argument saves a copy without claiming the path on
-            # the datablock, so a packed scene image does not quietly become a
-            # file-backed one and change what the next export decides to write
-            write.image.save(filepath=str(target))
+            if isinstance(write.image, str):
+                # an .ifl: generated text with no other home, so it is always
+                # written.  The rule above still protects real art beside it.
+                target.write_text(write.image, newline="")
+            else:
+                write.image.file_format = "PNG"
+                # the filepath argument saves a copy without claiming the path
+                # on the datablock, so a packed scene image does not quietly
+                # become a file-backed one and change what the next export
+                # decides to write
+                write.image.save(filepath=str(target))
         except (OSError, RuntimeError) as e:
             warnings.append(f"material {write.owner!r}: could not write {target}: {e}")
             continue

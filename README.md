@@ -83,7 +83,7 @@ Disk.  For development, symlink this checkout into
   `Scale Mode` on the sequence panel saying which DTS form to write.  The
   arbitrary form — per-axis factors plus an orientation — has no bone equivalent
   and is refused on export.
-- **Shape tables** (name table, detail levels, material order, IFL entries) are
+- **Shape tables** (name table, detail levels, material order) are
   collections on the armature, under Object Properties → **DTS Shape**.  A
   node's stored rest transform is on the bone, under Bone Properties → **DTS
   Node**.
@@ -107,6 +107,12 @@ Disk.  For development, symlink this checkout into
   in the shape's material list.  Export writes a `.png` beside the `.dts` for
   any texture that exists only in the .blend, and never for one loaded from
   disk — so nothing in a game's `textures/` tree is touched.
+- **IFL materials** are animated flipbooks.  The file names a `.ifl` sidecar
+  listing `<texture> <hold>` per line; that list imports as a frame collection
+  on the material, previews as a keyframed switch between its images, and is
+  written back out as the `.ifl` beside the exported `.dts`.  Ticking **IFL
+  Material** is what puts an entry in the shape's IFL table — the table is
+  derived from the materials that flip, not stored beside them.
 - Export emits triangulated, indexed **Triangles** primitives grouped per
   material — the same policy as the engine's own `.mdl` exporter.
 
@@ -128,7 +134,8 @@ dropped outright, or frozen against Blender-side edits.
 - Multi-frame (vertex-animated) meshes import as shape keys (`frame_NNN`);
   nothing drives them from the sequence's `frame` track.
 - Extra material frames are `FLOAT2` mesh attributes; only frame 0 renders.
-- IFL material entries are editable but have no preview.
+- IFL flipbooks import their `.ifl`, preview as a keyframed image switch, and
+  are written back out beside the exported `.dts`.
 - A `.blend` saved by v1.2 or earlier converts on load, but its mesh payloads
   are discarded rather than unpickled — re-import the `.dts` to recover strip
   packing, merge indices, material frames and cluster tables.

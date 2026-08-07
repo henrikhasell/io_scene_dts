@@ -62,20 +62,6 @@ class DtsMaterialRef(PropertyGroup):
     material: PointerProperty(name="Material", type=bpy.types.Material)
 
 
-class DtsIflItem(PropertyGroup):
-    """One IFL entry: an animated texture flipbook.
-
-    The five fields are the file's own record (types.py:101): which name it
-    flips, which material slot it drives, and where its frames live.
-    """
-
-    name: StringProperty(name="IFL Name")
-    material_slot: IntProperty(name="Material Slot", min=0)
-    first_frame: IntProperty(name="First Frame", min=0)
-    first_frame_off_time: IntProperty(name="First Off-Time", min=0)
-    num_frames: IntProperty(name="Frames", min=0)
-
-
 class DtsShapeProps(PropertyGroup):
     """Everything shape-wide, on the armature that *is* the shape."""
 
@@ -95,8 +81,6 @@ class DtsShapeProps(PropertyGroup):
     material_order: CollectionProperty(type=DtsMaterialRef)
     material_order_index: IntProperty(default=0)
 
-    ifl_materials: CollectionProperty(type=DtsIflItem)
-    ifl_materials_index: IntProperty(default=0)
 
     migration_note: StringProperty(
         name="Migration Note",

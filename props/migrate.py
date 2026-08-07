@@ -47,6 +47,67 @@ def _fill(collection, records) -> None:
             setattr(item, field, value)
 
 
+def _ifl_materials_in_order() -> list:
+    """The materials an export would emit IFL entries for, in the same order.
+
+    Entries are derived from the materials now, in material-list order, so a
+    legacy index has to be resolved through that same ordering.  `material_order`
+    is the only record of it that survives a .blend.
+    """
+    ordered = []
+    for obj in bpy.data.objects:
+        if obj.type == "ARMATURE" and obj.dts_shape.is_shape:
+            ordered = [r.material for r in obj.dts_shape.material_order if r.material]
+            if ordered:
+                break
+    if not ordered:
+        ordered = [m for m in bpy.data.materials if "dts_name" in m]
+    return [m for m in ordered if m.dts_material.is_ifl]
+
+
+def _ifl_entries_to_materials(entries, report: list) -> None:
+    """The shape's IFL table becomes a checkbox on each material it named.
+
+    The table was a list of (name, material slot, three ints of uninitialised
+    engine scratch).  Only the first two were ever data, and both are implied
+    by the material: an IFL entry exists because a material flips, and its name
+    is that material's name plus `.ifl`.  So the entry becomes `is_ifl`.
+
+    The frame list cannot be recovered here -- it lives in the `.ifl` file, and
+    migration has no path to look in.  Re-import the shape to get the frames.
+    """
+    if not entries:
+        return
+    by_index = {
+        int(m["dts_material_index"]): m
+        for m in bpy.data.materials
+        if "dts_material_index" in m
+    }
+    claimed = 0
+    for entry in entries:
+        mat = by_index.get(int(entry.get("material_slot", -1)))
+        if mat is None:
+            mat = bpy.data.materials.get(str(entry.get("name", ""))[: -len(".ifl")])
+        if mat is None:
+            continue
+        mat.dts_material.is_ifl = True
+        claimed += 1
+    report.append(
+        f"{claimed} of {len(entries)} IFL entries became a checkbox on their "
+        f"material; their frame lists are in the .ifl files and need a re-import"
+    )
+
+
+def _fill_ifl_matters(props, indices, report: list) -> None:
+    """Legacy per-sequence IFL membership: indices into the old table."""
+    props.ifl_matters.clear()
+    ordered = _ifl_materials_in_order()
+    for i in indices:
+        item = props.ifl_matters.add()
+        if 0 <= int(i) < len(ordered):
+            item.material = ordered[int(i)]
+
+
 def migrate_armature(obj, report: list) -> bool:
     props = obj.dts_shape
     present = [key for key in LEGACY_SHAPE_KEYS if key in obj]
@@ -67,7 +128,7 @@ def migrate_armature(obj, report: list) -> bool:
     props.is_shape = True
     _fill(props.names, [{"name": n} for n in _loads(obj.get("dts_names_order"), [])])
     _fill(props.details, parse_details(obj.get("dts_details")))
-    _fill(props.ifl_materials, parse_ifl(obj.get("dts_ifl_materials")))
+    _ifl_entries_to_materials(parse_ifl(obj.get("dts_ifl_materials")), report)
 
     props.material_order.clear()
     by_index = {
@@ -115,10 +176,7 @@ def migrate_action(action, report: list) -> bool:
 
     _fill(props.ground, parse_ground(action.get("dts_ground")))
     _fill(props.triggers, parse_triggers(action.get("dts_triggers")))
-    _fill(
-        props.ifl_matters,
-        [{"index": int(i)} for i in _loads(action.get("dts_ifl_matters"), [])],
-    )
+    _fill_ifl_matters(props, _loads(action.get("dts_ifl_matters"), []), report)
     scale = _loads(action.get("dts_scale_anim"), {})
     if scale:
         flags = int(scale.get("flags", 0))

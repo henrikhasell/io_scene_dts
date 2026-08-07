@@ -217,6 +217,53 @@ MUTATIONS = {
         "            if False:\n                del mat[key]",
         ["test_migration_drops_the_blend_props_saved_beside_the_shader"],
     ),
+    # -- IFL: the material's flipbook ------------------------------------
+    # There were no IFL mutations at all before this, so none of the three
+    # tests that claimed to cover it was ever checked for biting.
+    "ifl-frames-read": (
+        "mapping/materials.py",
+        "    for name, duration in parse_ifl(text):",
+        "    for name, duration in []:",
+        ["test_an_ifl_imports_its_frames_and_previews_them"],
+    ),
+    "ifl-preview": (
+        "mapping/materials.py",
+        '        value.outputs[0].keyframe_insert("default_value", frame=tick + 1)',
+        "        pass",
+        ["test_an_ifl_imports_its_frames_and_previews_them"],
+    ),
+    # the table is derived; deriving nothing must be caught
+    "ifl-entry-derived": (
+        "mapping/materials.py",
+        "        if props is None or not props.is_ifl:",
+        "        if True:",
+        ["test_an_ifl_material_is_authorable", "test_ifl_preserved"],
+    ),
+    "ifl-flag-derived": (
+        "mapping/materials.py",
+        "    if props is not None and props.is_ifl:",
+        "    if False:",
+        ["test_an_ifl_material_is_authorable"],
+    ),
+    "ifl-sidecar-write": (
+        "mapping/materials.py",
+        "        writes.append(\n            TextureWrite(format_ifl(lines), Material(name=ifl_name).basename, dts_name)\n        )",
+        "        pass",
+        ["test_an_ifl_material_is_authorable"],
+    ),
+    # the order of the frames is the animation
+    "ifl-frame-order": (
+        "mapping/ifl.py",
+        "        frames.append((name, max(1, duration)))",
+        "        frames.insert(0, (name, max(1, duration)))",
+        ["test_an_ifl_round_trips_through_its_material"],
+    ),
+    "ifl-matters-resolve": (
+        "mapping/sequences.py",
+        "            iset.set(index)",
+        "            pass",
+        ["test_ifl_membership_is_authorable"],
+    ),
     "fresh-winding": (
         "mapping/blender_to_shape.py",
         "        a, b, c = (corner_index[li] for li in reversed(tri.loops))",

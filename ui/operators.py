@@ -222,6 +222,26 @@ class DTS_OT_refresh_decal(Operator):
         return {"FINISHED"}
 
 
+class DTS_OT_refresh_ifl(Operator):
+    """Rebuild the flipbook preview from the frame list"""
+
+    bl_idname = "io_scene_dts.refresh_ifl"
+    bl_label = "Refresh IFL Preview"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        mat = getattr(context, "material", None)
+        return mat is not None and mat.dts_material.is_ifl
+
+    def execute(self, context):
+        from ..mapping.materials import build_ifl_preview
+
+        frames = build_ifl_preview(context.material)
+        self.report({"INFO"}, f"IFL preview rebuilt over {frames} frame(s)")
+        return {"FINISHED"}
+
+
 class DTS_OT_migrate_scene(Operator):
     bl_idname = "io_scene_dts.migrate_scene"
     bl_label = "Convert DTS Data From an Older Version"
@@ -277,5 +297,6 @@ CLASSES = (
     DTS_OT_list_remove,
     DTS_OT_list_move,
     DTS_OT_migrate_scene,
+    DTS_OT_refresh_ifl,
     DTS_OT_dismiss_migration_note,
 )

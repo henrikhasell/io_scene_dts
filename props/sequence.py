@@ -7,6 +7,7 @@ Properties tab for an action at all, so these are reached through the panels in
 
 from __future__ import annotations
 
+import bpy
 from bpy.props import (
     BoolProperty,
     CollectionProperty,
@@ -15,6 +16,7 @@ from bpy.props import (
     FloatVectorProperty,
     IntProperty,
     IntVectorProperty,
+    PointerProperty,
 )
 from bpy.types import PropertyGroup
 
@@ -72,10 +74,21 @@ class DtsTriggerItem(PropertyGroup):
     )
 
 
-class DtsIflMatterItem(PropertyGroup):
-    """One IFL entry this sequence advances, by index into the shape's list."""
+def _is_ifl_material(self, mat) -> bool:
+    return bool(getattr(mat, "dts_material", None) and mat.dts_material.is_ifl)
 
-    index: IntProperty(name="IFL Entry", min=0)
+
+class DtsIflMatterItem(PropertyGroup):
+    """One IFL material this sequence advances.
+
+    A pointer, not an index.  The file stores a bit per entry in the shape's
+    IFL table, but that table is derived from the materials on export, so an
+    index here would name a position nothing in Blender owns -- and it was
+    drawn as a bare integer with no way to tell which entry it meant.
+    """
+
+    material: PointerProperty(name="IFL Material", type=bpy.types.Material,
+                              poll=_is_ifl_material)
 
 
 class DtsSequenceProps(PropertyGroup):

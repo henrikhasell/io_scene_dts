@@ -18,6 +18,7 @@ from ..dtslib.types import MAT_ADDITIVE, MAT_SUBTRACTIVE, MAT_TRANSLUCENT
 from ..mapping import materials
 from .operators import (
     DTS_OT_add_decal,
+    DTS_OT_refresh_ifl,
     DTS_OT_dismiss_migration_note,
     DTS_OT_migrate_scene,
     list_buttons,
@@ -111,33 +112,36 @@ class OBJECT_PT_dts_materials(Panel):
             self.layout.prop(props.material_order[props.material_order_index], "material")
 
 
-class OBJECT_PT_dts_ifl(Panel):
-    bl_label = "IFL Entries"
-    bl_parent_id = "OBJECT_PT_dts_shape"
+class MATERIAL_PT_dts_ifl(Panel):
+    bl_label = "IFL Frames"
+    bl_parent_id = "MATERIAL_PT_dts_material"
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
-    bl_context = "object"
+    bl_context = "material"
     bl_options = {"DEFAULT_CLOSED"}
 
     @classmethod
     def poll(cls, context):
-        return _is_shape(context.object)
+        return getattr(context, "material", None) is not None
 
     def draw(self, context):
-        props = context.object.dts_shape
-        self.layout.label(text="Animated texture flipbooks; no preview")
-        _table(
-            self.layout, props, "ifl_materials", "DTS_UL_ifl_materials",
-            "object.dts_shape.ifl_materials",
-        )
-        if 0 <= props.ifl_materials_index < len(props.ifl_materials):
-            item = props.ifl_materials[props.ifl_materials_index]
-            column = self.layout.column(align=True)
-            column.prop(item, "name")
-            column.prop(item, "material_slot")
-            column.prop(item, "first_frame")
-            column.prop(item, "first_frame_off_time")
-            column.prop(item, "num_frames")
+        mat = context.material
+        props = mat.dts_material
+        layout = self.layout
+        layout.prop(props, "is_ifl")
+        if not props.is_ifl:
+            layout.label(text="An IFL material flips through a .ifl", icon="INFO")
+            return
+        layout.label(text=f"Writes {materials.ifl_filename(mat)} beside the .dts")
+        _table(layout, props, "ifl_frames", "DTS_UL_ifl_frames",
+               "material.dts_material.ifl_frames")
+        if 0 <= props.ifl_frames_index < len(props.ifl_frames):
+            frame = props.ifl_frames[props.ifl_frames_index]
+            column = layout.column(align=True)
+            column.template_ID(frame, "image", open="image.open")
+            column.prop(frame, "duration")
+        row = layout.row()
+        row.operator(DTS_OT_refresh_ifl.bl_idname, icon="FILE_REFRESH")
 
 
 class OBJECT_PT_dts_names(Panel):
@@ -320,7 +324,6 @@ _MATERIAL_FLAGS = (
     ("dts_never_env_map", "Never Env-Map"),
     ("dts_no_mip_map", "No Mip-Map"),
     ("dts_mip_map_zero_border", "Mip-Map Zero Border"),
-    ("dts_ifl_material", "IFL Material"),
     ("dts_ifl_frame", "IFL Frame"),
     ("dts_detail_map_only", "Detail Map Only"),
     ("dts_bump_map_only", "Bump Map Only"),
@@ -444,10 +447,14 @@ def draw_sequence(layout, action) -> None:
         column.prop(item, "translation")
         column.prop(item, "rotation")
 
-    if len(props.ifl_matters):
-        box = layout.box()
-        box.label(text="IFL Entries Advanced")
-        _table(box, props, "ifl_matters", "DTS_UL_ifl_matters", "action.ifl_matters")
+    # unconditionally, like ground frames and triggers: the add button lives
+    # inside the box, so drawing it only when non-empty meant the first entry
+    # could never be added from the UI at all
+    box = layout.box()
+    box.label(text="IFL Materials Advanced")
+    _table(box, props, "ifl_matters", "DTS_UL_ifl_matters", "action.ifl_matters")
+    if 0 <= props.ifl_matters_index < len(props.ifl_matters):
+        box.prop(props.ifl_matters[props.ifl_matters_index], "material")
 
 
 class _SequencePanel:
@@ -478,12 +485,12 @@ CLASSES = (
     OBJECT_PT_dts_shape,
     OBJECT_PT_dts_details,
     OBJECT_PT_dts_materials,
-    OBJECT_PT_dts_ifl,
     OBJECT_PT_dts_names,
     OBJECT_PT_dts_mesh,
     OBJECT_PT_dts_decal,
     BONE_PT_dts_node,
     MATERIAL_PT_dts_material,
+    MATERIAL_PT_dts_ifl,
     DOPESHEET_PT_dts_sequence,
     NLA_PT_dts_sequence,
 )

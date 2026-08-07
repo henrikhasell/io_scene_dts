@@ -1715,9 +1715,10 @@ def test_shape_tables_are_editable_collections():
     assert [n.name for n in props.names] == list(src.names)
     assert len(props.details) == len(src.details)
     assert [d.name for d in props.details] == [src.name(d.name_index) for d in src.details]
-    assert len(props.ifl_materials) == len(src.ifl_materials) == 1
-    assert props.ifl_materials[0].name == src.name(src.ifl_materials[0].raw[0])
-    assert props.ifl_materials[0].num_frames == src.ifl_materials[0].raw[4]
+    # the IFL table is not a collection any more -- it is derived from the
+    # materials that flip, so what has to survive is the checkbox on them
+    flipping = [m for m in bpy.data.materials if m.dts_material.is_ifl]
+    assert len(flipping) == len(src.ifl_materials) == 1
     assert len(props.material_order) == len(src.materials)
     # pointers, not names: a name is not unique in a real shape
     assert all(ref.material is not None for ref in props.material_order)
@@ -1823,7 +1824,10 @@ def test_legacy_blend_migrates():
     assert props.is_shape
     assert [n.name for n in props.names] == ["base", "detail2"]
     assert len(props.details) == 1 and props.details[0].poly_count == 8
-    assert props.ifl_materials[0].name == "flame.ifl"
+    # The legacy entry named material slot 1, and this scene has no materials
+    # at all -- the table was the only record of it, and the table is gone.
+    # Migration says so rather than dropping it silently.
+    assert any("IFL" in line for line in report), report
     assert bone.dts_node.use_stored
     assert tuple(bone.dts_node.stored_rotation) == (1, 2, 3, 32767)
 
@@ -1981,7 +1985,107 @@ def test_the_list_operators_reach_their_collections():
     assert bpy.ops.io_scene_dts.list_remove(path="object.dts_shape.nope") == {"CANCELLED"}
 
 
+def _ifl_fixture():
+    """switch.dts in a real mod tree: shapes/ beside textures/skins/.
+
+    The two .ifl files and every frame texture they name are copied in, which
+    no fixture directory in this repo has -- the corpus keeps shapes and
+    textures in trees that are not siblings, so nothing here resolves a
+    flipbook by the add-on's own rules without building the layout first.
+    """
+    import shutil
+
+    # the pristine source tree, not tribes2-exported -- that one is an output
+    # directory whose contents change every time anybody exports into it
+    src = Path("/home/henrik/Documents/Repositories/agentic-torque/mygame"
+               "/animation-test/data/shapes/tribes2")
+    frames = Path("/home/henrik/Documents/Repositories/hasell-engine/files")
+    if not (src / "switch.dts").is_file():
+        return None
+    root = Path(tempfile.mkdtemp())
+    (root / "shapes").mkdir()
+    skins = root / "textures" / "skins"
+    skins.mkdir(parents=True)
+    shutil.copy(src / "switch.dts", root / "shapes")
+    for ifl in list(src.glob("*.ifl")) + list((src / "skins").glob("*.ifl")):
+        if ifl.stem in ("jetflare00", "screenstatic1") and not (skins / ifl.name).exists():
+            shutil.copy(ifl, skins)
+    # first writer wins: the game files are read-only, so a copy keeps that
+    # mode and a second copy over the same name cannot open it
+    for png in list(src.glob("*.png")) + [
+        p for pattern in ("tribes/textures/skins/jetflare0*.png",
+                          "shapes/textures/skins/screenstatic*.png")
+        for p in frames.glob(pattern)
+    ]:
+        if not (skins / png.name).exists():
+            shutil.copy(png, skins)
+    return root / "shapes" / "switch.dts"
+
+
+def test_an_ifl_imports_its_frames_and_previews_them():
+    """The .ifl is the animation, and until now nothing read one."""
+    path = _ifl_fixture()
+    if path is None:
+        return
+    _reset()
+    assert bpy.ops.io_scene_dts.import_dts(filepath=str(path), import_details=True) == {"FINISHED"}
+
+    flipping = {m["dts_name"]: m for m in bpy.data.materials if m.dts_material.is_ifl}
+    assert set(flipping) == {"skins\\jetflare00", "skins\\screenstatic1"}, list(flipping)
+    jet = flipping["skins\\jetflare00"]
+    frames = list(jet.dts_material.ifl_frames)
+    # 210 lines over 6 textures, ordered 00,03,01,04,02,05 -- a sequence, not a set
+    assert len(frames) == 210
+    assert len({f.image.name for f in frames if f.image}) == 6
+    assert all(f.image is not None for f in frames), "a frame texture did not resolve"
+
+    # the preview: one node per distinct image, and a constant-interpolated
+    # index over the schedule the durations describe
+    from io_scene_dts.mapping.sequences import _iter_fcurves
+
+    action = jet.node_tree.animation_data.action
+    curve = next(f for f in _iter_fcurves(action) if "dts_ifl_frame" in f.data_path)
+    assert len(curve.keyframe_points) == 210
+    assert curve.keyframe_points[0].interpolation == "CONSTANT"
+    assert {round(k.co[1]) for k in curve.keyframe_points} == set(range(6))
+
+
+def test_an_ifl_round_trips_through_its_material():
+    """The table is derived, so what has to survive is the material and the
+    .ifl -- and the sequence that advances it."""
+    path = _ifl_fixture()
+    if path is None:
+        return
+    _reset()
+    assert bpy.ops.io_scene_dts.import_dts(filepath=str(path), import_details=True) == {"FINISHED"}
+    src = read_shape_file(path)
+    out = Path(tempfile.mkdtemp()) / "switch.dts"
+    assert bpy.ops.io_scene_dts.export_dts(filepath=str(out), version="24") == {"FINISHED"}
+    dst = read_shape_file(out)
+
+    assert [(dst.name(e.raw[0]), e.raw[1]) for e in dst.ifl_materials] == [
+        (src.name(e.raw[0]), e.raw[1]) for e in src.ifl_materials
+    ]
+    # the source's num_frames is uninitialised memory; ours is the real count
+    assert [e.raw[4] for e in dst.ifl_materials] == [210, 120]
+    assert all(e.raw[2] == e.raw[3] == 0 for e in dst.ifl_materials)
+    assert [sorted(q.ifl_matters.indices()) for q in dst.sequences] == [
+        sorted(q.ifl_matters.indices()) for q in src.sequences
+    ]
+
+    written = sorted(p.name for p in out.parent.glob("*.ifl"))
+    assert written == ["jetflare00.ifl", "screenstatic1.ifl"], written
+    lines = (out.parent / "jetflare00.ifl").read_text().splitlines()
+    assert len(lines) == 210 and lines[:3] == [
+        "jetflare00.png 1", "jetflare03.png 1", "jetflare01.png 1"
+    ], lines[:3]
+    # the frame textures came off disk, so they are referenced, not copied
+    assert not list(out.parent.glob("*.png"))
+
+
 def test_ifl_preserved():
+    """The IFL table is derived now, so what must survive is what it is derived
+    from: the material flips, and its entry names it."""
     _reset()
     _import_dts("v22_energy_explosion.dts")
     src = read_shape_file(FIXTURES / "v22_energy_explosion.dts")
@@ -1991,8 +2095,15 @@ def test_ifl_preserved():
     dst = read_shape_file(out)
     assert len(dst.ifl_materials) == len(src.ifl_materials) == 1
     assert dst.name(dst.ifl_materials[0].raw[0]) == src.name(src.ifl_materials[0].raw[0])
-    assert dst.ifl_materials[0].raw[1:] == src.ifl_materials[0].raw[1:]
+    assert dst.ifl_materials[0].raw[1] == src.ifl_materials[0].raw[1], "material slot moved"
+    # ...and the three the engine fills from the .ifl are written as zeros
+    # rather than the uninitialised memory the shipped files carry
+    assert dst.ifl_materials[0].raw[2] == dst.ifl_materials[0].raw[3] == 0
     assert [m.name for m in dst.materials] == [m.name for m in src.materials]
+    from io_scene_dts.dtslib.types import MAT_IFL_MATERIAL
+
+    slot = dst.ifl_materials[0].raw[1]
+    assert dst.materials[slot].flags & MAT_IFL_MATERIAL
 
 
 def test_sorted_meshes_survive_an_edit():

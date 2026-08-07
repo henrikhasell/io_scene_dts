@@ -23,6 +23,7 @@ sys.path.insert(0, str(REPO / "tests" / "blender"))
 import authoring as A  # noqa: E402
 from io_scene_dts.dtslib.types import (  # noqa: E402
     MAT_ADDITIVE,
+    MAT_IFL_MATERIAL,
     MAT_NEVER_ENV_MAP,
     MAT_NO_MIP_MAP,
     MAT_REFLECTANCE_MAP_ONLY,
@@ -870,22 +871,60 @@ def test_a_dsq_carries_triggers_and_ground():
 # ----------------------------------------------------------------------
 
 
-def test_ifl_entries_are_authorable():
+def test_an_ifl_material_is_authorable():
+    """A flipbook from nothing: images, holds, and the .ifl beside the .dts.
+
+    Nothing DTS-specific is typed here beyond ticking the box -- the entry in
+    the shape's IFL table is derived from the material, because that is the
+    only thing that can say a material flips.
+    """
     A.reset()
     arm = A.armature("Flame")
     mat = A.principled_material("flame")
+    mat.dts_material.is_ifl = True
+    for index, hold in enumerate((3, 1, 1, 12)):
+        frame = mat.dts_material.ifl_frames.add()
+        frame.image = A.generated_image(f"flame{index}")
+        frame.duration = hold
     A.mesh_object("body2", arm, bone="root", material=mat)
-    entry = arm.dts_shape.ifl_materials.add()
-    entry.name = "flame.ifl"
-    entry.material_slot = 0
-    entry.num_frames = 6
 
-    shape = A.read(A.export_dts())
+    import tempfile
+
+    path = A.export_dts(str(Path(tempfile.mkdtemp()) / "flame.dts"))
+    shape = A.read(path)
     assert len(shape.ifl_materials) == 1
     raw = shape.ifl_materials[0].raw
     assert shape.name(raw[0]) == "flame.ifl"
-    assert raw[1] == 0
-    assert raw[4] == 6
+    assert raw[1] == 0, "the entry must name the material's own slot"
+    assert raw[4] == 4, "num_frames is the length of the list"
+    # engine scratch, not data: written as zeros rather than invented
+    assert raw[2] == raw[3] == 0
+    assert shape.materials[0].flags & MAT_IFL_MATERIAL, "the flag is derived from the box"
+
+    beside = Path(path).parent
+    written = (beside / "flame.ifl").read_text()
+    assert written.splitlines() == [
+        "flame0.png 3", "flame1.png 1", "flame2.png 1", "flame3.png 12"
+    ], written
+    assert (beside / "flame0.png").is_file(), sorted(p.name for p in beside.iterdir())
+
+
+def test_an_ifl_material_without_frames_still_gets_its_entry():
+    """A shape whose .ifl could not be found still flips in the engine; losing
+    its table entry because the sidecar was missing would be the worse answer."""
+    A.reset()
+    arm = A.armature("Flame")
+    mat = A.principled_material("flame")
+    mat.dts_material.is_ifl = True
+    A.mesh_object("body2", arm, bone="root", material=mat)
+
+    import tempfile
+
+    path = A.export_dts(str(Path(tempfile.mkdtemp()) / "flame.dts"))
+    shape = A.read(path)
+    assert len(shape.ifl_materials) == 1
+    assert shape.ifl_materials[0].raw[4] == 0
+    assert not (Path(path).parent / "flame.ifl").exists(), "no frames, no file"
 
 
 def test_detail_metrics_are_authorable():
@@ -1530,16 +1569,17 @@ def test_sequence_flags_are_authorable():
 
 
 def test_ifl_membership_is_authorable():
-    """Which IFL entries a sequence advances."""
+    """Which IFL materials a sequence advances -- a pointer, not an index."""
     A.reset()
     arm = A.armature("Burner", bones=(("root", None), ("j", "root")))
-    A.mesh_object("body2", arm, bone="j", material=A.principled_material("flame"))
-    entry = arm.dts_shape.ifl_materials.add()
-    entry.name = "flame.ifl"
-    entry.num_frames = 4
+    mat = A.principled_material("flame")
+    mat.dts_material.is_ifl = True
+    frame = mat.dts_material.ifl_frames.add()
+    frame.image = A.generated_image("flame0")
+    A.mesh_object("body2", arm, bone="j", material=mat)
     action = A.action_for(arm, "burn", frames=4)
     action["dts_sequence"] = True
-    action.dts_sequence_props.ifl_matters.add().index = 0
+    action.dts_sequence_props.ifl_matters.add().material = mat
 
     seq = A.read(A.export_dts()).sequences[0]
     assert seq.ifl_matters.count() == 1
