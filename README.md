@@ -27,7 +27,7 @@ the data allows.
 ## Install
 
 ```sh
-blender --command extension build   # produces io_scene_dts-1.0.0.zip
+blender --command extension build   # produces io_scene_dts-1.3.0.zip
 ```
 
 then install the zip via Edit → Preferences → Get Extensions → Install from
@@ -120,10 +120,12 @@ Disk.  For development, symlink this checkout into
 
 ### Known limitations
 
-The short list is below; [UNSUPPORTED.md](UNSUPPORTED.md) has the full
-inventory, sorted by *how* a feature is unsupported — refused outright,
-round-trips but uneditable, correct in the file but invisible in the viewport,
-dropped outright, or frozen against Blender-side edits.
+[FEATURES.md](FEATURES.md) is the whole inventory: every DTS and DSQ feature,
+scored on whether it imports, can be edited, can be *created* in a fresh scene,
+and exports.  The short list is below; [UNSUPPORTED.md](UNSUPPORTED.md) covers
+the gaps in detail, sorted by *how* a feature is unsupported — refused
+outright, round-trips but uneditable, correct in the file but invisible in the
+viewport, dropped outright, or frozen against Blender-side edits.
 
 - Nothing is stored as a pickled payload any more, and every mesh is re-derived
   from the Blender geometry on export, so an edit always reaches the file.
