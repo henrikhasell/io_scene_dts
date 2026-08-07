@@ -31,8 +31,14 @@ def _source_texture_paths() -> set[Path]:
     return paths
 
 
-def write_textures(writes, texture_dir: Path | None, warnings: list[str]) -> int:
+def write_textures(writes, texture_dir: Path | None, warnings: list[str],
+                   include_images: bool = True) -> int:
     """Save each :class:`materials.TextureWrite` beside the .dts.
+
+    ``include_images`` is the export dialog's Export Textures checkbox.  It
+    gates *images* only: a generated sidecar like an ``.ifl`` is the shape's own
+    animation data rather than art, and the .dts names it, so suppressing it
+    would leave a material pointing at a flipbook that does not exist.
 
     Returns how many files were written.  Never raises: a texture that cannot
     be written is a warning, because losing the .dts over it would be worse
@@ -46,6 +52,8 @@ def write_textures(writes, texture_dir: Path | None, warnings: list[str]) -> int
     written = 0
 
     for write in writes:
+        if not include_images and not isinstance(write.image, str):
+            continue
         previous = claimed.get(write.filename.lower())
         if previous is not None:
             # material names are not unique in real shapes

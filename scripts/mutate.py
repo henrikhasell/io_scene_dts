@@ -264,6 +264,13 @@ MUTATIONS = {
         "            pass",
         ["test_ifl_membership_is_authorable"],
     ),
+    # the checkbox must actually gate images, and must not gate the .ifl
+    "export-textures-gate": (
+        "mapping/texture_io.py",
+        "        if not include_images and not isinstance(write.image, str):",
+        "        if False:",
+        ["test_export_textures_gates_images_but_not_the_ifl"],
+    ),
     "fresh-winding": (
         "mapping/blender_to_shape.py",
         "        a, b, c = (corner_index[li] for li in reversed(tri.loops))",

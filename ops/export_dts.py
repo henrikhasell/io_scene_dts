@@ -47,7 +47,8 @@ class ExportDTS(bpy.types.Operator, ExportHelper):
         name="Export Textures",
         description="Write a .png beside the .dts for every texture that exists only "
         "in this .blend.  Textures loaded from disk are referenced by name and never "
-        "copied, so nothing in a game's textures/ tree is touched",
+        "copied, so nothing in a game's textures/ tree is touched.  A material's .ifl "
+        "is written either way -- it is animation data, not art",
         default=True,
     )
 
@@ -80,9 +81,12 @@ class ExportDTS(bpy.types.Operator, ExportHelper):
 
         # after the shape, and only after: a texture beside a .dts that failed
         # to write would be litter
-        written = 0
-        if self.export_textures:
-            written = write_textures(texture_writes, Path(self.filepath).parent, warnings)
+        # unconditional: the checkbox gates images, not the generated .ifl
+        # sidecars, which are shape data the .dts names by filename
+        written = write_textures(
+            texture_writes, Path(self.filepath).parent, warnings,
+            include_images=self.export_textures,
+        )
 
         for w in warnings:
             self.report({"WARNING"}, w)

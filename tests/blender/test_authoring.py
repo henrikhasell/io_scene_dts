@@ -909,6 +909,32 @@ def test_an_ifl_material_is_authorable():
     assert (beside / "flame0.png").is_file(), sorted(p.name for p in beside.iterdir())
 
 
+def test_export_textures_gates_images_but_not_the_ifl():
+    """The checkbox is about art.  A .ifl is the shape's own animation data and
+    the .dts names it by filename, so suppressing it would leave the material
+    pointing at a flipbook that does not exist."""
+    import tempfile
+
+    A.reset()
+    arm = A.armature("Flame")
+    mat = A.principled_material("flame")
+    mat.dts_material.is_ifl = True
+    for index in range(3):
+        frame = mat.dts_material.ifl_frames.add()
+        frame.image = A.generated_image(f"flame{index}")
+    A.mesh_object("body2", arm, bone="root", material=mat)
+
+    on = Path(A.export_dts(str(Path(tempfile.mkdtemp()) / "flame.dts"))).parent
+    assert sorted(p.suffix for p in on.iterdir()) == [".dts", ".ifl", ".png", ".png", ".png"]
+
+    off = Path(tempfile.mkdtemp()) / "flame.dts"
+    A.export_dts(str(off), export_textures=False)
+    assert sorted(p.suffix for p in off.parent.iterdir()) == [".dts", ".ifl"]
+    # ...and the entry still names it, so the file is not left inconsistent
+    shape = A.read(off)
+    assert shape.name(shape.ifl_materials[0].raw[0]) == "flame.ifl"
+
+
 def test_an_ifl_material_without_frames_still_gets_its_entry():
     """A shape whose .ifl could not be found still flips in the engine; losing
     its table entry because the sidecar was missing would be the worse answer."""
