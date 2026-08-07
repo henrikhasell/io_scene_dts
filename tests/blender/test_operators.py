@@ -2063,8 +2063,15 @@ def test_an_ifl_round_trips_through_its_material():
     assert bpy.ops.io_scene_dts.export_dts(filepath=str(out), version="24") == {"FINISHED"}
     dst = read_shape_file(out)
 
-    assert [(dst.name(e.raw[0]), e.raw[1]) for e in dst.ifl_materials] == [
-        (src.name(e.raw[0]), e.raw[1]) for e in src.ifl_materials
+    # the slot is preserved; the name is deliberately *not* -- it is written
+    # bare so the engine opens the .ifl beside the textures it lists, rather
+    # than in a skins/ subdirectory MaterialList would never look in
+    assert [e.raw[1] for e in dst.ifl_materials] == [e.raw[1] for e in src.ifl_materials]
+    assert [dst.name(e.raw[0]) for e in dst.ifl_materials] == [
+        "jetflare00.ifl", "screenstatic1.ifl"
+    ]
+    assert [src.name(e.raw[0]) for e in src.ifl_materials] == [
+        "skins\\jetflare00.ifl", "skins\\screenstatic1.ifl"
     ]
     # the source's num_frames is uninitialised memory; ours is the real count
     assert [e.raw[4] for e in dst.ifl_materials] == [210, 120]
@@ -2094,7 +2101,14 @@ def test_ifl_preserved():
     assert res == {"FINISHED"}, res
     dst = read_shape_file(out)
     assert len(dst.ifl_materials) == len(src.ifl_materials) == 1
-    assert dst.name(dst.ifl_materials[0].raw[0]) == src.name(src.ifl_materials[0].raw[0])
+    # the name is written bare, not with the source's skins\ prefix: the engine
+    # opens a .ifl at shapePath/<name> but strips the prefix off a *material*
+    # name, so only a bare name puts the .ifl beside the textures it lists
+    from io_scene_dts.mapping.ifl import material_name_for
+
+    assert material_name_for(dst.name(dst.ifl_materials[0].raw[0])) == \
+        material_name_for(src.name(src.ifl_materials[0].raw[0])).rpartition("\\")[2]
+    assert "\\" not in dst.name(dst.ifl_materials[0].raw[0])
     assert dst.ifl_materials[0].raw[1] == src.ifl_materials[0].raw[1], "material slot moved"
     # ...and the three the engine fills from the .ifl are written as zeros
     # rather than the uninitialised memory the shipped files carry

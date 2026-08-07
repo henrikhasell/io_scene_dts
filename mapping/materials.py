@@ -910,7 +910,16 @@ def ifl_materials_from_blender(shape, bmats):
         if props is None or not props.is_ifl:
             continue
         dts_name = str(bmat.get("dts_name") or bmat.name)
-        ifl_name = ifl_name_for(dts_name)
+        # Bare, not prefixed.  The two engine loaders disagree about what a
+        # material name's path prefix means: MaterialList strips it and opens
+        # the texture beside the .dts ("Material paths are a legacy of Tribes
+        # tools, strip them off" -- dgl/materialList.cc:231), while
+        # readIflMaterials converts the backslashes and opens
+        # shapePath/<name> verbatim (ts/tsShape.cc:1387).  A prefixed .ifl name
+        # therefore sends the engine into a subdirectory the textures are not
+        # in, and cannot be in.  The bare name is the one spelling both loaders
+        # resolve to the same directory.
+        ifl_name = ifl_name_for(Material(name=dts_name).basename)
         frames = list(props.ifl_frames)
         entries.append(
             IflMaterial((shape.add_name(ifl_name), slot, 0, 0, len(frames)))
