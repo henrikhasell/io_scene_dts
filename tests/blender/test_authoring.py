@@ -1152,7 +1152,7 @@ def test_a_decal_is_made_by_an_operator():
     arm = A.armature("Wall")
     verts, faces = A.quad_geometry()
     target = A.mesh_object("wall2", arm, bone="root", verts=verts, faces=faces)
-    target.data.materials.append(A.principled_material("scorch"))
+    target.data.materials.append(A.blended_material("scorch"))
     for polygon in target.data.polygons:
         polygon.select = True
     bpy.context.view_layer.objects.active = target
@@ -1192,7 +1192,7 @@ def test_a_decal_branch_projects_the_decals_own_image():
     verts, faces = A.quad_geometry()
     target = A.mesh_object(
         "wall2", arm, bone="root", verts=verts, faces=faces,
-        material=A.principled_material("wall_skin"),
+        material=A.blended_material("wall_skin"),
     )
     scorch = A.image_material("scorch", diffuse=A.generated_image("scorch", ramp=True))
     for polygon in target.data.polygons:
@@ -1215,7 +1215,10 @@ def test_an_operator_decal_projects_inside_its_texture():
     A.reset()
     arm = A.armature("Wall")
     verts, faces = A.quad_geometry()
-    target = A.mesh_object("wall2", arm, bone="root", verts=verts, faces=faces)
+    target = A.mesh_object(
+        "wall2", arm, bone="root", verts=verts, faces=faces,
+        material=A.blended_material("wall_skin"),
+    )
     for polygon in target.data.polygons:
         polygon.select = True
     bpy.context.view_layer.objects.active = target
@@ -1256,7 +1259,10 @@ def test_a_damage_ramp_of_decals_is_authorable():
         for col in range(n):
             a = row * (n + 1) + col
             faces += [(a, a + 1, a + n + 2), (a, a + n + 2, a + n + 1)]
-    target = A.mesh_object("hull2", arm, bone="shell", verts=verts, faces=faces)
+    target = A.mesh_object(
+        "hull2", arm, bone="shell", verts=verts, faces=faces,
+        material=A.blended_material("hull_skin"),
+    )
 
     from io_scene_dts.mapping.decals import create_decal
 
@@ -1312,7 +1318,10 @@ def test_a_decal_projects_inside_the_zero_to_one_square():
         for col in range(n):
             a = row * (n + 1) + col
             faces += [(a, a + 1, a + n + 2), (a, a + n + 2, a + n + 1)]
-    target = A.mesh_object("plate2", arm, bone="shell", verts=verts, faces=faces)
+    target = A.mesh_object(
+        "plate2", arm, bone="shell", verts=verts, faces=faces,
+        material=A.blended_material("plate_skin"),
+    )
 
     from io_scene_dts.mapping.decals import create_decal
 
@@ -1343,7 +1352,10 @@ def test_an_operator_decal_covers_every_detail_level():
     A.reset()
     arm = A.armature("Hull")
     verts, faces = A.quad_geometry()
-    high = A.mesh_object("hull32", arm, bone="root", verts=verts, faces=faces)
+    high = A.mesh_object(
+        "hull32", arm, bone="root", verts=verts, faces=faces,
+        material=A.blended_material("hull_skin"),
+    )
     A.mesh_object("hull2", arm, bone="root", verts=verts, faces=faces)
     for polygon in high.data.polygons:
         polygon.select = True
@@ -1369,7 +1381,10 @@ def test_moving_the_projector_moves_the_decal():
     A.reset()
     arm = A.armature("Wall")
     verts, faces = A.quad_geometry()
-    target = A.mesh_object("wall2", arm, bone="root", verts=verts, faces=faces)
+    target = A.mesh_object(
+        "wall2", arm, bone="root", verts=verts, faces=faces,
+        material=A.blended_material("wall_skin"),
+    )
     for polygon in target.data.polygons:
         polygon.select = True
     bpy.context.view_layer.objects.active = target
@@ -1439,7 +1454,7 @@ def test_a_decal_previews_only_on_its_target():
     A.reset()
     arm = A.armature("Hull")
     verts, faces = A.quad_geometry()
-    shared = A.principled_material("hull_skin")
+    shared = A.blended_material("hull_skin")
     # two *different* DTS objects, one material, both inside the projector box
     target = A.mesh_object(
         "hull2", arm, bone="root", verts=verts, faces=faces, material=shared
@@ -1556,7 +1571,7 @@ def test_a_decal_is_authorable_by_hand():
     props.index = 0
     props.object_name = "wall"
     props.target = target
-    props.material = A.principled_material("scorch")
+    props.material = A.blended_material("scorch")
     arm[decal_prop(0, "scorch")] = 0.0
 
     shape = A.read(A.export_dts())
@@ -1573,6 +1588,73 @@ def test_a_decal_is_authorable_by_hand():
     assert covered[0].decal_data.texgen_s and covered[0].decal_data.texgen_t
     # and it is not also a shape object
     assert A.object_names(shape) == ["wall"], A.object_names(shape)
+
+
+def test_translucent_objects_are_written_last():
+    """Objects are drawn in list order and a blended surface only composites
+    over what is already in the frame buffer, so everything translucent goes to
+    the end -- whatever order the scene built them in."""
+    from io_scene_dts.dtslib.translucency import (
+        objects_out_of_order,
+        translucent_object_indices,
+    )
+
+    A.reset()
+    arm = A.armature("Bay", bones=(("root", None),))
+    # built glass-first on purpose: discovery order is what the sort overrides
+    A.mesh_object("canopy2", arm, bone="root", material=A.blended_material("glass"))
+    A.mesh_object("hull2", arm, bone="root", material=A.principled_material("hull"))
+    A.mesh_object("strut2", arm, bone="root", material=A.principled_material("strut"))
+
+    shape = A.read(A.export_dts())
+    assert A.object_names(shape) == ["hull", "strut", "canopy"], A.object_names(shape)
+    assert translucent_object_indices(shape) == {2}
+    assert objects_out_of_order(shape) == []
+
+
+def test_an_all_opaque_shape_keeps_its_order():
+    """Nothing translucent, nothing to move: the sort is stable, so a shape
+    without glass comes out in exactly the order it was built."""
+    A.reset()
+    arm = A.armature("Crate", bones=(("root", None),))
+    for name in ("lid", "body", "base"):
+        A.mesh_object(f"{name}2", arm, bone="root", material=A.principled_material(name))
+
+    shape = A.read(A.export_dts())
+    assert A.object_names(shape) == ["lid", "body", "base"], A.object_names(shape)
+
+
+def test_a_decal_needs_something_translucent_to_draw_against():
+    """A shape carrying decals with nothing blended in it writes and reads
+    perfectly and draws its decals wrong, which nothing downstream can
+    diagnose -- so export refuses it rather than shipping it."""
+    from io_scene_dts.mapping.decals import create_decal
+
+    A.reset()
+    arm = A.armature("Wall")
+    verts, faces = A.quad_geometry()
+    opaque = A.principled_material("wall_skin")
+    target = A.mesh_object(
+        "wall2", arm, bone="root", verts=verts, faces=faces, material=opaque,
+    )
+    for polygon in target.data.polygons:
+        polygon.select = True
+    bpy.context.view_layer.update()
+    create_decal(arm, target, name="scorch", material=opaque)
+
+    path = A.tmp(".dts")
+    try:
+        result = bpy.ops.io_scene_dts.export_dts(filepath=path, version="24")
+        assert result == {"CANCELLED"}, result
+    except RuntimeError as exc:
+        assert "translucent" in str(exc), str(exc)
+
+    # blending the material it already has is the whole fix -- read off the
+    # object rather than reusing `opaque`, because giving a decal target its
+    # own material copy means the slot no longer holds the one built above
+    target.active_material.surface_render_method = "BLENDED"
+    shape = A.read(A.export_dts())
+    assert len(shape.decals) == 1
 
 
 def test_decal_coverage_is_what_the_export_writes():
@@ -1601,7 +1683,7 @@ def test_decal_coverage_is_what_the_export_writes():
             a = row * (n + 1) + col
             faces += [(a, a + 1, a + n + 2), (a, a + n + 2, a + n + 1)]
     target = A.mesh_object("wall2", arm, bone="root", verts=verts, faces=faces)
-    target.data.materials.append(A.principled_material("scorch"))
+    target.data.materials.append(A.blended_material("scorch"))
     for polygon in target.data.polygons:
         polygon.select = True
     bpy.context.view_layer.objects.active = target
@@ -1669,7 +1751,7 @@ def test_moving_the_projector_changes_the_covered_faces():
     arm = A.armature("Wall")
     verts, faces = A.quad_geometry()
     target = A.mesh_object("wall2", arm, bone="root", verts=verts, faces=faces)
-    target.data.materials.append(A.principled_material("scorch"))
+    target.data.materials.append(A.blended_material("scorch"))
     for polygon in target.data.polygons:
         polygon.select = True
     bpy.context.view_layer.objects.active = target

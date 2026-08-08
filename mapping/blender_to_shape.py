@@ -20,6 +20,7 @@ from ..dtslib import Shape
 from ..dtslib.primitives import MAX_TS_SET_SIZE
 from ..dtslib.runtime_links import recompute_runtime_links
 from ..dtslib.sorted_build import build_sorted, flat_sorted
+from ..dtslib.translucency import shape_has_translucent_mesh
 from ..dtslib.types import (
     PRIM_INDEXED,
     PRIM_NO_MATERIAL,
@@ -163,6 +164,22 @@ def blender_to_shape(
     if source_order:
         discovery = {k: i for i, k in enumerate(order)}
         order.sort(key=lambda k: (0, source_order[k]) if k in source_order else (1, discovery[k]))
+
+    # ...and then everything translucent moves to the end, whatever order the
+    # source put it in.  Objects are drawn in list order and a blended surface
+    # only composites correctly over what is already in the frame buffer, so an
+    # opaque object drawn after one blends against the wrong background -- and
+    # one drawn after a decal erases it.  The sort is stable, so it lifts the
+    # opaque objects ahead rather than reshuffling either group, and it runs
+    # per sub-shape for free because `per_sub_objects` buckets by sub-shape
+    # below.  This is where an imported shape can come out ordered differently
+    # from the file it was read from: 3 corpus shapes are, and all 3 have an
+    # opaque object sitting behind a translucent one.
+    translucent_keys = {
+        key for key, by_dkey in grouped.items()
+        if any(is_translucent(b) for b in by_dkey.values())
+    }
+    order.sort(key=lambda k: k in translucent_keys)
 
     # the armature may carry the full imported detail table — details can
     # exist with no geometry at all (e.g. an empty collision detail)
@@ -327,6 +344,22 @@ def blender_to_shape(
     texture_writes += ifl_writes
     warnings += ifl_warnings
 
+    # -- decals need something translucent to draw against --------------
+    # Asked here rather than at build_decals because translucency is a
+    # material-list flag and the list does not exist until the line above.
+    # Refused rather than warned: unlike a version the engine forces on you,
+    # this is fixable in Blender in one click, and a shape that writes and
+    # reads perfectly while drawing its decals wrong is the kind of failure
+    # nothing downstream can diagnose.
+    if shape.decals and not shape_has_translucent_mesh(shape):
+        raise ExportError(
+            f"this shape has {len(shape.decals)} decal(s) and nothing translucent "
+            f"to draw them against; the engine needs at least one blended mesh in "
+            f"a shape that carries decals.  Set Render Method to Blended on the "
+            f"decal's own material, or on a material of the mesh it sits on "
+            f"(Material Properties > Settings).  Every one of the corpus's 153 "
+            f"decal-bearing shapes does one or the other"
+        )
 
     # engine scratch links, derivable from the hierarchy we just built
     recompute_runtime_links(shape)

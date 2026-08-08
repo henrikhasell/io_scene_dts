@@ -144,7 +144,15 @@ viewport, dropped outright, or frozen against Blender-side edits.
   regenerated rather than carried.
 - Decals import as projected UVs with a projector empty, and re-export from it.
   **Add DTS Decal** (Object Properties → DTS Mesh) makes one from the faces you
-  have selected, across every detail level of the object.
+  have selected, across every detail level of the object.  A shape that carries
+  decals must have **something translucent** in it for the engine to draw them
+  against — the decal's own material or the mesh it sits on — and export
+  refuses one that does not.
+- **Translucent objects are written last.**  Objects are drawn in list order
+  and a blended surface only composites correctly over what is already in the
+  frame buffer, so export moves everything with a translucent mesh to the end
+  of its sub-shape.  Nothing else moves, and an all-opaque shape comes out in
+  exactly the order you built it.
 - Multi-frame (vertex-animated) meshes import as shape keys (`frame_NNN`);
   nothing drives them from the sequence's `frame` track.
 - Extra material frames are `FLOAT2` mesh attributes; only frame 0 renders.

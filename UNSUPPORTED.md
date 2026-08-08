@@ -37,6 +37,7 @@ result rather than because this add-on will not — they are in §7.
 | DTS version 25+ | Same error.  Torque 3D–era shapes are not read. | `dtslib/reader.py:71` |
 | Writing any version but 23/24 | `only 24 (Torque) and 23 (Tribes 2) are supported — older versions keep skins in a separate section`.  You cannot import a v19 shape and write a v19 shape. | `dtslib/writer.py:22` |
 | Exporting without an armature | `select an armature (the DTS shape root)` — the armature *is* the shape. | `mapping/blender_to_shape.py:68` |
+| Exporting decals with nothing translucent | `this shape has N decal(s) and nothing translucent to draw them against`.  The engine needs a blended mesh in a shape that carries decals; without one the file is valid and the decals draw wrong, which nothing downstream can diagnose.  Refused rather than warned because it is one click to fix — Render Method → Blended on the decal's own material or on the mesh it sits on — and because every one of the corpus's 153 decal-bearing shapes does one or the other. | `mapping/blender_to_shape.py:354` |
 
 ---
 
@@ -358,6 +359,17 @@ you export.
   better order; what is lost is the original's own answer to the question.
   Set the mode to `FLAT` to keep the type without partitioning anything, or
   make the material opaque.  `mapping/blender_to_shape.py:720`
+- **The source file's object order, when something translucent is not last.**
+  Objects are drawn in list order and a blended surface only composites
+  correctly over what is already in the frame buffer, so export moves every
+  object with a translucent mesh to the end of its sub-shape.  For almost every
+  shape this changes nothing — 3 of the 849 corpus shapes have an opaque object
+  sitting behind a translucent one (`beacon`, `deploy_sensor_motion`,
+  `pack_deploy_sensor_motion`), and only those come out reordered.  The sort is
+  stable, so nothing else moves, and every index that names an object — decals,
+  object states, the sequences' `vis`/`frame`/`matframe` matters sets — is
+  assigned after it and follows.  What is lost is the original's own ordering
+  for those three.  `mapping/blender_to_shape.py:182`, `dtslib/translucency.py`
 - **`merge_indices` naming a vertex no face uses.**  A strip-packed source mesh
   carries vertices that only ever appear in a degenerate stitch triangle.  Once
   the mesh is edited and re-derived as triangle lists those vertices are gone,
@@ -579,9 +591,9 @@ the same answer either way, and because someone will otherwise try to fix them.
 - **192 nodes or objects is the ceiling.**  `TSIntegerSet` is 6 dwords wide, so
   a shape cannot name a 193rd node in a matters set — there is no bit for it.
   Refused rather than written short.
-  `mapping/blender_to_shape.py:94,280`, `dtslib/primitives.py:14`
+  `mapping/blender_to_shape.py:96,297`, `dtslib/primitives.py:14`
 - **65535 unique vertices is the ceiling for one mesh.**  The index buffer is
-  u16.  Split the mesh.  `mapping/blender_to_shape.py:596`
+  u16.  Split the mesh.  `mapping/blender_to_shape.py:638`
 - **A `.dsq` cannot carry object state.**  `DsqFile` has no `object_states`,
   `decal_states` or IFL tables at all, so a sequence's visibility, frame,
   matframe and decal tracks have nowhere to go.  They round-trip through
@@ -590,7 +602,7 @@ the same answer either way, and because someone will otherwise try to fix them.
 - **A mesh cannot be both skinned and vertex-animated.**  `mesh_type` is one
   field, so `frame_*` shape keys on a skinned mesh are ignored with a warning.
   The same field is why a skin cannot also be sorted.
-  `mapping/blender_to_shape.py:689`
+  `mapping/blender_to_shape.py:718`
 - **One alpha channel carries two meanings and the file does not say which.**
   On an env-mapped material it is the reflectance mask; otherwise it is
   transparency.  There is no field to disambiguate, so a reader has to choose.
@@ -640,7 +652,7 @@ Two Blender suites, and the difference between them is the point.
 and exports.  That covers reading files the add-on did not write, and it is the
 only way to check a feature no fixture-free scene can produce.
 
-`tests/blender/test_authoring.py` (77 tests) never imports anything.  Every test
+`tests/blender/test_authoring.py` (80 tests) never imports anything.  Every test
 builds a shape from nothing — armature, meshes, materials, actions — exports it,
 and reads the feature back out of the file.  This is the suite that answers
 "can a user *make* one of these", which a round-trip cannot: the exporter may be
@@ -657,10 +669,11 @@ and both directions, billboards including the Z-axis
 variant no shipped shape uses, sorted meshes in both modes and the promotion of translucent ones, skins, vertex
 animation, material frames, sequences, triggers, ground frames, object-state
 tracks, node scale, DSQ export, IFL flipbooks in both directions including
-the .ifl sidecar, decals, the size rule both texture checkboxes feed, and both
-output versions.
+the .ifl sidecar, decals and the translucency a shape needs to draw them, the
+object ordering that translucency forces, the size rule both texture checkboxes
+feed, and both output versions.
 
-`scripts/mutate.py` (60 mutations) disables one capability at a time and checks
+`scripts/mutate.py` (64 mutations) disables one capability at a time and checks
 the matching test notices.  It has caught its own drift six times — two
 mutations that stopped biting when the code moved, two that were never testing
 what they claimed, and a redundant guard in the reflectance export path that no
@@ -670,7 +683,15 @@ line that *does* the thing rather than on the expression it reads:
 `texture-overwrite` named `write.image.save(...)` and went quietly unrun the
 moment a resized copy meant the save took a local `image` instead.
 
-It also, once, caught *itself*.  `sorted-threading` is the only mutation
+Two rules are checked against the corpus rather than only asserted about, since
+both are claims about what shipped art does and a claim like that goes stale
+silently.  `tests/test_translucency.py` reads every corpus shape and confirms
+that not one of the 153 that carry decals is entirely opaque — the evidence the
+export refusal rests on — and the ordering rule was measured the same way: 3 of
+849 shapes have an opaque object sitting behind a translucent one, which is the
+whole of what the sort changes.
+
+It also, once, caught *itself*.  `sorted-threading` was the only mutation
 verified by pytest rather than Blender, and its runner shelled
 `sys.executable` — the system python, since this tool is documented as
 `scripts/mutate.py`, whose shebang is `/usr/bin/env python3`, while the fast

@@ -1922,7 +1922,9 @@ def test_legacy_decal_meshes_migrate_to_their_empty():
     arm = A.armature("Wall")
     verts, faces = A.quad_geometry()
     target = A.mesh_object("wall2", arm, bone="root", verts=verts, faces=faces)
-    decal_mat = bpy.data.materials.new("scorch")
+    # blended, because a shape that carries decals has to have something
+    # translucent for the engine to draw them against
+    decal_mat = A.blended_material("scorch")
 
     legacy = A.mesh_object(
         "scorch2", arm, bone="root", verts=verts, faces=faces, material=decal_mat

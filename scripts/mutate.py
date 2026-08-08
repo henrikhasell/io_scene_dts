@@ -31,7 +31,10 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 
 # mutations whose tests live in the pytest suite rather than inside Blender
-RUNNERS = {"sorted-threading": "pytest"}
+RUNNERS = {
+    "sorted-threading": "pytest",
+    "decal-material-counts-as-translucent": "pytest",
+}
 
 # name -> (file, find, replace, tests that must fail)
 MUTATIONS = {
@@ -480,6 +483,42 @@ MUTATIONS = {
     # dropping leaves the writer's refusal to cancel a v23 export, and
     # dropping unconditionally takes them off v24, where they fit.  Anchored
     # on `warnings = []` because the same `if` opens the writer's refusal
+    # the sort is the whole of the ordering rule, and its absence is invisible
+    # to anything that only checks a shape exported: the file is valid, the
+    # objects are all there, and only the draw order is wrong
+    "translucent-last": (
+        "mapping/blender_to_shape.py",
+        "    order.sort(key=lambda k: k in translucent_keys)",
+        "    pass",
+        ["test_translucent_objects_are_written_last"],
+    ),
+    # the other half of the rule is what the sort must *not* do.  Only the
+    # translucency may decide, so a tiebreaker added to the key -- the obvious
+    # thing to reach for when a sort looks under-specified -- reshuffles the
+    # opaque objects a shape was built in.  Inverting the key would not do:
+    # with nothing translucent it is a constant either way, and a stable sort
+    # leaves a constant key alone
+    "translucent-last-stability": (
+        "mapping/blender_to_shape.py",
+        "    order.sort(key=lambda k: k in translucent_keys)",
+        "    order.sort(key=lambda k: (k in translucent_keys, k))",
+        ["test_an_all_opaque_shape_keeps_its_order"],
+    ),
+    "decals-need-translucency": (
+        "mapping/blender_to_shape.py",
+        "    if shape.decals and not shape_has_translucent_mesh(shape):",
+        "    if False:",
+        ["test_a_decal_needs_something_translucent_to_draw_against"],
+    ),
+    # a decal keeps its material on decal_data rather than in a primitive of
+    # its own, so a check that reads primitives alone calls the 59 corpus
+    # shapes whose only translucency is a decal's entirely opaque
+    "decal-material-counts-as-translucent": (
+        "dtslib/translucency.py",
+        "    if mesh.decal_data is not None:\n        used.add(mesh.decal_data.material_index & PRIM_MATERIAL_MASK)",
+        "    pass",
+        ["test_a_translucent_decal_mesh_counts"],
+    ),
     "ground-drop": (
         "dtslib/writer.py",
         "    warnings = []\n    if version <= 23 and shape.ground_translations:",

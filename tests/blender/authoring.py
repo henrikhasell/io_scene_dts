@@ -149,6 +149,19 @@ def principled_material(name, *, colour=(0.8, 0.2, 0.2, 1.0)):
     return mat
 
 
+def blended_material(name, *, colour=(0.8, 0.2, 0.2, 1.0)):
+    """A Principled material set to Blended -- MAT_TRANSLUCENT on export.
+
+    Export reads the blend mode off the shader rather than a stored prop, so
+    this is the whole of it.  Decal targets use it because a shape that carries
+    decals has to have something translucent in it for the engine to draw them
+    against; see `dtslib/translucency.py`.
+    """
+    mat = principled_material(name, colour=colour)
+    mat.surface_render_method = "BLENDED"
+    return mat
+
+
 def generated_image(name, *, size=4, colour=(0.25, 0.5, 0.75), ramp=False):
     """An image made in Blender, with no file behind it -- what a user has.
 
