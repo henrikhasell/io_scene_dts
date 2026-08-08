@@ -68,13 +68,29 @@ tests = [
 if patterns and not tests:
     print(f"no test matches {patterns}")
     sys.exit(2)
+def _result(text):
+    """A result line, always starting a line of its own.
+
+    Blender writes operator reports and Python tracebacks straight to the
+    process's stdout and stderr, outside this script's buffer.  A `print` that
+    lands while one of those is mid-line gets glued onto its end -- and
+    `scripts/mutate.py` matches on lines *starting* with PASS/FAIL, so a
+    swallowed FAIL reads as "the test did not run at all" and the mutation
+    reports itself uncaught.  That is the harness certifying itself healthy,
+    which is the one thing it must never do.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    print(f"\n{text}", flush=True)
+
+
 for name, fn in tests:
     try:
         fn()
-        print(f"PASS {name}")
+        _result(f"PASS {name}")
     except Exception:
-        print(f"FAIL {name}")
         traceback.print_exc()
+        _result(f"FAIL {name}")
         failures.append(name)
 
 io_scene_dts.unregister()

@@ -483,6 +483,21 @@ MUTATIONS = {
     # dropping leaves the writer's refusal to cancel a v23 export, and
     # dropping unconditionally takes them off v24, where they fit.  Anchored
     # on `warnings = []` because the same `if` opens the writer's refusal
+    # without the flush the export raises IndexError off an empty uv_layer.data
+    "edit-mode-flush": (
+        "mapping/blender_to_shape.py",
+        '    if obj is None or obj.mode != "EDIT":',
+        "    if True:",
+        ["test_exporting_from_edit_mode"],
+    ),
+    # and the restore, which is the half a test could easily not check: the
+    # mode is the user's and an export borrows it
+    "edit-mode-restore": (
+        "mapping/blender_to_shape.py",
+        '        if context.view_layer.objects.active is obj:\n            bpy.ops.object.mode_set(mode="EDIT")',
+        "        pass",
+        ["test_exporting_from_edit_mode"],
+    ),
     # the sort is the whole of the ordering rule, and its absence is invisible
     # to anything that only checks a shape exported: the file is valid, the
     # objects are all there, and only the draw order is wrong

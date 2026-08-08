@@ -1991,6 +1991,49 @@ def test_v24_keeps_the_ground_frames_v23_would_drop():
     assert len(shape.ground_translations) == 1
 
 
+def test_exporting_from_edit_mode():
+    """Exporting mid-edit is what a user does, and it used to raise IndexError.
+
+    Edit Mode holds the geometry in a BMesh and does not write the Mesh
+    datablock's parallel arrays until it is flushed.  A UV layer is the trap:
+    it exists, so the exporter's `if uv_layer` guard passes, while its `data`
+    is empty beside a full `loops` -- so the first corner blew up on a raw
+    `bpy_prop_collection[index]` error naming nothing the user could act on.
+
+    The UVs have to be *right*, not merely present: a flush that did not happen
+    would read zeros for every corner, which is a shape that exports and is
+    textured wrong.
+    """
+    A.reset()
+    arm = A.armature("Panel")
+    verts, faces = A.quad_geometry()
+    target = A.mesh_object(
+        "panel2", arm, bone="root", verts=verts, faces=faces,
+        material=A.principled_material("hazard"),
+    )
+    # a UV that is not the default, so a zeroed read is distinguishable
+    uv_layer = target.data.uv_layers[0] if target.data.uv_layers else target.data.uv_layers.new()
+    for i, loop_uv in enumerate(uv_layer.data):
+        loop_uv.uv = (0.25 + 0.5 * (i % 2), 0.75)
+
+    bpy.context.view_layer.objects.active = target
+    bpy.ops.object.mode_set(mode="EDIT")
+    assert target.mode == "EDIT"
+    # the datablock the exporter reads is not caught up yet -- the bug's cause
+    assert len(target.data.uv_layers[0].data) == 0
+
+    shape = A.read(A.export_dts())
+
+    # ...and the mode is the user's: export puts it back, having borrowed it
+    assert target.mode == "EDIT", "export left the user out of Edit Mode"
+
+    mesh = A.live_meshes(shape)[0]
+    assert mesh.tverts, "no UVs reached the file"
+    # V flipped on the way out (blender_to_shape.py:665), so 0.75 is 0.25 here
+    assert all(abs(v - 0.25) < 1e-5 for _, v in mesh.tverts), mesh.tverts
+    assert {round(u, 5) for u, _ in mesh.tverts} == {0.25, 0.75}, mesh.tverts
+
+
 def test_a_texture_is_found_beside_the_file():
     """The engine looks a material's texture up by name next to the .dts, so
     the material name is the filename: no path is stored."""

@@ -37,7 +37,7 @@ result rather than because this add-on will not — they are in §7.
 | DTS version 25+ | Same error.  Torque 3D–era shapes are not read. | `dtslib/reader.py:71` |
 | Writing any version but 23/24 | `only 24 (Torque) and 23 (Tribes 2) are supported — older versions keep skins in a separate section`.  You cannot import a v19 shape and write a v19 shape. | `dtslib/writer.py:22` |
 | Exporting without an armature | `select an armature (the DTS shape root)` — the armature *is* the shape. | `mapping/blender_to_shape.py:68` |
-| Exporting decals with nothing translucent | `this shape has N decal(s) and nothing translucent to draw them against`.  The engine needs a blended mesh in a shape that carries decals; without one the file is valid and the decals draw wrong, which nothing downstream can diagnose.  Refused rather than warned because it is one click to fix — Render Method → Blended on the decal's own material or on the mesh it sits on — and because every one of the corpus's 153 decal-bearing shapes does one or the other. | `mapping/blender_to_shape.py:354` |
+| Exporting decals with nothing translucent | `this shape has N decal(s) and nothing translucent to draw them against`.  The engine needs a blended mesh in a shape that carries decals; without one the file is valid and the decals draw wrong, which nothing downstream can diagnose.  Refused rather than warned because it is one click to fix — Render Method → Blended on the decal's own material or on the mesh it sits on — and because every one of the corpus's 153 decal-bearing shapes does one or the other. | `mapping/blender_to_shape.py:395` |
 
 ---
 
@@ -128,7 +128,7 @@ way to check your work short of re-reading the exported file.
   wins — `NONE` is the value being promoted from, so it is not a way to opt
   out.  Skins and vertex-animation meshes cannot be sorted at all (§7) and keep
   their type, silently, since nobody asked.  What this costs is in §4.
-  `mapping/blender_to_shape.py:720`
+  `mapping/blender_to_shape.py:803`
 
   Triangles are never split, since that would change the vertex count
   and break the detail-level sharing above, so a large face crossing a splitting
@@ -343,7 +343,7 @@ you export.
   and a multi-frame mesh's array runs past the shared prefix into its frame
   blocks.  A multi-frame mesh can still be a *parent*.  14 meshes in the whole
   corpus share a skin, so this costs almost nothing.
-  `mapping/blender_to_shape.py:511`
+  `mapping/blender_to_shape.py:570`
 - **Sequences re-export larger than they were read.**  `gman`'s node rotations
   go from 13,556 to 18,588 entries, which is most of that shape's growth.  This
   predates the geometry work and is not caused by it: the exporter writes a key
@@ -358,7 +358,7 @@ you export.
   different file.  The geometry is unchanged and the engine draws it in a
   better order; what is lost is the original's own answer to the question.
   Set the mode to `FLAT` to keep the type without partitioning anything, or
-  make the material opaque.  `mapping/blender_to_shape.py:720`
+  make the material opaque.  `mapping/blender_to_shape.py:803`
 - **The source file's object order, when something translucent is not last.**
   Objects are drawn in list order and a blended surface only composites
   correctly over what is already in the frame buffer, so export moves every
@@ -369,7 +369,7 @@ you export.
   stable, so nothing else moves, and every index that names an object — decals,
   object states, the sequences' `vis`/`frame`/`matframe` matters sets — is
   assigned after it and follows.  What is lost is the original's own ordering
-  for those three.  `mapping/blender_to_shape.py:182`, `dtslib/translucency.py`
+  for those three.  `mapping/blender_to_shape.py:223`, `dtslib/translucency.py`
 - **`merge_indices` naming a vertex no face uses.**  A strip-packed source mesh
   carries vertices that only ever appear in a degenerate stitch triangle.  Once
   the mesh is edited and re-derived as triangle lists those vertices are gone,
@@ -591,9 +591,9 @@ the same answer either way, and because someone will otherwise try to fix them.
 - **192 nodes or objects is the ceiling.**  `TSIntegerSet` is 6 dwords wide, so
   a shape cannot name a 193rd node in a matters set — there is no bit for it.
   Refused rather than written short.
-  `mapping/blender_to_shape.py:96,297`, `dtslib/primitives.py:14`
+  `mapping/blender_to_shape.py:137,338`, `dtslib/primitives.py:14`
 - **65535 unique vertices is the ceiling for one mesh.**  The index buffer is
-  u16.  Split the mesh.  `mapping/blender_to_shape.py:638`
+  u16.  Split the mesh.  `mapping/blender_to_shape.py:679`
 - **A `.dsq` cannot carry object state.**  `DsqFile` has no `object_states`,
   `decal_states` or IFL tables at all, so a sequence's visibility, frame,
   matframe and decal tracks have nowhere to go.  They round-trip through
@@ -602,7 +602,7 @@ the same answer either way, and because someone will otherwise try to fix them.
 - **A mesh cannot be both skinned and vertex-animated.**  `mesh_type` is one
   field, so `frame_*` shape keys on a skinned mesh are ignored with a warning.
   The same field is why a skin cannot also be sorted.
-  `mapping/blender_to_shape.py:718`
+  `mapping/blender_to_shape.py:759`
 - **One alpha channel carries two meanings and the file does not say which.**
   On an env-mapped material it is the reflectance mask; otherwise it is
   transparency.  There is no field to disambiguate, so a reader has to choose.
@@ -652,7 +652,7 @@ Two Blender suites, and the difference between them is the point.
 and exports.  That covers reading files the add-on did not write, and it is the
 only way to check a feature no fixture-free scene can produce.
 
-`tests/blender/test_authoring.py` (80 tests) never imports anything.  Every test
+`tests/blender/test_authoring.py` (81 tests) never imports anything.  Every test
 builds a shape from nothing — armature, meshes, materials, actions — exports it,
 and reads the feature back out of the file.  This is the suite that answers
 "can a user *make* one of these", which a round-trip cannot: the exporter may be
@@ -673,7 +673,7 @@ the .ifl sidecar, decals and the translucency a shape needs to draw them, the
 object ordering that translucency forces, the size rule both texture checkboxes
 feed, and both output versions.
 
-`scripts/mutate.py` (64 mutations) disables one capability at a time and checks
+`scripts/mutate.py` (66 mutations) disables one capability at a time and checks
 the matching test notices.  It has caught its own drift six times — two
 mutations that stopped biting when the code moved, two that were never testing
 what they claimed, and a redundant guard in the reflectance export path that no
@@ -691,7 +691,7 @@ export refusal rests on — and the ordering rule was measured the same way: 3 o
 849 shapes have an opaque object sitting behind a translucent one, which is the
 whole of what the sort changes.
 
-It also, once, caught *itself*.  `sorted-threading` was the only mutation
+It also, once, caught *itself*.  `sorted-threading` was then the only mutation
 verified by pytest rather than Blender, and its runner shelled
 `sys.executable` — the system python, since this tool is documented as
 `scripts/mutate.py`, whose shebang is `/usr/bin/env python3`, while the fast
@@ -700,9 +700,21 @@ with `No module named pytest`, no `FAILED` lines were parsed, and the mutation
 reported itself uncaught for as long as it had been run the documented way.  A
 missing pytest exits 1, indistinguishable from an honest test failure, so the
 runner now demands a summary line naming passed/failed/error before it will
-call anything passed.  Run it when adding a feature; a test that survives its
-own mutation is not a test, and a harness that certifies itself healthy is
-worse than no harness.
+call anything passed.
+
+It has now done that twice, and the second one was the Blender half of the same
+mistake.  `edit-mode-flush` reported *the test did not run at all* while the
+test was in fact failing exactly as intended: Blender writes tracebacks and
+operator reports straight to the process's own streams, outside the runner's
+buffer, so a `FAIL <name>` printed after one landed glued to the end of its
+last line — and `scripts/mutate.py` matches on lines that *start* with
+PASS/FAIL.  The result line now flushes both streams and begins with a newline
+of its own.  Both halves of this were a mutation certifying itself uncaught
+because the harness could not see the failure, which is the one direction the
+tool must never be wrong in.
+
+Run it when adding a feature; a test that survives its own mutation is not a
+test, and a harness that certifies itself healthy is worse than no harness.
 
 `examples/` carries one `.blend` per feature, built from nothing by
 `examples/build_examples.py`, and `examples/verify_in_tribes2.sh` loads them

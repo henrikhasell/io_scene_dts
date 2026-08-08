@@ -11,6 +11,7 @@ space with initialTransforms = inverse of each bone's rest matrix.
 
 from __future__ import annotations
 
+import contextlib
 import math
 
 import bpy
@@ -58,6 +59,36 @@ class ExportError(Exception):
     pass
 
 
+@contextlib.contextmanager
+def flushed_edit_mode(context):
+    """Leave Edit Mode for the duration of the block, then put it back.
+
+    Edit Mode keeps the geometry in a BMesh, and the ``Mesh`` datablock's
+    parallel arrays are not written until it is flushed.  A UV layer is the
+    trap: it still *exists*, so an ``if uv_layer`` guard passes, while
+    ``uv_layer.data`` reads as empty next to a full ``loops`` -- so the first
+    corner exported raised ``IndexError`` rather than anything a user could act
+    on.  ``create_decal`` drops out of Edit Mode before reading faces for the
+    same reason.
+
+    Restored in a ``finally``, because the mode belongs to the user and an
+    export that fails halfway should not leave them somewhere they did not put
+    themselves.  One ``mode_set`` covers multi-object editing in both
+    directions: it exits for every object in the mode, and re-entering with the
+    same active object brings back the others, which are still selected.
+    """
+    obj = context.object
+    if obj is None or obj.mode != "EDIT":
+        yield
+        return
+    bpy.ops.object.mode_set(mode="OBJECT")
+    try:
+        yield
+    finally:
+        if context.view_layer.objects.active is obj:
+            bpy.ops.object.mode_set(mode="EDIT")
+
+
 def blender_to_shape(
     context,
     arm_obj: bpy.types.Object,
@@ -67,7 +98,17 @@ def blender_to_shape(
     """The shape, the textures export has to write beside it, and warnings."""
     if arm_obj is None or arm_obj.type != "ARMATURE":
         raise ExportError("select an armature (the DTS shape root)")
+    with flushed_edit_mode(context):
+        return _blender_to_shape(context, arm_obj, selected_only, do_export_sequences)
 
+
+def _blender_to_shape(
+    context,
+    arm_obj: bpy.types.Object,
+    selected_only: bool,
+    do_export_sequences: bool,
+) -> tuple[Shape, list, list[str]]:
+    """The body, with Edit Mode already flushed by the wrapper above."""
     reset_material_cache()
     warnings: list[str] = []
     shape = Shape()
