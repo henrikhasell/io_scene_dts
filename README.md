@@ -108,7 +108,12 @@ Disk.  For development, symlink this checkout into
   every texture the shape names — made in Blender or loaded from disk — so an
   exported shape carries its art with it.  Existing files are overwritten, so
   exporting *into* a game's `textures/` tree rewrites the art there; untick
-  **Export Textures** to write the `.dts` alone.
+  **Export Textures** to write the `.dts` alone.  **Scale Textures to Power of
+  Two** (on by default) resizes what is written to the nearest power-of-two
+  dimensions — `100x60` becomes `128x64` — because Torque's texture loader
+  assumes them and a texture that is not one renders white or garbled in-game
+  while looking correct in Blender.  Only the file on disk is resized; the
+  image in your `.blend` is left at whatever size it was authored.
 - **IFL materials** are animated flipbooks.  The file names a `.ifl` sidecar
   listing `<texture> <hold>` per line; that list imports as a frame collection
   on the material, previews as a keyframed switch between its images, and is

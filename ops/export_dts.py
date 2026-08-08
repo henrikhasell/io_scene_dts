@@ -52,6 +52,15 @@ class ExportDTS(bpy.types.Operator, ExportHelper):
         "not art",
         default=True,
     )
+    scale_textures_pot: BoolProperty(
+        name="Scale Textures to Power of Two",
+        description="Resize exported textures to the nearest power-of-two "
+        "dimensions (100x60 becomes 128x64).  Torque's texture loader assumes "
+        "power-of-two sizes, so one that is not renders white or garbled in-game "
+        "while looking correct in Blender.  Only the written file is resized -- "
+        "the image in your .blend is left alone",
+        default=True,
+    )
 
     def execute(self, context):
         arm_obj = context.active_object
@@ -88,6 +97,7 @@ class ExportDTS(bpy.types.Operator, ExportHelper):
         written = write_textures(
             texture_writes, Path(self.filepath).parent, warnings,
             include_images=self.export_textures,
+            power_of_two=self.scale_textures_pot,
         )
 
         for w in warnings:

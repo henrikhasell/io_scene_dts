@@ -418,12 +418,21 @@ is invisible until you export.
   only images with no file behind them and so produced shapes that rendered
   nowhere but the machine that made them: the engine looks for a texture beside
   the `.dts` by bare filename, and a stale one left in place is a wrong render
-  that looks like a right one.  `mapping/texture_io.py:26`
+  that looks like a right one.  `mapping/texture_io.py:53`
+- **The authored size of a non-power-of-two texture.**  Written resampled to
+  the nearest power of two, so a `100x60` lands as `128x64` and an `80x80` is
+  *reduced* to `64x64`.  Torque's texture loader assumes power-of-two
+  dimensions and nothing in the `.dts` records a size, so an unscaled one is a
+  material that renders white in-game and correct in Blender, with nothing to
+  diagnose it by.  A warning names every texture that was resized.  Untick
+  **Scale Textures to Power of Two** to write the authored size instead.  The
+  `.blend` is never touched: the resample is done on a copy that is removed
+  again, because `Image.scale` works in place.  `mapping/texture_io.py:36`
 - **The second of two textures that would write the same file.**  Skipped with
   a warning rather than overwritten — within one export neither of the two is
   the stale one, so there is no basis for picking.  Material names are not
   unique in real shapes: 104 of 630 corpus files reuse one.
-  `mapping/texture_io.py:52`
+  `mapping/texture_io.py:87`
 - **`firstFrame` and `firstFrameOffTime` on an IFL entry.**  Written as zeros
   rather than round-tripped.  They are engine load-time scratch, filled from
   the `.ifl` after it is read, and 53 of the corpus's 64 entries carry

@@ -20,17 +20,52 @@ Textures.  ``UNSUPPORTED.md`` §4 says so too.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
+
+import bpy
+
+
+def nearest_power_of_two(n: int) -> int:
+    """The power of two closest to *n* in log space: 100 -> 128, 80 -> 64."""
+    if n < 1:
+        return 1
+    return 1 << max(0, round(math.log2(n)))
+
+
+def _power_of_two_copy(image):
+    """A power-of-two-sized copy of *image*, or None if it already is one.
+
+    A **copy**, because ``Image.scale`` resamples the datablock in place.  Doing
+    that to the scene's own image would resize the texture the user paints on,
+    the viewport would change behind them, and a second export would resample
+    the already-resampled result.  The caller removes it again.
+    """
+    width, height = image.size
+    target = (nearest_power_of_two(width), nearest_power_of_two(height))
+    if target == (width, height):
+        return None
+    scaled = image.copy()
+    scaled.scale(*target)
+    return scaled
 
 
 def write_textures(writes, texture_dir: Path | None, warnings: list[str],
-                   include_images: bool = True) -> int:
+                   include_images: bool = True,
+                   power_of_two: bool = True) -> int:
     """Save each :class:`materials.TextureWrite` beside the .dts.
 
     ``include_images`` is the export dialog's Export Textures checkbox.  It
     gates *images* only: a generated sidecar like an ``.ifl`` is the shape's own
     animation data rather than art, and the .dts names it, so suppressing it
     would leave a material pointing at a flipbook that does not exist.
+
+    ``power_of_two`` is the Scale Textures to Power of Two checkbox.  Torque
+    renders through fixed-function OpenGL and its texture loader assumes
+    power-of-two dimensions; a 100x60 PNG is why a material comes out white or
+    garbled in-game while looking correct in Blender.  Scaling on the way out
+    means the .blend keeps the art at whatever size it was authored at -- the
+    scene is never modified, only what lands on disk.
 
     Returns how many files were written.  Never raises: a texture that cannot
     be written is a warning, because losing the .dts over it would be worse
@@ -59,26 +94,43 @@ def write_textures(writes, texture_dir: Path | None, warnings: list[str],
         claimed[write.filename.lower()] = write.owner
 
         target = texture_dir / write.filename
+        scaled = None
         try:
             if isinstance(write.image, str):
                 target.write_text(write.image, newline="")
             else:
+                image = write.image
+                if power_of_two:
+                    was = tuple(image.size)
+                    scaled = _power_of_two_copy(image)
+                    if scaled is not None:
+                        image = scaled
+                        warnings.append(
+                            f"material {write.owner!r}: {write.filename} scaled "
+                            f"{was[0]}x{was[1]} -> {image.size[0]}x{image.size[1]} "
+                            f"for the engine's power-of-two textures"
+                        )
                 # restored afterwards: export must not leave the .blend
                 # different from how it found it, and file_format is a property
                 # of the datablock rather than of this one save
-                previous_format = write.image.file_format
+                previous_format = image.file_format
                 try:
-                    write.image.file_format = "PNG"
+                    image.file_format = "PNG"
                     # the filepath argument saves a copy without claiming the
                     # path on the datablock, so a packed scene image does not
                     # quietly become a file-backed one, and an image loaded
                     # from a game tree goes on pointing at where it came from
-                    write.image.save(filepath=str(target))
+                    image.save(filepath=str(target))
                 finally:
-                    write.image.file_format = previous_format
+                    image.file_format = previous_format
         except (OSError, RuntimeError) as e:
             warnings.append(f"material {write.owner!r}: could not write {target}: {e}")
             continue
+        finally:
+            # the copy is export scratch; leaving it behind would put a second
+            # datablock of every non-power-of-two texture in the .blend
+            if scaled is not None:
+                bpy.data.images.remove(scaled)
         written += 1
 
     return written

@@ -121,6 +121,15 @@ MUTATIONS = {
         "            last = max(last, fc.keyframe_points[-1].co[0])\n    return int(round(last)) + 1",
         ["test_removing_a_keyframe_shortens_the_sequence"],
     ),
+    # Disabling the scale is invisible to any test that only checks a texture
+    # was written -- the file is still there, just the wrong size -- so the
+    # authoring test reads the written PNG's dimensions back off disk.
+    "texture-power-of-two": (
+        "mapping/texture_io.py",
+        "    if target == (width, height):\n        return None",
+        "    if True:\n        return None",
+        ["test_textures_are_scaled_to_a_power_of_two_on_export"],
+    ),
     "material-flag-bits": (
         "mapping/materials.py",
         '    "dts_bump_map_only": MAT_BUMP_MAP_ONLY,',

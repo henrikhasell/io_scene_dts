@@ -935,6 +935,77 @@ def test_export_textures_gates_images_but_not_the_ifl():
     assert shape.name(shape.ifl_materials[0].raw[0]) == "flame.ifl"
 
 
+def test_textures_are_scaled_to_a_power_of_two_on_export():
+    """Torque's texture loader assumes power-of-two dimensions.
+
+    A 100x60 PNG looks right in Blender and renders white or garbled in-game,
+    and nothing in the .dts records a size, so there is no later point at which
+    this could be caught.  Nearest in log space: 100 -> 128 and 60 -> 64 (both
+    up), while 80 would go down to 64.
+
+    The scaling happens on the way out only.  ``Image.scale`` resamples in
+    place, so doing it to the scene's image would resize the texture the user
+    paints on, and a second export would resample the resample.
+    """
+    import tempfile
+
+    A.reset()
+    arm = A.armature("Odd")
+    image = bpy.data.images.new("odd", width=100, height=60, alpha=True)
+    image.pixels = [0.5] * (100 * 60 * 4)
+    image.update()
+    image.pack()
+    A.mesh_object("body2", arm, bone="root",
+                  material=A.image_material("odd", diffuse=image))
+
+    out = Path(tempfile.mkdtemp()) / "odd.dts"
+    A.export_dts(str(out))
+
+    # the file on disk is power of two...
+    written = bpy.data.images.load(str(out.parent / "odd.png"))
+    assert tuple(written.size) == (128, 64), tuple(written.size)
+    # ...the scene's own image is exactly as the user left it...
+    assert tuple(image.size) == (100, 60), "export resampled the scene's image"
+    # ...and the scratch copy did not stay behind in the .blend
+    assert sorted(i.name for i in bpy.data.images if i.name.startswith("odd")) == [
+        "odd", "odd.png",
+    ]
+
+    # unticked, the file keeps the authored size
+    plain = Path(tempfile.mkdtemp()) / "odd.dts"
+    A.export_dts(str(plain), scale_textures_pot=False)
+    kept = bpy.data.images.load(str(plain.parent / "odd.png"))
+    assert tuple(kept.size) == (100, 60), tuple(kept.size)
+
+
+def test_a_power_of_two_texture_is_left_alone():
+    """No copy, no resample and no warning for art that is already correct."""
+    import tempfile
+
+    from io_scene_dts.mapping.texture_io import nearest_power_of_two
+
+    assert [nearest_power_of_two(n) for n in (1, 60, 80, 100, 128, 129)] == [
+        1, 64, 64, 128, 128, 128,
+    ]
+
+    A.reset()
+    arm = A.armature("Even")
+    image = bpy.data.images.new("even", width=64, height=32, alpha=True)
+    image.pixels = [0.5] * (64 * 32 * 4)
+    image.update()
+    image.pack()
+    A.mesh_object("body2", arm, bone="root",
+                  material=A.image_material("even", diffuse=image))
+
+    out = Path(tempfile.mkdtemp()) / "even.dts"
+    A.export_dts(str(out))
+    written = bpy.data.images.load(str(out.parent / "even.png"))
+    assert tuple(written.size) == (64, 32)
+    assert sorted(i.name for i in bpy.data.images if i.name.startswith("even")) == [
+        "even", "even.png",
+    ]
+
+
 def test_a_texture_loaded_from_disk_is_copied_beside_the_dts():
     """Open a .png, put it on a material, export: the .png comes along.
 
