@@ -126,9 +126,34 @@ MUTATIONS = {
     # authoring test reads the written PNG's dimensions back off disk.
     "texture-power-of-two": (
         "mapping/texture_io.py",
-        "    if target == (width, height):\n        return None",
-        "    if True:\n        return None",
-        ["test_textures_are_scaled_to_a_power_of_two_on_export"],
+        "    width, height = size\n    if power_of_two:",
+        "    width, height = size\n    if False:",
+        [
+            "test_textures_are_scaled_to_a_power_of_two_on_export",
+            "test_the_export_size_rule",
+        ],
+    ),
+    "texture-size-limit": (
+        "mapping/texture_io.py",
+        "    if max_size and max(width, height) > max_size:",
+        "    if False:",
+        [
+            "test_a_texture_larger_than_512_is_scaled_down_on_export",
+            "test_the_export_size_rule",
+        ],
+    ),
+    # the cap has to divide both sides, not clamp the long one: clamping turns
+    # a 1024x256 texture into 512x256 and stretches the art 2:1, which nothing
+    # downstream records and no in-game look would obviously blame on export
+    "texture-size-limit-aspect": (
+        "mapping/texture_io.py",
+        "        factor = max_size / max(width, height)\n"
+        "        width, height = max(1, round(width * factor)), max(1, round(height * factor))",
+        "        width, height = min(width, max_size), min(height, max_size)",
+        [
+            "test_a_texture_larger_than_512_is_scaled_down_on_export",
+            "test_the_export_size_rule",
+        ],
     ),
     # Not splitting is invisible to anything that only checks the decal draws:
     # it still draws, on a material 25 meshes share, and only the frame rate
@@ -238,10 +263,13 @@ MUTATIONS = {
             "test_a_reflectance_round_trips_byte_identically",
         ],
     ),
-    # ...and the checkbox is the only thing that stops it, so it has to bite
+    # ...and the checkbox is the only thing that stops it, so it has to bite.
+    # `image`, not `write.image`: the save takes whichever the size rule left,
+    # the original or the resized copy, and anchoring on the field this reads
+    # from is what let the mutation go stale when that variable appeared
     "texture-overwrite": (
         "mapping/texture_io.py",
-        "                    write.image.save(filepath=str(target))",
+        "                    image.save(filepath=str(target))",
         "                    pass",
         ["test_export_overwrites_a_source_texture"],
     ),

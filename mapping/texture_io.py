@@ -26,6 +26,9 @@ from pathlib import Path
 import bpy
 
 
+MAX_TEXTURE_SIZE = 512
+
+
 def nearest_power_of_two(n: int) -> int:
     """The power of two closest to *n* in log space: 100 -> 128, 80 -> 64."""
     if n < 1:
@@ -33,17 +36,41 @@ def nearest_power_of_two(n: int) -> int:
     return 1 << max(0, round(math.log2(n)))
 
 
-def _power_of_two_copy(image):
-    """A power-of-two-sized copy of *image*, or None if it already is one.
+def export_size(size, power_of_two: bool, max_size: int | None):
+    """The dimensions a texture should be written at, from the two checkboxes.
+
+    One function rather than two passes, because two passes would resample
+    twice -- a 1000x600 image rounded to 1024x512 and then fitted to 512 would
+    go through the filter once for each, and a resample of a resample is
+    visibly softer than one straight to the answer.
+
+    Power-of-two first, then the cap, and the cap divides rather than clamps
+    each side on its own: halving the *longest* side and scaling the other to
+    match keeps the aspect ratio, where clamping only the side that is too big
+    would stretch the art.  Rounding the fitted result back to powers of two
+    cannot undo the cap, because the cap is itself a power of two and rounding
+    a value at or below it can only reach it, never pass it.
+    """
+    width, height = size
+    if power_of_two:
+        width, height = nearest_power_of_two(width), nearest_power_of_two(height)
+    if max_size and max(width, height) > max_size:
+        factor = max_size / max(width, height)
+        width, height = max(1, round(width * factor)), max(1, round(height * factor))
+        if power_of_two:
+            width, height = nearest_power_of_two(width), nearest_power_of_two(height)
+    return width, height
+
+
+def _resized_copy(image, target):
+    """A copy of *image* at *target*, or None if it is already that size.
 
     A **copy**, because ``Image.scale`` resamples the datablock in place.  Doing
     that to the scene's own image would resize the texture the user paints on,
     the viewport would change behind them, and a second export would resample
     the already-resampled result.  The caller removes it again.
     """
-    width, height = image.size
-    target = (nearest_power_of_two(width), nearest_power_of_two(height))
-    if target == (width, height):
+    if tuple(target) == tuple(image.size):
         return None
     scaled = image.copy()
     scaled.scale(*target)
@@ -52,7 +79,8 @@ def _power_of_two_copy(image):
 
 def write_textures(writes, texture_dir: Path | None, warnings: list[str],
                    include_images: bool = True,
-                   power_of_two: bool = True) -> int:
+                   power_of_two: bool = True,
+                   max_size: int | None = MAX_TEXTURE_SIZE) -> int:
     """Save each :class:`materials.TextureWrite` beside the .dts.
 
     ``include_images`` is the export dialog's Export Textures checkbox.  It
@@ -66,6 +94,16 @@ def write_textures(writes, texture_dir: Path | None, warnings: list[str],
     garbled in-game while looking correct in Blender.  Scaling on the way out
     means the .blend keeps the art at whatever size it was authored at -- the
     scene is never modified, only what lands on disk.
+
+    ``max_size`` is the Limit Textures to 512x512 checkbox, as a number rather
+    than a flag so a caller can say what the limit is; None is unlimited.  It
+    is a budget rather than a correctness rule -- an oversized texture renders,
+    it just costs: the engine uploads the whole thing and mipmaps it, and the
+    driver's own loader resamples anything past ``GL_MAX_TEXTURE_SIZE`` at load
+    (``platformWin32/d3dgl.cc:9343``), so the download and the VRAM are paid
+    for detail the card may then throw away.  512 is what the art this format
+    ships with is built to: of the 1062 textures in the corpus's texture trees,
+    3 are larger, and all 3 are from a modern tree rather than a game's.
 
     Returns how many files were written.  Never raises: a texture that cannot
     be written is a warning, because losing the .dts over it would be worse
@@ -100,16 +138,28 @@ def write_textures(writes, texture_dir: Path | None, warnings: list[str],
                 target.write_text(write.image, newline="")
             else:
                 image = write.image
-                if power_of_two:
-                    was = tuple(image.size)
-                    scaled = _power_of_two_copy(image)
-                    if scaled is not None:
-                        image = scaled
-                        warnings.append(
-                            f"material {write.owner!r}: {write.filename} scaled "
-                            f"{was[0]}x{was[1]} -> {image.size[0]}x{image.size[1]} "
-                            f"for the engine's power-of-two textures"
-                        )
+                was = tuple(image.size)
+                fitted = export_size(was, power_of_two, max_size)
+                scaled = _resized_copy(image, fitted)
+                if scaled is not None:
+                    image = scaled
+                    # one line whatever the two checkboxes each contributed:
+                    # a texture resized for both reasons was resized once, and
+                    # saying so twice would read as two resamples.  Which
+                    # reasons applied is asked of the same function, so a
+                    # 1024x1024 fitted to 512 is not also blamed on rounding
+                    # it was already square with
+                    rounded = export_size(was, power_of_two, None)
+                    why = []
+                    if rounded != was:
+                        why.append("the engine's power-of-two textures")
+                    if fitted != rounded:
+                        why.append(f"the {max_size}x{max_size} limit")
+                    warnings.append(
+                        f"material {write.owner!r}: {write.filename} scaled "
+                        f"{was[0]}x{was[1]} -> {fitted[0]}x{fitted[1]} for "
+                        f"{' and '.join(why)}"
+                    )
                 # restored afterwards: export must not leave the .blend
                 # different from how it found it, and file_format is a property
                 # of the datablock rather than of this one save

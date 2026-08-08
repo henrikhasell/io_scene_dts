@@ -6,7 +6,7 @@ from bpy_extras.io_utils import ExportHelper
 
 from ..dtslib import DtsWriteError, fit_to_version, write_shape_file
 from ..mapping.blender_to_shape import ExportError, blender_to_shape
-from ..mapping.texture_io import write_textures
+from ..mapping.texture_io import MAX_TEXTURE_SIZE, write_textures
 
 
 class ExportDTS(bpy.types.Operator, ExportHelper):
@@ -55,6 +55,16 @@ class ExportDTS(bpy.types.Operator, ExportHelper):
         "the image in your .blend is left alone",
         default=True,
     )
+    limit_texture_size: BoolProperty(
+        name="Limit Textures to 512x512",
+        description="Scale any exported texture larger than 512x512 down to fit, "
+        "keeping its aspect ratio.  An oversized texture still renders, but the "
+        "engine uploads and mipmaps all of it and the driver resamples what its "
+        "hardware cannot hold, so the size is paid for and then discarded.  "
+        "512 is the largest the art this format ships with is built to.  Only "
+        "the written file is resized -- the image in your .blend is left alone",
+        default=True,
+    )
 
     def execute(self, context):
         arm_obj = context.active_object
@@ -95,6 +105,7 @@ class ExportDTS(bpy.types.Operator, ExportHelper):
             texture_writes, Path(self.filepath).parent, warnings,
             include_images=self.export_textures,
             power_of_two=self.scale_textures_pot,
+            max_size=MAX_TEXTURE_SIZE if self.limit_texture_size else None,
         )
 
         for w in warnings:

@@ -112,8 +112,13 @@ Disk.  For development, symlink this checkout into
   Two** (on by default) resizes what is written to the nearest power-of-two
   dimensions — `100x60` becomes `128x64` — because Torque's texture loader
   assumes them and a texture that is not one renders white or garbled in-game
-  while looking correct in Blender.  Only the file on disk is resized; the
-  image in your `.blend` is left at whatever size it was authored.
+  while looking correct in Blender.  **Limit Textures to 512x512** (also on by
+  default) scales anything larger down to fit, dividing both sides so the
+  aspect ratio survives — a `1024x256` lands as `512x128`.  That one is a
+  budget rather than a correctness rule: an oversized texture renders, it just
+  costs, and 512 is the largest the art this format ships with is built to.
+  Both act on the file on disk only; the image in your `.blend` is left at
+  whatever size it was authored.
 - **IFL materials** are animated flipbooks.  The file names a `.ifl` sidecar
   listing `<texture> <hold>` per line; that list imports as a frame collection
   on the material, previews as a keyframed switch between its images, and is

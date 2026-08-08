@@ -978,6 +978,72 @@ def test_textures_are_scaled_to_a_power_of_two_on_export():
     assert tuple(kept.size) == (100, 60), tuple(kept.size)
 
 
+def test_the_export_size_rule():
+    """The two checkboxes as one table, since between them they decide every
+    dimension that reaches disk."""
+    from io_scene_dts.mapping.texture_io import export_size
+
+    # power of two only: rounding in log space, no cap
+    assert export_size((100, 60), True, None) == (128, 64)
+    assert export_size((1024, 256), True, None) == (1024, 256)
+
+    # the cap divides both sides, so the aspect ratio survives -- clamping
+    # only the side that is too big would turn 1024x256 into 512x256
+    assert export_size((1024, 256), True, 512) == (512, 128)
+    assert export_size((2048, 2048), True, 512) == (512, 512)
+
+    # the cap without the rounding: fit exactly, whatever shape that leaves
+    assert export_size((600, 600), False, 512) == (512, 512)
+    assert export_size((2000, 1000), False, 512) == (512, 256)
+    assert export_size((100, 60), False, 512) == (100, 60)
+
+    # rounding after the fit cannot climb back over the cap: 1000 rounds to
+    # 1024, half of that is 512, and 512 is already a power of two.  The
+    # awkward case is a side that fits to just under a boundary -- 700x400
+    # rounds to 512x512 and stays there rather than becoming 512x1024
+    assert export_size((1000, 600), True, 512) == (512, 256)
+    assert export_size((700, 400), True, 512) == (512, 512)
+    for size in [(w, h) for w in (300, 700, 1000, 1900, 4096) for h in (7, 400, 1000)]:
+        assert max(export_size(size, True, 512)) <= 512, size
+        assert max(export_size(size, False, 512)) <= 512, size
+
+    # nothing to do is nothing to do, both boxes ticked
+    assert export_size((256, 128), True, 512) == (256, 128)
+
+
+def test_a_texture_larger_than_512_is_scaled_down_on_export():
+    """Default on: an oversized texture still renders, but the engine uploads
+    and mipmaps all of it and the driver resamples what the card cannot hold,
+    so the size is paid for twice and then thrown away.
+
+    Already a power of two, so the cap is the only thing acting -- and it acts
+    on both sides, keeping 4:1 as 4:1.
+    """
+    import tempfile
+
+    A.reset()
+    arm = A.armature("Huge")
+    image = bpy.data.images.new("huge", width=1024, height=256, alpha=True)
+    image.pixels.foreach_set([0.5] * (1024 * 256 * 4))
+    image.update()
+    image.pack()
+    A.mesh_object("body2", arm, bone="root",
+                  material=A.image_material("huge", diffuse=image))
+
+    out = Path(tempfile.mkdtemp()) / "huge.dts"
+    A.export_dts(str(out))
+    written = bpy.data.images.load(str(out.parent / "huge.png"))
+    assert tuple(written.size) == (512, 128), tuple(written.size)
+    # the scene's own image is exactly as the user left it
+    assert tuple(image.size) == (1024, 256), "export resampled the scene's image"
+
+    # unticked, the file keeps the authored size
+    big = Path(tempfile.mkdtemp()) / "huge.dts"
+    A.export_dts(str(big), limit_texture_size=False)
+    kept = bpy.data.images.load(str(big.parent / "huge.png"))
+    assert tuple(kept.size) == (1024, 256), tuple(kept.size)
+
+
 def test_a_power_of_two_texture_is_left_alone():
     """No copy, no resample and no warning for art that is already correct."""
     import tempfile

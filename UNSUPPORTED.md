@@ -335,7 +335,7 @@ you export.
   requires" and "tick the box", and the version already says which one is
   meant.  Warned at export, naming the count and v24 as what would keep them.
   The Blender-side collection is untouched — re-exporting as v24 has them
-  back.  `dtslib/writer.py:74`, `ops/export_dts.py:82`
+  back.  `dtslib/writer.py:74`, `ops/export_dts.py:92`
 - **Skin and multi-frame meshes do not share vertices across detail levels.**
   A shared skin would need `initial_verts`, `vertex_index`, `bone_index`,
   `weight` and `node_index` to be prefixes too (`dtslib/mesh_io.py:107-140`),
@@ -439,7 +439,7 @@ you export.
   only images with no file behind them and so produced shapes that rendered
   nowhere but the machine that made them: the engine looks for a texture beside
   the `.dts` by bare filename, and a stale one left in place is a wrong render
-  that looks like a right one.  `mapping/texture_io.py:53`
+  that looks like a right one.  `mapping/texture_io.py:80`
 - **The authored size of a non-power-of-two texture.**  Written resampled to
   the nearest power of two, so a `100x60` lands as `128x64` and an `80x80` is
   *reduced* to `64x64`.  Torque's texture loader assumes power-of-two
@@ -448,7 +448,19 @@ you export.
   diagnose it by.  A warning names every texture that was resized.  Untick
   **Scale Textures to Power of Two** to write the authored size instead.  The
   `.blend` is never touched: the resample is done on a copy that is removed
-  again, because `Image.scale` works in place.  `mapping/texture_io.py:36`
+  again, because `Image.scale` works in place.  `mapping/texture_io.py:65`
+- **Everything past 512x512 of a texture larger than that.**  **Limit Textures
+  to 512x512**, on by default, divides both sides until the longest fits, so a
+  `1024x256` is written `512x128` and the aspect ratio survives.  Unlike the
+  power-of-two rule this is a budget, not a correctness one — an oversized
+  texture renders; the engine uploads and mipmaps all of it and the driver
+  resamples whatever passes `GL_MAX_TEXTURE_SIZE` at load
+  (`platformWin32/d3dgl.cc:9343`), so the download and the VRAM buy detail the
+  card may throw away.  512 is what the shipped art is built to: 3 of the 1062
+  textures in the corpus's texture trees are larger, all 3 from a modern tree
+  rather than a game's.  Warned per texture, and the two boxes share one
+  warning line because they share one resample.  Untick it to write the
+  authored size.  `mapping/texture_io.py:39`
 - **The second of two textures that would write the same file.**  Skipped with
   a warning rather than overwritten — within one export neither of the two is
   the stale one, so there is no basis for picking.  Material names are not
@@ -628,7 +640,7 @@ Two Blender suites, and the difference between them is the point.
 and exports.  That covers reading files the add-on did not write, and it is the
 only way to check a feature no fixture-free scene can produce.
 
-`tests/blender/test_authoring.py` (75 tests) never imports anything.  Every test
+`tests/blender/test_authoring.py` (77 tests) never imports anything.  Every test
 builds a shape from nothing — armature, meshes, materials, actions — exports it,
 and reads the feature back out of the file.  This is the suite that answers
 "can a user *make* one of these", which a round-trip cannot: the exporter may be
@@ -645,13 +657,18 @@ and both directions, billboards including the Z-axis
 variant no shipped shape uses, sorted meshes in both modes and the promotion of translucent ones, skins, vertex
 animation, material frames, sequences, triggers, ground frames, object-state
 tracks, node scale, DSQ export, IFL flipbooks in both directions including
-the .ifl sidecar, decals and both output versions.
+the .ifl sidecar, decals, the size rule both texture checkboxes feed, and both
+output versions.
 
-`scripts/mutate.py` (58 mutations) disables one capability at a time and checks
-the matching test notices.  It has caught its own drift five times — a mutation
-that stopped biting when the code moved, two that were never testing what they
-claimed, and a redundant guard in the reflectance export path that no mutation
-could make fail because the line after it already did the same job.
+`scripts/mutate.py` (60 mutations) disables one capability at a time and checks
+the matching test notices.  It has caught its own drift six times — two
+mutations that stopped biting when the code moved, two that were never testing
+what they claimed, and a redundant guard in the reflectance export path that no
+mutation could make fail because the line after it already did the same job.
+The second of the two stale ones is the reason a mutation should anchor on the
+line that *does* the thing rather than on the expression it reads:
+`texture-overwrite` named `write.image.save(...)` and went quietly unrun the
+moment a resized copy meant the save took a local `image` instead.
 
 It also, once, caught *itself*.  `sorted-threading` is the only mutation
 verified by pytest rather than Blender, and its runner shelled
