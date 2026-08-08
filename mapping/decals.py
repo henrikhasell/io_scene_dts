@@ -405,6 +405,43 @@ def _host_gate_nodes(index: int):
                 yield node
 
 
+def remove_decal_branch(nt, label: str) -> bool:
+    """Unpick one decal branch, closing the surface chain behind it.
+
+    The branches are chained -- each Mix Shader takes the previous surface as
+    its first input -- so a branch cannot merely be deleted: whatever its output
+    fed has to be reconnected to what fed it, or the chain ends at a dangling
+    socket and the material draws black.
+    """
+    nodes = [n for n in nt.nodes if n.label == label]
+    if not nodes:
+        return False
+    mix = next((n for n in nodes if n.type == "MIX_SHADER"), None)
+    if mix is not None:
+        upstream = mix.inputs[1].links[0].from_socket if mix.inputs[1].is_linked else None
+        downstream = [l.to_socket for l in mix.outputs[0].links]
+        for link in list(mix.outputs[0].links):
+            nt.links.remove(link)
+        if upstream is not None:
+            for socket in downstream:
+                nt.links.new(upstream, socket)
+    for node in nodes:
+        nt.nodes.remove(node)
+    return True
+
+
+def _shape_armature_for(decal_obj):
+    """The armature whose property a re-wired branch's state driver reads."""
+    parent = decal_obj.parent
+    if parent is not None and parent.type == "ARMATURE":
+        return parent
+    return next(
+        (o for o in bpy.data.objects
+         if o.type == "ARMATURE" and getattr(o.dts_shape, "is_shape", False)),
+        None,
+    )
+
+
 def sync_host_gate(decal_obj) -> int:
     """Point a decal's object gate at whatever its target is now.
 
@@ -417,6 +454,28 @@ def sync_host_gate(decal_obj) -> int:
     if target is None or target.type != "MESH":
         return 0
     host = decal_host_id(target)
+    label = _branch_label(props.index)
+
+    # Since private_material_for gives every decal target its own copy of the
+    # material, retargeting has to *move* the branch too: left where it was it
+    # would go on being compiled into a material the new target does not use,
+    # and the decal would simply vanish.
+    wanted = _host_material_for(target)
+    if wanted is not None and getattr(wanted, "node_tree", None) is not None:
+        moved = False
+        for mat in bpy.data.materials:
+            nt = getattr(mat, "node_tree", None)
+            if nt is not None and mat is not wanted:
+                moved |= remove_decal_branch(nt, label)
+        # Only ever *move* a branch, never create one.  This runs from the
+        # target pointer's update callback, and import assigns that pointer
+        # before it assigns the decal's own material -- building a branch here
+        # would build it with no image, and the target would render as a
+        # missing texture while the real wiring silently skipped the label it
+        # found already taken.
+        if moved and not any(n.label == label for n in wanted.node_tree.nodes):
+            wire_decal_branch(wanted, decal_obj, _shape_armature_for(decal_obj))
+
     for node in _host_gate_nodes(props.index):
         node.inputs[1].default_value = float(host)
     return host
@@ -483,6 +542,60 @@ def _base_colour_of(mat):
 
 def _branch_label(index: int) -> str:
     return f"DTS Decal {index:03d}"
+
+
+def private_material_for(target_obj, mat):
+    """Give *target_obj* its own copy of *mat* before a decal is wired into it.
+
+    A decal branch is ~14 nodes and a shader cannot skip one.  The host gate in
+    ``wire_decal_branch`` multiplies the wrong object's contribution by zero,
+    but the GPU still runs the projection, the texture fetch and the mix for
+    every pixel of every mesh the material is on -- the gate decides what you
+    *see*, never what is *computed*.  Shared, that scales the wrong way:
+    light_male puts one material on 25 meshes and carries 58 decals across 17
+    targets, so every mesh paid for all 58 branches to show at most 6.
+    Measured on that shape, 12 frames of playback in a MATERIAL viewport:
+
+        branches active   58     12      6      3      0
+        fps              3.9   24.0   33.4   39.5   58.4
+
+    Splitting caps a material at the decals that actually target it -- 6 in the
+    worst case here, so 3.9 to 33.4 fps against a 58.4 ceiling with no decals.
+
+    The copy keeps the source's ``dts_name``, and the export material list is
+    keyed on that name (``blender_to_shape._material_slot_index``), so a split
+    material is still one entry in the .dts.  Idempotent: a second decal onto
+    the same target finds the copy already made and wires into that.
+    """
+    if mat is None or target_obj is None:
+        return mat
+    if mat.get("dts_decal_host") == target_obj.name:
+        return mat                      # already this object's private copy
+    copy = mat.copy()
+    # the name the .dts gets, which is what export dedupes on.  Set explicitly
+    # rather than trusting mat.copy() to carry it, so a material authored in
+    # Blender -- no dts_name, and a ".001" suffix on the copy -- collapses too.
+    copy["dts_name"] = str(mat.get("dts_name") or mat.name)
+    copy["dts_decal_host"] = target_obj.name
+    for slot in target_obj.material_slots:
+        if slot.material is mat:
+            slot.material = copy
+    return copy
+
+
+def _host_material_for(target_obj):
+    """The target's own material, split off from any it shares.
+
+    Never the *decal's* material: that one is the scorch texture and its own
+    entry in the file's material list, and confusing the two both draws the
+    wrong image and renumbers the decal on export.
+    """
+    if target_obj is None:
+        return None
+    mat = target_obj.active_material
+    if mat is None:
+        mat = next((s.material for s in target_obj.material_slots if s.material), None)
+    return private_material_for(target_obj, mat)
 
 
 def wire_decal_branch(target_mat, decal_obj, arm_obj=None) -> bool:
@@ -1112,8 +1225,15 @@ def import_decals(
                 props.material = bmat
                 props.subshape = int(target_obj.get("dts_subshape", 0))
                 if bmat is not None:
-                    wire_decal_branch(target_obj.active_material or bmat,
-                                      projector, arm_obj)
+                    # Split before wiring, so the shared material never
+                    # receives a branch and the meshes with no decals keep it.
+                    # props.material is deliberately left alone: that is the
+                    # *decal's* own material (its scorch texture, and its own
+                    # entry in the file's material list), not the surface the
+                    # branch composites into.
+                    wire_decal_branch(
+                        _host_material_for(target_obj), projector, arm_obj
+                    )
                 n_decals += 1
 
             # seed the preview from the file's own index list rather than from
@@ -1324,7 +1444,7 @@ def create_decal(arm_obj, target_obj, *, name, material=None, index=None,
             covered += 1
 
     if material is not None:
-        wire_decal_branch(target_obj.active_material or material, projector, arm_obj)
+        wire_decal_branch(_host_material_for(target_obj), projector, arm_obj)
 
     # the state the decal rests at.  0 is on; -1 would be off, which is what a
     # damage decal wants, but a decal you just made should be visible.

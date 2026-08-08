@@ -446,9 +446,22 @@ def _action_targets_armature(action, arm_obj) -> bool:
     return False
 
 
+def _dts_material_key(bmat) -> str:
+    """What the .dts will call this material, which is what makes two of them
+    one entry.
+
+    Not the datablock name: a DTS material *is* its texture filename, so two
+    Blender materials that would write the same name cannot be two entries.
+    That is what lets ``decals.private_material_for`` give each decal target its
+    own copy of a material -- 17 copies of ``base.lmale``, one .dts entry.
+    """
+    return str(bmat.get("dts_name") or bmat.name).lower()
+
+
 def _material_slot_index(bmat) -> int:
+    key = _dts_material_key(bmat)
     for i, m in enumerate(_used_materials):
-        if m is bmat:
+        if m is bmat or _dts_material_key(m) == key:
             return i
     _used_materials.append(bmat)
     return len(_used_materials) - 1

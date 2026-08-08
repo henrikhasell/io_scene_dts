@@ -130,6 +130,33 @@ MUTATIONS = {
         "    if True:\n        return None",
         ["test_textures_are_scaled_to_a_power_of_two_on_export"],
     ),
+    # Not splitting is invisible to anything that only checks the decal draws:
+    # it still draws, on a material 25 meshes share, and only the frame rate
+    # says so.  The authoring test asserts the branch is in the target's own
+    # copy and that the shared material has none.
+    "decal-material-split": (
+        "mapping/decals.py",
+        '    if mat.get("dts_decal_host") == target_obj.name:\n        return mat',
+        "    if True:\n        return mat",
+        ["test_a_decal_previews_only_on_its_target"],
+    ),
+    # And the other half: if the copies do not collapse on dts_name, one shape
+    # exports 17 material entries where the file had 1.
+    "material-dedupe-by-name": (
+        "mapping/blender_to_shape.py",
+        "        if m is bmat or _dts_material_key(m) == key:",
+        "        if m is bmat:",
+        ["test_decals_roundtrip_through_their_projectors"],
+    ),
+    # sync_host_gate must only ever *move* a branch.  Letting it build one puts
+    # an imageless branch on every decal at import, which renders pink and is
+    # invisible to any assertion about the branch's shape.
+    "decal-branch-not-built-on-retarget": (
+        "mapping/decals.py",
+        "        if moved and not any(n.label == label for n in wanted.node_tree.nodes):",
+        "        if not any(n.label == label for n in wanted.node_tree.nodes):",
+        ["test_a_decal_branch_projects_the_decals_own_image"],
+    ),
     "material-flag-bits": (
         "mapping/materials.py",
         '    "dts_bump_map_only": MAT_BUMP_MAP_ONLY,',

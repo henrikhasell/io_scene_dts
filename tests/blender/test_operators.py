@@ -1149,6 +1149,15 @@ def test_decals_roundtrip_through_their_projectors():
     # the owning object of each decal, in order
     assert [d.raw[3] for d in dst.decals] == [d.raw[3] for d in src.decals]
 
+    # The material list is unchanged even though import now gives every decal
+    # target its own *copy* of its material (decals.private_material_for), so
+    # a shape's meshes hold many more Blender materials than the file has
+    # entries.  They collapse on dts_name; without that this shape would write
+    # one entry per decal target instead of one per texture.
+    assert [m.name for m in dst.materials] == [m.name for m in src.materials], (
+        len(dst.materials), len(src.materials)
+    )
+
     compared = 0
     for d_src, d_dst in zip(src.decals, dst.decals):
         assert d_dst.raw[1] == d_src.raw[1]  # same number of detail slots

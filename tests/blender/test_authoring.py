@@ -1108,6 +1108,41 @@ def test_a_decal_is_made_by_an_operator():
     assert A.object_names(shape) == ["wall"], A.object_names(shape)
 
 
+def test_a_decal_branch_projects_the_decals_own_image():
+    """The branch must sample the *decal's* texture, not fall back to a colour.
+
+    A branch built at the wrong moment is fully wired and completely wrong: the
+    target pointer has an update callback, import assigns that pointer before it
+    assigns the decal's material, and a branch built from the callback gets
+    ``None`` for the material.  ``_image_of(None)`` is no image and
+    ``_base_colour_of(None)`` is a hardcoded red, so every surface carrying a
+    decal renders as a flat pink patch -- which is what all 58 of light_male's
+    decals did while every structural assertion about the branch still passed.
+    """
+    from io_scene_dts.mapping.decals import _branch_label, create_decal
+
+    A.reset()
+    arm = A.armature("Wall")
+    verts, faces = A.quad_geometry()
+    target = A.mesh_object(
+        "wall2", arm, bone="root", verts=verts, faces=faces,
+        material=A.principled_material("wall_skin"),
+    )
+    scorch = A.image_material("scorch", diffuse=A.generated_image("scorch", ramp=True))
+    for polygon in target.data.polygons:
+        polygon.select = True
+    bpy.context.view_layer.objects.active = target
+    index, _projector = create_decal(arm, target, name="scorch", material=scorch)
+
+    host_mat = target.active_material
+    branch = [n for n in host_mat.node_tree.nodes if n.label == _branch_label(index)]
+    assert branch, "no branch was wired"
+    images = [n for n in branch if n.type == "TEX_IMAGE"]
+    assert images, "the branch fell back to a flat colour instead of the image"
+    assert any(n.image is not None and n.image.name.startswith("scorch")
+               for n in images), [getattr(n.image, "name", None) for n in images]
+
+
 def test_an_operator_decal_projects_inside_its_texture():
     """The texgen planes have to land the covered faces inside the 0..1 square,
     or the decal samples outside its own texture."""
@@ -1319,9 +1354,15 @@ def test_a_decal_previews_only_on_its_target():
     masked by the projector volume -- and a volume says where, not what.  Every
     other object using the same material and standing inside the box drew the
     decal too, which in the corpus is 5999 of 6053 decals: light_male puts all
-    58 on the body material, and vehicle_land_mpbase 163 of them.  The gate is
-    an Object Info comparison, chosen over an Attribute node because EEVEE caps
-    how many attributes a material may use and a shape can put 58 decals on one.
+    58 on the body material, and vehicle_land_mpbase 163 of them.
+
+    Two things stop it now, and the order matters.  The target gets its **own
+    copy** of the material, so a branch is only ever compiled into the one mesh
+    it belongs to -- a gate can hide a branch but never stop the GPU running it,
+    and 58 branches on 25 meshes cost light_male 3.9 fps against 33.4 split.
+    The Object Info gate stays as the correctness backstop for the copy being
+    shared again later, and is chosen over an Attribute node because EEVEE caps
+    how many attributes a material may use.
     """
     from io_scene_dts.mapping.decals import (
         DECAL_HOST_PROP,
@@ -1358,7 +1399,21 @@ def test_a_decal_previews_only_on_its_target():
     )
 
     label = _branch_label(props.index)
-    branch = [n for n in shared.node_tree.nodes if n.label == label]
+
+    # the branch is in the target's *own* copy, and the decoy is left on the
+    # shared material with no branch in it at all -- that is what makes the
+    # cost proportional to the decals a mesh actually carries
+    host_mat = target.active_material
+    assert host_mat is not shared, "the target was not split off the shared material"
+    assert str(host_mat.get("dts_name")) == str(shared.get("dts_name") or shared.name), (
+        "the copy must keep the source's DTS name or it exports as a second material"
+    )
+    assert decoy.active_material is shared, "the decoy should not have been copied"
+    assert not [n for n in shared.node_tree.nodes if n.label == label], (
+        "a branch was wired into the shared material"
+    )
+
+    branch = [n for n in host_mat.node_tree.nodes if n.label == label]
     info = next(n for n in branch if n.type == "OBJECT_INFO")
     same = next(n for n in branch if n.type == "MATH" and n.operation == "COMPARE")
     assert same.inputs[0].links[0].from_node.name == info.name
@@ -1384,12 +1439,26 @@ def test_a_decal_previews_only_on_its_target():
     assert shape.name(shape.objects[decal.raw[3]].name_index) == "hull"
     assert sorted(A.object_names(shape)) == ["fin", "hull"], A.object_names(shape)
 
-    # and retargeting moves it, or the decal keeps drawing on the mesh it left
+    # and retargeting moves it, or the decal keeps drawing on the mesh it left.
+    # With the split that means moving the branch between materials, not just
+    # changing the gate's number: left in the old copy it would be compiled
+    # into a material the new target does not use, and the decal would vanish.
     props.target = decoy
     assert decoy.pass_index > 0 and decoy.pass_index != target.pass_index
+
+    moved_mat = decoy.active_material
+    assert moved_mat is not shared, "the new target was not split off"
+    moved = [n for n in moved_mat.node_tree.nodes if n.label == label]
+    assert moved, "the branch did not follow the decal to its new target"
+    assert not [n for n in host_mat.node_tree.nodes if n.label == label], (
+        "the branch was left behind in the old target's material"
+    )
+    same = next(n for n in moved if n.type == "MATH" and n.operation == "COMPARE")
     assert abs(same.inputs[1].default_value - decoy.pass_index) < 1e-6, (
         same.inputs[1].default_value, decoy.pass_index
     )
+    mix = next(n for n in moved if n.type == "MIX_SHADER")
+    assert _feeds(mix.inputs["Fac"], same), "the moved gate does not reach the mix"
 
 
 def test_a_decal_is_authorable_by_hand():

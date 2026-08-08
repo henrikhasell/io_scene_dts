@@ -250,8 +250,16 @@ it past that cap and rendered the body as broken-material magenta.  The object
 half of the mask has the same constraint and the same answer — an Object Info
 comparison rather than an attribute, because a material is shared and 5999 of
 the corpus's 6053 decals sit on one another DTS object also uses, so the box
-alone drew a hull's burn on the turret as well.  `mapping/decals.py:626`  Both
+alone drew a hull's burn on the turret as well.  `mapping/decals.py:737`  Both
 still lose something: see §4.
+
+A gate hides a branch but never stops the GPU running it, so sharing was also
+what made this expensive: every mesh on a material paid for every decal on it.
+Each target now gets its **own copy** of its material, capping a material at
+the decals that actually aim at it — 6 in light_male's worst case rather than
+58, measured at 3.9 → 33.4 fps of viewport playback.  The copies collapse back
+to one entry on export, because the material list is keyed on `dts_name`, so a
+shape whose meshes hold 20 Blender materials still writes the 15 the file had.
 
 **Translucent and additive** materials are no longer blind either.  Both are
 carried by the shader the importer builds — `surface_render_method` for
@@ -274,7 +282,7 @@ Two more, both consequences of the object gate above:
   one object, so switching to a coarser detail collection shows no decal even
   though the file has one there.  Nothing is lost — this is the preview being
   narrower than the file, not the file being narrower than the scene.
-  `mapping/decals.py:617`
+  `mapping/decals.py:737`
 - **`pass_index` on a decal's target belongs to the add-on.**  The gate needs a
   per-object number a shader can read, and Object Index is the only one that
   costs no attribute slot, so targeting a mesh with a decal overwrites whatever
@@ -321,7 +329,7 @@ is invisible until you export.
   and a multi-frame mesh's array runs past the shared prefix into its frame
   blocks.  A multi-frame mesh can still be a *parent*.  14 meshes in the whole
   corpus share a skin, so this costs almost nothing.
-  `mapping/blender_to_shape.py:498`
+  `mapping/blender_to_shape.py:511`
 - **Sequences re-export larger than they were read.**  `gman`'s node rotations
   go from 13,556 to 18,588 entries, which is most of that shape's growth.  This
   predates the geometry work and is not caused by it: the exporter writes a key
@@ -392,7 +400,7 @@ is invisible until you export.
   armature; its channels are dropped` — expected when applying a sequence to a
   different skeleton. `mapping/dsq.py:60`
 - **Bone channels with no DTS node.**  A bone you add in Blender animates
-  nothing on export. `mapping/sequences.py:297`, `mapping/dsq.py:179`
+  nothing on export. `mapping/sequences.py:394`, `mapping/dsq.py:179`
 - **Duplicate detail sizes for one object.**  `duplicate detail 'X' for object
   'Y'; 'Z' skipped`. `mapping/blender_to_shape.py:154`
 - **`dts_bump_map` and `dts_detail_map` on a material created in Blender.**
@@ -558,7 +566,7 @@ the same answer either way, and because someone will otherwise try to fix them.
 - **A mesh cannot be both skinned and vertex-animated.**  `mesh_type` is one
   field, so `frame_*` shape keys on a skinned mesh are ignored with a warning.
   The same field is why a skin cannot also be sorted.
-  `mapping/blender_to_shape.py:676`
+  `mapping/blender_to_shape.py:689`
 - **One alpha channel carries two meanings and the file does not say which.**
   On an env-mapped material it is the reflectance mask; otherwise it is
   transparency.  There is no field to disambiguate, so a reader has to choose.
@@ -608,7 +616,7 @@ Two Blender suites, and the difference between them is the point.
 and exports.  That covers reading files the add-on did not write, and it is the
 only way to check a feature no fixture-free scene can produce.
 
-`tests/blender/test_authoring.py` (71 tests) never imports anything.  Every test
+`tests/blender/test_authoring.py` (74 tests) never imports anything.  Every test
 builds a shape from nothing — armature, meshes, materials, actions — exports it,
 and reads the feature back out of the file.  This is the suite that answers
 "can a user *make* one of these", which a round-trip cannot: the exporter may be
