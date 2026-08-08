@@ -159,7 +159,7 @@ happen to match.
 | Uniform node scale | ● | ● | ● | ● | Rides the pose bones' own `scale` channels; `Scale Mode` on the sequence panel says which DTS form to write.  *Blind*: nothing shows that a scale channel means *node* scale. |
 | Aligned node scale | ● | ● | ● | ● | Same. |
 | Arbitrary node scale | ● | ○ | ○ | ○ | Per-axis factors *plus* an orientation naming the axes to measure along.  A pose bone's scale cannot express the second half, so it is refused on export rather than half-written.  No corpus sequence uses it.  `mapping/sequences.py:540` |
-| Ground frames (root motion) | ● | ● | ● | ● | A collection on the action, in the Dope Sheet / NLA DTS tab, holding raw `Quat16` int16s so a frame round-trips bit-exactly.  *Blind*: nothing shows them as motion.  v23 cannot store them at all — see §8. |
+| Ground frames (root motion) | ● | ● | ● | ● | A collection on the action, in the Dope Sheet / NLA DTS tab, holding raw `Quat16` int16s so a frame round-trips bit-exactly.  *Blind*: nothing shows them as motion.  v23 has nowhere to store them, so exporting as v23 drops them with a warning.  `dtslib/writer.py:74` |
 | Triggers | ● | ● | ● | ● | A collection on the action: a state 1..30 and two flags rather than the packed U32 the file holds.  Pose markers show where they fire; nothing plays a sound.  *Blind.* |
 | Object visibility (`vis`) track | ● | ● | ● | ● | Keyframed as a custom property on the armature, in the same slot as the bones; each mesh built from that object reads it through a driver into alpha and the hide flags.  **Export samples the curves**, so editing a key changes the file. |
 | Vertex-frame (`frame`) track | ● | ● | ● | ● | Keyframed the same way.  *Blind*: nothing drives the shape keys from it. |
@@ -215,7 +215,6 @@ None of these corrupt a file; all stop with an error.
 | DTS versions 15–16 and 25+ | Layouts this reader does not share. | `dtslib/old_reader.py:40`, `dtslib/reader.py:71` |
 | Writing any version but 23/24 | Older versions keep skins in a separate section. | `dtslib/writer.py:22` |
 | Exporting without an armature | The armature *is* the shape. | `mapping/blender_to_shape.py:68` |
-| Exporting ground frames as v23 | v23 has no ground-frame storage.  **Strip Ground Frames** discards them instead, at the cost of every movement animation's speed. | `dtslib/writer.py:27` |
 | More than 192 nodes or objects | `TSIntegerSet` is 6 dwords wide, so there is no bit for a 193rd in a matters set.  A format limit, not a gap. | `mapping/blender_to_shape.py:94`, `mapping/blender_to_shape.py:279` |
 | More than 65535 vertices in one mesh | The index buffer is u16.  Split the mesh. | `mapping/blender_to_shape.py:591` |
 | Arbitrary node scale on export | A bone's scale cannot express the orientation half. | `mapping/sequences.py:540` |

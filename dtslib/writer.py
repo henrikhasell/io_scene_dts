@@ -71,6 +71,25 @@ def strip_ground_frames(shape: Shape) -> None:
         seq.num_ground_frames = 0
 
 
+def fit_to_version(shape: Shape, version: int) -> list[str]:
+    """Drop what `version` has no storage for, and say what that cost.
+
+    `write_shape` refuses rather than lose data quietly; this is the caller
+    saying "lose it, but tell me" — it mutates the shape and returns one
+    message per thing dropped, for the exporter to put in front of the user.
+    """
+    warnings = []
+    if version <= 23 and shape.ground_translations:
+        warnings.append(
+            f"v{version} has no ground-frame storage: dropped "
+            f"{len(shape.ground_translations)} ground frame(s).  Movement "
+            f"animations in this file carry no ground speed -- export as v24 "
+            f"to keep them"
+        )
+        strip_ground_frames(shape)
+    return warnings
+
+
 def _disassemble_shape(shape: Shape, alloc: WriteAlloc, version: int) -> None:
     num_nodes = len(shape.nodes)
     num_sub_shapes = len(shape.sub_shape_first_node)

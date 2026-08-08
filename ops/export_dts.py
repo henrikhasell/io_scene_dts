@@ -4,7 +4,7 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper
 
-from ..dtslib import DtsWriteError, strip_ground_frames, write_shape_file
+from ..dtslib import DtsWriteError, fit_to_version, write_shape_file
 from ..mapping.blender_to_shape import ExportError, blender_to_shape
 from ..mapping.texture_io import write_textures
 
@@ -36,12 +36,6 @@ class ExportDTS(bpy.types.Operator, ExportHelper):
         name="Export Sequences",
         description="Export DTS-tagged actions as animation sequences",
         default=True,
-    )
-    drop_ground_frames: BoolProperty(
-        name="Strip Ground Frames",
-        description="Remove ground-frame data so the shape fits in v23 "
-        "(movement animations lose their ground speed!)",
-        default=False,
     )
     export_textures: BoolProperty(
         name="Export Textures",
@@ -81,8 +75,11 @@ class ExportDTS(bpy.types.Operator, ExportHelper):
             return {"CANCELLED"}
 
         version = int(self.version)
-        if self.drop_ground_frames and version == 23:
-            strip_ground_frames(shape)
+        # what the chosen version cannot store is dropped, not refused: the
+        # user picked the version because the engine they target needs it, and
+        # no amount of editing would make ground frames fit in v23.  It is
+        # still a loss, so it is a warning and never silent
+        warnings.extend(fit_to_version(shape, version))
         try:
             write_shape_file(shape, self.filepath, version)
         except DtsWriteError as e:

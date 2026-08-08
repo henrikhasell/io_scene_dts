@@ -448,6 +448,28 @@ MUTATIONS = {
         "",
         ["test_a_billboard_can_be_authored_from_a_plain_mesh"],
     ),
+    # the version gate on the ground-frame drop, broken both ways: not
+    # dropping leaves the writer's refusal to cancel a v23 export, and
+    # dropping unconditionally takes them off v24, where they fit.  Anchored
+    # on `warnings = []` because the same `if` opens the writer's refusal
+    "ground-drop": (
+        "dtslib/writer.py",
+        "    warnings = []\n    if version <= 23 and shape.ground_translations:",
+        "    warnings = []\n    if False:",
+        [
+            "test_v23_drops_ground_frames_rather_than_refusing",
+            "test_v23_drops_ground_frames",
+        ],
+    ),
+    "ground-drop-version-gate": (
+        "dtslib/writer.py",
+        "    warnings = []\n    if version <= 23 and shape.ground_translations:",
+        "    warnings = []\n    if shape.ground_translations:",
+        [
+            "test_v24_keeps_the_ground_frames_v23_would_drop",
+            "test_ground_frames_are_authorable",
+        ],
+    ),
 }
 
 

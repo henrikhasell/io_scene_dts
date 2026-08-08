@@ -8,9 +8,9 @@ animation.
 - **Reads** DTS versions 17–24 (Tribes 2 through Torque Game Engine 1.5;
   15/16 — the keyframe-table era — are refused).
 - **Writes** DTS version **24** ("Torque") and **23** ("Tribes 2") —
-  selectable in the export dialog.  v23 has no ground-frame storage; exporting
-  a shape with ground frames as v23 is refused unless "Strip Ground Frames"
-  is checked.
+  selectable in the export dialog.  v23 has no ground-frame storage, so
+  exporting a shape with ground frames as v23 drops them and warns; v24 keeps
+  them.
 - **DSQ**: reads 17–24, writes the modern layout.  Sequences bind to an
   armature's bones by node-name matching — either onto the active armature
   (File → Import → Torque Sequence), or by selecting `.dsq` files alongside

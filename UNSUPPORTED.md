@@ -298,9 +298,10 @@ The larger decal caveat -- that the covered faces themselves are not preserved
 
 ## 4. Dropped — data is lost
 
-Two of these are *asked for*: the import operator has checkboxes that trade
-fidelity for a workable scene, and they are listed here because what they cost
-is invisible until you export.
+Three of these are *asked for*: the import operator has two checkboxes that
+trade fidelity for a workable scene, and the export version is a third choice
+with a cost.  They are listed here because what they cost is invisible until
+you export.
 
 - **Detail levels left out by `Import Detail Levels`, which is off by
   default.**  Every LOD of a shape stands at the same origin, so importing all
@@ -323,6 +324,18 @@ is invisible until you export.
   kept out of the object list rather than emitted as phantom objects.  Warned
   at import and again at export, which names `Migrate DTS Scene` as the way to
   turn them into projectors.  `mapping/shape_to_blender.py:191`
+- **Ground frames, when the export version is v23.**  The third *asked for*
+  loss, and the one asked for least directly: the ask is the version, not the
+  drop.  v23 has nowhere to put ground frames (§7), so exporting as v23 clears
+  the arrays and zeroes every sequence's `first_ground_frame` and
+  `num_ground_frames`, and every movement animation in that file has no ground
+  speed for `PlayerData::getGroundInfo` to read.  This used to be an error the
+  user could override with a **Strip Ground Frames** checkbox; the checkbox is
+  gone, because the only two answers were "refuse an export the target engine
+  requires" and "tick the box", and the version already says which one is
+  meant.  Warned at export, naming the count and v24 as what would keep them.
+  The Blender-side collection is untouched — re-exporting as v24 has them
+  back.  `dtslib/writer.py:74`, `ops/export_dts.py:82`
 - **Skin and multi-frame meshes do not share vertices across detail levels.**
   A shared skin would need `initial_verts`, `vertex_index`, `bone_index`,
   `weight` and `node_index` to be prefixes too (`dtslib/mesh_io.py:107-140`),
@@ -548,10 +561,9 @@ the same answer either way, and because someone will otherwise try to fix them.
 ### The DTS format
 
 - **Ground frames cannot be written to v23.**  v23 has no ground-frame storage
-  at all.  Exporting a shape that has them is refused unless **Strip Ground
-  Frames** is checked, which discards them and costs every movement animation
-  its ground speed.  Writing v24 keeps them.
-  `dtslib/writer.py:27`, `ops/export_dts.py:40`
+  at all — no count word, no arrays, no guard.  Nothing done here would change
+  that; exporting as v23 drops them (§4) and writing v24 keeps them.
+  `dtslib/writer.py:164`
 - **192 nodes or objects is the ceiling.**  `TSIntegerSet` is 6 dwords wide, so
   a shape cannot name a 193rd node in a matters set — there is no bit for it.
   Refused rather than written short.
@@ -616,7 +628,7 @@ Two Blender suites, and the difference between them is the point.
 and exports.  That covers reading files the add-on did not write, and it is the
 only way to check a feature no fixture-free scene can produce.
 
-`tests/blender/test_authoring.py` (74 tests) never imports anything.  Every test
+`tests/blender/test_authoring.py` (75 tests) never imports anything.  Every test
 builds a shape from nothing — armature, meshes, materials, actions — exports it,
 and reads the feature back out of the file.  This is the suite that answers
 "can a user *make* one of these", which a round-trip cannot: the exporter may be
@@ -635,7 +647,7 @@ animation, material frames, sequences, triggers, ground frames, object-state
 tracks, node scale, DSQ export, IFL flipbooks in both directions including
 the .ifl sidecar, decals and both output versions.
 
-`scripts/mutate.py` (52 mutations) disables one capability at a time and checks
+`scripts/mutate.py` (58 mutations) disables one capability at a time and checks
 the matching test notices.  It has caught its own drift five times — a mutation
 that stopped biting when the code moved, two that were never testing what they
 claimed, and a redundant guard in the reflectance export path that no mutation

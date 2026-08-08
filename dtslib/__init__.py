@@ -46,7 +46,7 @@ from .types import (
     SortedData,
     Trigger,
 )
-from .writer import strip_ground_frames, write_shape, write_shape_file
+from .writer import fit_to_version, strip_ground_frames, write_shape, write_shape_file
 
 __all__ = [
     "DtsError",
@@ -63,6 +63,7 @@ __all__ = [
     "write_shape",
     "write_shape_file",
     "strip_ground_frames",
+    "fit_to_version",
     "Shape",
     "Node",
     "Object",

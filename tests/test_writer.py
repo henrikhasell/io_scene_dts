@@ -3,6 +3,7 @@ import pytest
 from dtslib import (
     DtsWriteError,
     Quat16,
+    fit_to_version,
     read_shape,
     strip_ground_frames,
     write_shape,
@@ -44,6 +45,39 @@ class TestVersionRefusals:
         assert not shape.ground_translations
         assert all(s.num_ground_frames == 0 for s in shape.sequences)
         write_shape(shape, 23)  # now succeeds
+
+
+class TestFitToVersion:
+    """The exporter's half of the refusal: drop what the version cannot hold,
+    and hand back something to put in front of the user."""
+
+    def _with_ground(self, n=2):
+        shape = read_shape(fixture_bytes("v24_octahedron.dts"))
+        shape.ground_translations = [(0.0, float(i), 0.0) for i in range(n)]
+        shape.ground_rotations = [Quat16.identity()] * n
+        for seq in shape.sequences:
+            seq.num_ground_frames = n
+        return shape
+
+    def test_v23_drops_ground_frames_and_says_how_many(self):
+        shape = self._with_ground(2)
+        warnings = fit_to_version(shape, 23)
+        assert len(warnings) == 1
+        assert "2 ground frame(s)" in warnings[0]
+        assert "v24" in warnings[0]  # tells the user what would keep them
+        assert not shape.ground_translations
+        assert all(s.num_ground_frames == 0 for s in shape.sequences)
+        write_shape(shape, 23)  # and the shape now fits
+
+    def test_v24_keeps_them_and_says_nothing(self):
+        shape = self._with_ground(2)
+        assert fit_to_version(shape, 24) == []
+        assert len(shape.ground_translations) == 2
+
+    def test_a_shape_without_ground_frames_is_left_alone(self):
+        shape = read_shape(fixture_bytes("v24_octahedron.dts"))
+        assert not shape.ground_translations
+        assert fit_to_version(shape, 23) == []
 
 
 class TestFixtureRoundtrips:

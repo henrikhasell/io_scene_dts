@@ -1811,11 +1811,8 @@ def test_exporting_v23():
     assert A.live_meshes(shape)
 
 
-def test_v23_refuses_ground_frames():
-    """v23 has nowhere to store them, so it errors rather than dropping the
-    speed off every movement animation silently."""
-    A.reset()
-    arm = A.armature("T2", bones=(("root", None), ("j", "root")))
+def _shape_with_a_ground_frame(name):
+    arm = A.armature(name, bones=(("root", None), ("j", "root")))
     A.mesh_object("body2", arm, bone="j")
     action = A.action_for(arm, "run", frames=4)
     action["dts_sequence"] = True
@@ -1823,19 +1820,27 @@ def test_v23_refuses_ground_frames():
     item.translation = (0.0, 1.0, 0.0)
     item.rotation = (0, 0, 0, 32767)
 
-    path = A.tmp(".dts")
-    try:
-        result = bpy.ops.io_scene_dts.export_dts(filepath=path, version="23")
-        assert result == {"CANCELLED"}, result
-    except RuntimeError as exc:
-        assert "ground frame" in str(exc), str(exc)
 
-    # ...and exports when told to drop them
-    result = bpy.ops.io_scene_dts.export_dts(
-        filepath=path, version="23", drop_ground_frames=True
-    )
-    assert result == {"FINISHED"}, result
-    assert A.read(path).sequences[0].num_ground_frames == 0
+def test_v23_drops_ground_frames_rather_than_refusing():
+    """v23 has nowhere to store them and no edit would change that, so the
+    export goes through without them -- warning the user, which
+    tests/test_writer.py checks the wording of."""
+    A.reset()
+    _shape_with_a_ground_frame("T2")
+
+    shape = A.read(A.export_dts(version="23"))
+    assert not shape.ground_translations
+    assert shape.sequences[0].num_ground_frames == 0
+
+
+def test_v24_keeps_the_ground_frames_v23_would_drop():
+    """The same shape at the version that has the storage."""
+    A.reset()
+    _shape_with_a_ground_frame("TGE")
+
+    shape = A.read(A.export_dts(version="24"))
+    assert shape.sequences[0].num_ground_frames == 1
+    assert len(shape.ground_translations) == 1
 
 
 def test_a_texture_is_found_beside_the_file():

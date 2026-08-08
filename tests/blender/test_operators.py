@@ -162,27 +162,24 @@ def test_animation_values_survive():
                 assert dot > 0.9999, (name, node_name, kf, q_src, q_dst, dot)
 
 
-def test_v23_ground_frame_refusal():
+def test_v23_drops_ground_frames():
+    """An imported shape with ground frames still exports as v23 -- the frames
+    go, because v23 has nowhere to put them, and v24 keeps them."""
     _reset()
-    # find a fixture-adjacent corpus shape with ground frames: HL exports have
-    # them; skip if the import has none
     _import_dts("v24_w_sqknest.dts")
     src = read_shape_file(FIXTURES / "v24_w_sqknest.dts")
     out = _tmp(".dts")
+
+    res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="23")
+    assert res == {"FINISHED"}, res
+    dst = read_shape_file(out)
+    assert not dst.ground_translations
+    assert all(s.num_ground_frames == 0 for s in dst.sequences)
+
     if src.ground_translations:
-        try:
-            res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="23", drop_ground_frames=False)
-            assert res == {"CANCELLED"}, res
-        except RuntimeError as e:
-            assert "ground frame" in str(e)
-        res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="23", drop_ground_frames=True)
-        assert res == {"FINISHED"}, res
-        dst = read_shape_file(out)
-        assert not dst.ground_translations
-    else:
-        # still verify a clean v23 export works
-        res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="23")
-        assert res == {"FINISHED"}, res
+        out24 = _tmp(".dts")
+        assert bpy.ops.io_scene_dts.export_dts(filepath=out24, version="24") == {"FINISHED"}
+        assert read_shape_file(out24).ground_translations
 
 
 def test_dsq_roundtrip():
