@@ -340,8 +340,8 @@ class MATERIAL_PT_dts_material(Panel):
     @classmethod
     def poll(cls, context):
         # any material, not just an imported one: a material built in a fresh
-        # scene has to be able to reach the Combine checkbox, or a reflectance
-        # map can be turned off and never on
+        # scene has to be able to reach the reflectance packing, or it can be
+        # turned off and never on
         return getattr(context, "material", None) is not None
 
     def draw(self, context):
@@ -376,7 +376,12 @@ class MATERIAL_PT_dts_material(Panel):
 
         box = layout.box()
         box.label(text="Reflectance (environment map)")
-        box.prop(mat.dts_material, "combine_reflectance")
+        box.prop(mat.dts_material, "reflectance_packing")
+        if mat.dts_material.reflectance_packing == "DEFAULT":
+            box.label(
+                text="Combine Diffuse and Reflectance, in the export dialog",
+                icon="EXPORT",
+            )
         node = materials.reflectance_image_node(mat)
         if node is not None:
             box.label(text=f"From {node.image.name}", icon="TEXTURE")

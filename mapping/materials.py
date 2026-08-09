@@ -621,8 +621,11 @@ def _wire_textures(bmat, bsdf, mat, index, all_mats, search_dir, warnings):
         reflectance.image = reflectance_img
         reflectance.location = (-350, -80)
         links.new(reflectance.outputs["Color"], bsdf.inputs["Metallic"])
-        if props is not None:
-            props.combine_reflectance = True
+        # left on DEFAULT deliberately.  That one file held both maps is a
+        # packing, not a decision about *this* material, and recording it would
+        # pin every material of every imported shape and leave the export box
+        # with nothing to act on.  Combine defaults on, so an untouched shape
+        # still round-trips to the packing it arrived in.
         return diffuse
 
     if 0 <= mat.reflectance_map < len(all_mats):
@@ -631,8 +634,14 @@ def _wire_textures(bmat, bsdf, mat, index, all_mats, search_dir, warnings):
         )
         if reflectance is not None:
             links.new(reflectance.outputs["Color"], bsdf.inputs["Metallic"])
+            # SEPARATE, not DEFAULT, and this is the asymmetry with the branch
+            # above: the mask is not a packing here, it is an entry of its own
+            # in the material list, usually one several materials point at.
+            # Folding it into this material's alpha would duplicate a shared
+            # texture and lose the sharing, so the file's structure outranks the
+            # export box.
             if props is not None:
-                props.combine_reflectance = False
+                props.reflectance_packing = "SEPARATE"
     return diffuse
 
 
@@ -994,7 +1003,24 @@ def _png_name(dts_name: str) -> str:
     return strip_texture_extension(Material(name=dts_name).basename) + ".png"
 
 
-def _resolve_reflectance_images(mats, bmats, diffuse_nodes, refl_nodes, warnings):
+def combines_reflectance(bmat, combine_default: bool) -> bool:
+    """Whether this material's two maps become one texture on export.
+
+    The export checkbox decides for the shape; a material may overrule it in
+    either direction, and ``DEFAULT`` -- what every material carries until
+    someone changes it -- is how it declines to.
+    """
+    packing = getattr(getattr(bmat, "dts_material", None), "reflectance_packing", "DEFAULT")
+    if packing == "COMBINE":
+        return True
+    if packing == "SEPARATE":
+        return False
+    return combine_default
+
+
+def _resolve_reflectance_images(
+    mats, bmats, diffuse_nodes, refl_nodes, warnings, combine_default=True
+):
     """Point each reflectance slot at the image the material's shader shows.
 
     Runs after the name-based slots have been resolved, so nothing here can
@@ -1024,8 +1050,7 @@ def _resolve_reflectance_images(mats, bmats, diffuse_nodes, refl_nodes, warnings
         reflectance, diffuse, mat = refl_nodes[i], diffuse_nodes[i], mats[i]
         if reflectance is None:
             continue
-        props = getattr(bmat, "dts_material", None)
-        combine = True if props is None else bool(props.combine_reflectance)
+        combine = combines_reflectance(bmat, combine_default)
 
         # the same image on both sockets is already the combined packing,
         # whatever the checkbox says -- there is nothing to separate.  `==`,
@@ -1101,11 +1126,15 @@ def _resolve_reflectance_images(mats, bmats, diffuse_nodes, refl_nodes, warnings
 
 def materials_from_blender(
     bmats: list[bpy.types.Material],
+    combine_reflectance: bool = True,
 ) -> tuple[list[Material], list[TextureWrite], list[str]]:
     """Build the material list, resolve map references, resolve reflectance.
 
     Four passes: build, resolve names, apply the stored slots, then let the
     shader override the reflectance slot for any material that shows one.
+
+    ``combine_reflectance`` is the export dialog's answer for the whole shape;
+    a material set to something other than ``DEFAULT`` overrules it.
     """
     warnings: list[str] = []
     mats: list[Material] = []
@@ -1165,5 +1194,7 @@ def materials_from_blender(
             # why that default needs no exception of its own.
             mat.flags &= ~MAT_NEVER_ENV_MAP
 
-    writes = _resolve_reflectance_images(mats, bmats, diffuse_nodes, refl_nodes, warnings)
+    writes = _resolve_reflectance_images(
+        mats, bmats, diffuse_nodes, refl_nodes, warnings, combine_reflectance
+    )
     return mats, writes, warnings

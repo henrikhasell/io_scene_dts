@@ -46,6 +46,17 @@ class ExportDTS(bpy.types.Operator, ExportHelper):
         "not art",
         default=True,
     )
+    combine_reflectance: BoolProperty(
+        name="Combine Diffuse and Reflectance",
+        description="Write each material's reflectance map into its diffuse "
+        "texture's alpha channel, so the shape names one texture and points its "
+        "reflectance slot at itself.  That is the packing every material in "
+        "Tribes 2's own shapes uses.  Unchecked, the diffuse and the reflectance "
+        "are written as separate files and the reflectance gets its own entry in "
+        "the material list.  A material set to Combine or Separate in its DTS "
+        "Material panel overrules this for itself",
+        default=True,
+    )
     scale_textures_pot: BoolProperty(
         name="Scale Textures to Power of Two",
         description="Resize exported textures to the nearest power-of-two "
@@ -79,6 +90,7 @@ class ExportDTS(bpy.types.Operator, ExportHelper):
                 arm_obj,
                 selected_only=self.selected_only,
                 do_export_sequences=self.export_sequences,
+                combine_reflectance=self.combine_reflectance,
             )
         except ExportError as e:
             self.report({"ERROR"}, str(e))

@@ -238,6 +238,54 @@ MUTATIONS = {
         "        index = 0",
         ["test_a_reflectance_map_is_authorable"],
     ),
+    # the export checkbox itself: pinned on, and the shape-wide "separate" the
+    # user asked for silently becomes the combined packing instead
+    "export-box-ignored": (
+        "mapping/materials.py",
+        "    return combine_default",
+        "    return True",
+        ["test_unticking_the_export_box_writes_two_textures"],
+    ),
+    # ...and the two per-material exceptions to it, each in its own direction.
+    # A material set to COMBINE or SEPARATE that quietly follows the box is a
+    # checkbox that does nothing, which is what DEFAULT is already for.
+    "material-combine-override-ignored": (
+        "mapping/materials.py",
+        '    if packing == "COMBINE":',
+        "    if False:",
+        ["test_a_material_overrules_the_export_box_in_either_direction"],
+    ),
+    "material-separate-override-ignored": (
+        "mapping/materials.py",
+        '    if packing == "SEPARATE":',
+        "    if False:",
+        [
+            "test_a_material_overrules_the_export_box_in_either_direction",
+            "test_a_cross_referenced_reflectance_imports_as_the_other_materials_texture",
+        ],
+    ),
+    # an imported cross-reference has to record SEPARATE, or re-exporting it
+    # with the box on folds a texture several materials share into one alpha
+    "cross-reference-packing-unrecorded": (
+        "mapping/materials.py",
+        '                props.reflectance_packing = "SEPARATE"',
+        "                pass",
+        ["test_a_cross_referenced_reflectance_imports_as_the_other_materials_texture"],
+    ),
+    # the old bool, converted the wrong way: a material that asked for its own
+    # texture quietly starts following a ticked box instead
+    "combine-migration-flattened": (
+        "props/migrate.py",
+        '    props.reflectance_packing = "DEFAULT" if bool(value) else "SEPARATE"',
+        '    props.reflectance_packing = "DEFAULT"',
+        ["test_migration_converts_the_old_combine_checkbox"],
+    ),
+    "combine-migration-keeps-old-key": (
+        "props/migrate.py",
+        "    del props[LEGACY_COMBINE_KEY]",
+        "    pass",
+        ["test_migration_converts_the_old_combine_checkbox"],
+    ),
     "reflectance-forces-envmap": (
         "mapping/materials.py",
         "            mat.flags &= ~MAT_NEVER_ENV_MAP",

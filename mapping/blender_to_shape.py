@@ -94,12 +94,15 @@ def blender_to_shape(
     arm_obj: bpy.types.Object,
     selected_only: bool = False,
     do_export_sequences: bool = True,
+    combine_reflectance: bool = True,
 ) -> tuple[Shape, list, list[str]]:
     """The shape, the textures export has to write beside it, and warnings."""
     if arm_obj is None or arm_obj.type != "ARMATURE":
         raise ExportError("select an armature (the DTS shape root)")
     with flushed_edit_mode(context):
-        return _blender_to_shape(context, arm_obj, selected_only, do_export_sequences)
+        return _blender_to_shape(
+            context, arm_obj, selected_only, do_export_sequences, combine_reflectance
+        )
 
 
 def _blender_to_shape(
@@ -107,6 +110,7 @@ def _blender_to_shape(
     arm_obj: bpy.types.Object,
     selected_only: bool,
     do_export_sequences: bool,
+    combine_reflectance: bool = True,
 ) -> tuple[Shape, list, list[str]]:
     """The body, with Edit Mode already flushed by the wrapper above."""
     reset_material_cache()
@@ -372,7 +376,9 @@ def _blender_to_shape(
             )
 
     # -- materials ----------------------------------------------------
-    shape.materials, texture_writes, mat_warnings = materials_from_blender(_used_materials)
+    shape.materials, texture_writes, mat_warnings = materials_from_blender(
+        _used_materials, combine_reflectance
+    )
     warnings += mat_warnings
 
     # -- IFL materials (derived from the materials that flip) ---------

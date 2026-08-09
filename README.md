@@ -102,9 +102,14 @@ Disk.  For development, symlink this checkout into
   feeding **Metallic**.  A DTS packs one there by putting it in the *alpha
   channel* of the diffuse texture, so an env-mapped material imports as two
   images — an RGB diffuse and a greyscale mask — and the **Combine Diffuse and
-  Reflectance** checkbox says which packing to write back.  On, the mask goes
-  into the diffuse's alpha; off, it becomes its own texture and its own entry
-  in the shape's material list.  Export writes a `.png` beside the `.dts` for
+  Reflectance** checkbox in the export dialog says which packing to write back
+  for the whole shape.  On (the default), the mask goes into the diffuse's
+  alpha and the shape names one texture whose reflectance slot points at
+  itself; off, the two are written as separate files and the mask gets its own
+  entry in the shape's material list.  A material that has to disagree with the
+  rest of the shape says so with **Reflectance Packing** in Material Properties
+  → **DTS Material**, which is *Follow Export Setting* unless you change it.
+  Export writes a `.png` beside the `.dts` for
   every texture the shape names — made in Blender or loaded from disk — so an
   exported shape carries its art with it.  Existing files are overwritten, so
   exporting *into* a game's `textures/` tree rewrites the art there; untick

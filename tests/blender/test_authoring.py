@@ -332,7 +332,7 @@ def test_a_reflectance_map_is_authorable():
         "hull",
         diffuse=A.generated_image("hull_diffuse"),
         reflectance=A.generated_image("hull_refl", ramp=True),
-        combine=False,
+        packing="SEPARATE",
     )
     A.mesh_object("body2", arm, bone="root", material=mat)
 
@@ -363,7 +363,7 @@ def test_a_combined_reflectance_is_authorable():
         "hull",
         diffuse=A.generated_image("hull_diffuse", colour=(0.25, 0.5, 0.75)),
         reflectance=A.generated_image("hull_refl", ramp=True),
-        combine=True,
+        packing="COMBINE",
     )
     A.mesh_object("body2", arm, bone="root", material=mat)
 
@@ -381,6 +381,116 @@ def test_a_combined_reflectance_is_authorable():
     assert min(alpha) < 0.05 and max(alpha) > 0.95, sorted(set(alpha))
 
 
+def _shiny_scene(*, packing=None, count=1):
+    """A fresh shape whose materials each show a diffuse and a reflectance."""
+    A.reset()
+    arm = A.armature("Shiny")
+    for index in range(count):
+        name = f"hull{index}"
+        mat = A.image_material(
+            name,
+            diffuse=A.generated_image(f"{name}_diffuse", colour=(0.25, 0.5, 0.75)),
+            reflectance=A.generated_image(f"{name}_refl", ramp=True),
+            packing=packing,
+        )
+        A.mesh_object(f"part{index}_2", arm, bone="root", material=mat)
+    return arm
+
+
+def test_the_export_box_combines_materials_that_do_not_object():
+    """Ticked -- the default -- and a material left alone writes one texture.
+
+    This is the fresh-scene case the export checkbox exists for: nothing was
+    imported, no material carries a packing of its own, and the box decides.
+    """
+    _shiny_scene(count=2)
+
+    path = A.export_dts(A.tmp_in_own_dir(), combine_reflectance=True)
+    shape = A.read(path)
+    assert [m.name for m in shape.materials] == ["hull0", "hull1"], (
+        "combined, so no material list entry is invented for the mask"
+    )
+    assert [m.reflectance_map for m in shape.materials] == [0, 1], "each points at itself"
+
+    beside = Path(path).parent
+    assert sorted(p.name for p in beside.glob("*.png")) == ["hull0.png", "hull1.png"]
+    for name in ("hull0.png", "hull1.png"):
+        alpha = list(bpy.data.images.load(str(beside / name)).pixels)[3::4]
+        assert min(alpha) < 0.05 and max(alpha) > 0.95, (name, sorted(set(alpha)))
+
+
+def test_unticking_the_export_box_writes_two_textures():
+    """Unticked, the same scene writes the maps as separate files.
+
+    The mask has nowhere to live in the .dts except as a material-list entry of
+    its own, so one is invented per image and flagged for what it is.
+    """
+    _shiny_scene(count=2)
+
+    path = A.export_dts(A.tmp_in_own_dir(), combine_reflectance=False)
+    shape = A.read(path)
+    names = [m.name for m in shape.materials]
+    assert names[:2] == ["hull0", "hull1"], names
+    assert len(names) == 4, names
+    for i in (0, 1):
+        target = shape.materials[shape.materials[i].reflectance_map]
+        assert target.name != names[i], f"{names[i]} must not point at itself"
+        assert target.flags & MAT_REFLECTANCE_MAP_ONLY, target.name
+
+    beside = Path(path).parent
+    written = sorted(p.stem for p in beside.glob("*.png"))
+    assert written == sorted(names), written
+    # and the diffuse the engine draws must not have picked up a mask on the way
+    for name in ("hull0", "hull1"):
+        alpha = list(bpy.data.images.load(str(beside / f"{name}.png")).pixels)[3::4]
+        assert set(alpha) == {1.0}, (name, sorted(set(alpha)))
+
+
+def test_a_material_overrules_the_export_box_in_either_direction():
+    """The per-material setting is an exception to the shape-wide one.
+
+    Both directions, in one shape, so neither can pass by accident of the box:
+    the box is off and the COMBINE material still writes one texture, while the
+    SEPARATE material would have been combined and is not.
+    """
+    A.reset()
+    arm = A.armature("Mixed")
+    for name, packing in (("stubborn", "COMBINE"), ("plain", None)):
+        mat = A.image_material(
+            name,
+            diffuse=A.generated_image(f"{name}_diffuse"),
+            reflectance=A.generated_image(f"{name}_refl", ramp=True),
+            packing=packing,
+        )
+        A.mesh_object(f"{name}2", arm, bone="root", material=mat)
+
+    shape = A.read(A.export_dts(combine_reflectance=False))
+    by_name = {m.name: m for m in shape.materials}
+    assert by_name["stubborn"].reflectance_map == list(by_name).index("stubborn"), (
+        "COMBINE outranks an unticked box"
+    )
+    assert shape.materials[by_name["plain"].reflectance_map].name != "plain"
+
+    # ...and now the same trick the other way round
+    A.reset()
+    arm = A.armature("Mixed")
+    for name, packing in (("stubborn", "SEPARATE"), ("plain", None)):
+        mat = A.image_material(
+            name,
+            diffuse=A.generated_image(f"{name}_diffuse"),
+            reflectance=A.generated_image(f"{name}_refl", ramp=True),
+            packing=packing,
+        )
+        A.mesh_object(f"{name}2", arm, bone="root", material=mat)
+
+    shape = A.read(A.export_dts(combine_reflectance=True))
+    by_name = {m.name: m for m in shape.materials}
+    assert shape.materials[by_name["stubborn"].reflectance_map].name != "stubborn", (
+        "SEPARATE outranks a ticked box"
+    )
+    assert by_name["plain"].reflectance_map == list(by_name).index("plain")
+
+
 def test_a_reflectance_material_is_env_mapped():
     """Showing a reflectance map is how you ask for env-mapping.
 
@@ -395,14 +505,14 @@ def test_a_reflectance_material_is_env_mapped():
         "shiny",
         diffuse=A.generated_image("shiny_diffuse"),
         reflectance=A.generated_image("shiny_refl", ramp=True),
-        combine=True,
+        packing="COMBINE",
     )
     # ...and the checkbox does not get to contradict the map either
     ticked = A.image_material(
         "ticked",
         diffuse=A.generated_image("ticked_diffuse"),
         reflectance=A.generated_image("ticked_refl", ramp=True),
-        combine=True,
+        packing="COMBINE",
     )
     ticked["dts_never_env_map"] = True
     for index, mat in enumerate((plain, shiny, ticked)):
@@ -429,7 +539,7 @@ def test_a_reflectance_map_does_not_shift_primitive_material_indices():
         "middle",
         diffuse=A.generated_image("middle_diffuse"),
         reflectance=A.generated_image("middle_refl", ramp=True),
-        combine=False,
+        packing="SEPARATE",
     )
     last = A.principled_material("last")
     for index, mat in enumerate((first, middle, last)):

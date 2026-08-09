@@ -445,17 +445,24 @@ def test_a_reflectance_round_trips_byte_identically():
 def test_unticking_combine_splits_the_material_list():
     """Off, the mask becomes its own texture and its own material entry.
 
+    Unticked on the *export dialog*, and the material is left alone: an
+    imported material follows that box, which is the whole reason the importer
+    records nothing about the packing it found.
+
     And doing it again must not grow the list further: the second import finds
     the reflectance entry as an ordinary material, so the third export points
-    at that rather than inventing another.
+    at that rather than inventing another -- with the box back on, because the
+    material now says SEPARATE for itself.
     """
     dts, _ = _env_mapped_fixture()
     _reset()
     assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
-    _material_of("shrub").dts_material.combine_reflectance = False
+    assert _material_of("shrub").dts_material.reflectance_packing == "DEFAULT"
 
     out = Path(tempfile.mkdtemp()) / "out.dts"
-    assert bpy.ops.io_scene_dts.export_dts(filepath=str(out), version="24") == {"FINISHED"}
+    assert bpy.ops.io_scene_dts.export_dts(
+        filepath=str(out), version="24", combine_reflectance=False
+    ) == {"FINISHED"}
     dst = read_shape_file(out)
     assert len(dst.materials) == 2, [m.name for m in dst.materials]
     assert dst.materials[0].reflectance_map == 1
@@ -529,7 +536,10 @@ def test_a_cross_referenced_reflectance_imports_as_the_other_materials_texture()
     assert reflectance.image == _node_feeding(other, "Base Color").image, (
         "it is the other material's own texture, not a copy"
     )
-    assert base.dts_material.combine_reflectance is False
+    # SEPARATE, not DEFAULT: the mask is another entry in the material list that
+    # both materials point at, and combining would duplicate a shared texture.
+    # So it has to survive an export with the Combine box left on, below.
+    assert base.dts_material.reflectance_packing == "SEPARATE"
 
     out = directory / "out.dts"
     assert bpy.ops.io_scene_dts.export_dts(filepath=str(out), version="24") == {"FINISHED"}
@@ -880,6 +890,45 @@ def test_migration_drops_the_blend_props_saved_beside_the_shader():
     # idempotent, and the flags it never owned are untouched
     migrate.migrate_all()
     assert bmat["dts_s_wrap"] is not None
+
+
+def test_migration_converts_the_old_combine_checkbox():
+    """``combine_reflectance`` (bool) becomes ``reflectance_packing`` (enum).
+
+    The bool is not a registered property any more, so it is written and read
+    as the raw IDProperty a .blend saved by the older version still holds.
+
+    False was "give it its own texture", which a ticked export box must not
+    overrule, so it becomes SEPARATE.  True was only the old *default* -- it
+    says nobody objected, not that this material insists -- so it becomes
+    DEFAULT, and the box has something to act on.  Both export the bytes they
+    did before, because Combine defaults on.
+    """
+    from io_scene_dts.props import migrate
+
+    _reset()
+    _import_dts("v24_shrub.dts")
+    # the imported one and a fresh one, because the conversion is not gated on
+    # dts_name: the old bool was authorable in a scene with no import in it
+    split = _mat_by_index(0)
+    kept = bpy.data.materials.new("kept")
+    untouched = bpy.data.materials.new("untouched")
+    kept.dts_material["combine_reflectance"] = True
+    split.dts_material["combine_reflectance"] = False
+
+    migrate.migrate_all()
+    assert kept.dts_material.reflectance_packing == "DEFAULT"
+    assert split.dts_material.reflectance_packing == "SEPARATE"
+    assert untouched.dts_material.reflectance_packing == "DEFAULT"
+    for bmat in (kept, split):
+        assert "combine_reflectance" not in bmat.dts_material.keys(), (
+            "the old key has to go, or it is a second source of truth"
+        )
+
+    # idempotent, and it does not undo an override set after the conversion
+    split.dts_material.reflectance_packing = "COMBINE"
+    migrate.migrate_all()
+    assert split.dts_material.reflectance_packing == "COMBINE"
 
 
 def test_a_translucent_sorted_mesh_records_no_mode():

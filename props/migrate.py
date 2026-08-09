@@ -27,6 +27,7 @@ from .legacy import (
     parse_triggers,
 )
 from .decal import SCHEMA_VERSION as DECAL_SCHEMA_VERSION
+from .material import LEGACY_COMBINE_KEY
 from .material import SCHEMA_VERSION as MATERIAL_SCHEMA_VERSION
 from .mesh import SCHEMA_VERSION as MESH_SCHEMA_VERSION
 from .shape import SCHEMA_VERSION
@@ -330,23 +331,50 @@ def migrate_decals(report: list) -> bool:
 DERIVED_MATERIAL_KEYS = ("dts_translucent", "dts_additive", "dts_subtractive")
 
 
+def _migrate_reflectance_packing(props) -> None:
+    r"""``combine_reflectance`` (bool) -> ``reflectance_packing`` (enum).
+
+    Read off the raw IDProperty rather than through RNA: the bool is not a
+    registered property any more, and an unregistered PropertyGroup value is
+    still in the .blend under its own name.  Absence means it was never set, so
+    there is nothing to convert.
+
+    ``False`` was "write it as its own texture", which the export box can now be
+    on while the material still wants -- so it becomes ``SEPARATE``, and the
+    exported file is unchanged.  ``True`` becomes ``DEFAULT`` rather than
+    ``COMBINE``: it was the old *default*, so it says only that nobody objected,
+    and pinning every such material to ``COMBINE`` would leave the new export
+    box doing nothing on exactly the scenes most likely to have one.  Combine
+    defaults on, so this too exports the same bytes it did before.
+    """
+    value = props.get(LEGACY_COMBINE_KEY)
+    if value is None:
+        return
+    props.reflectance_packing = "DEFAULT" if bool(value) else "SEPARATE"
+    del props[LEGACY_COMBINE_KEY]
+
+
 def migrate_materials() -> None:
     """Stamp imported materials, and drop the props that became derived.
 
-    Nothing is converted and nothing is lost.  Reflectance images did not exist
-    before, so there is no old form to read; and the three blend keys were
-    already ignored on export -- ``_flags_from_blender`` masked them off and
-    recomputed them from the shader -- so deleting them changes no exported
-    file.  Reports nothing and does not count as a change for that reason.
+    Nothing is lost.  The three blend keys were already ignored on export --
+    ``_flags_from_blender`` masked them off and recomputed them from the shader
+    -- so deleting them changes no exported file, and the reflectance packing
+    converts to the value that exports the same bytes.  Reports nothing and does
+    not count as a change for that reason.
 
-    The deletion is not gated on the schema version: the keys are the thing
-    being looked for, so their absence is the only idempotence needed.
+    Neither conversion is gated on the schema version: the old keys are the
+    thing being looked for, so their absence is the only idempotence needed.
+    That matters for the packing, which a material with no ``dts_name`` can
+    carry too -- it is authorable in a fresh scene, and the ``dts_name`` gate
+    below is about imported materials only.
     """
     for mat in bpy.data.materials:
         for key in DERIVED_MATERIAL_KEYS:
             if key in mat:
                 del mat[key]
         props = mat.dts_material
+        _migrate_reflectance_packing(props)
         if "dts_name" not in mat or props.schema_version >= MATERIAL_SCHEMA_VERSION:
             continue
         props.is_dts = True

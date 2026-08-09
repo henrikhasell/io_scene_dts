@@ -36,8 +36,8 @@ result rather than because this add-on will not — they are in §7.
 | DTS versions 15–16 | `unsupported DTS version 15 (supported: 17-24)`.  The keyframe-table era stores animation in a layout nothing else in the reader shares. | `dtslib/old_reader.py:40` |
 | DTS version 25+ | Same error.  Torque 3D–era shapes are not read. | `dtslib/reader.py:71` |
 | Writing any version but 23/24 | `only 24 (Torque) and 23 (Tribes 2) are supported — older versions keep skins in a separate section`.  You cannot import a v19 shape and write a v19 shape. | `dtslib/writer.py:22` |
-| Exporting without an armature | `select an armature (the DTS shape root)` — the armature *is* the shape. | `mapping/blender_to_shape.py:68` |
-| Exporting decals with nothing translucent | `this shape has N decal(s) and nothing translucent to draw them against`.  The engine needs a blended mesh in a shape that carries decals; without one the file is valid and the decals draw wrong, which nothing downstream can diagnose.  Refused rather than warned because it is one click to fix — Render Method → Blended on the decal's own material or on the mesh it sits on — and because every one of the corpus's 153 decal-bearing shapes does one or the other. | `mapping/blender_to_shape.py:395` |
+| Exporting without an armature | `select an armature (the DTS shape root)` — the armature *is* the shape. | `mapping/blender_to_shape.py:101` |
+| Exporting decals with nothing translucent | `this shape has N decal(s) and nothing translucent to draw them against`.  The engine needs a blended mesh in a shape that carries decals; without one the file is valid and the decals draw wrong, which nothing downstream can diagnose.  Refused rather than warned because it is one click to fix — Render Method → Blended on the decal's own material or on the mesh it sits on — and because every one of the corpus's 153 decal-bearing shapes does one or the other. | `mapping/blender_to_shape.py:401` |
 
 ---
 
@@ -128,7 +128,7 @@ way to check your work short of re-reading the exported file.
   wins — `NONE` is the value being promoted from, so it is not a way to opt
   out.  Skins and vertex-animation meshes cannot be sorted at all (§7) and keep
   their type, silently, since nobody asked.  What this costs is in §4.
-  `mapping/blender_to_shape.py:803`
+  `mapping/blender_to_shape.py:809`
 
   Triangles are never split, since that would change the vertex count
   and break the detail-level sharing above, so a large face crossing a splitting
@@ -203,13 +203,13 @@ way to check your work short of re-reading the exported file.
   Neither is used anywhere in the 852-file corpus — 0 materials of 3185 set
   either slot, and `detail_scale` is 1.0 in all of them.  A map referencing a
   material that was not exported is dropped with a warning.
-  `mapping/materials.py:1121`
+  `mapping/materials.py:1150`
   Two further ways a map slot can be lost or silently retargeted are in §4.
   The reflectance map is no longer on this list; see below.
 - **`reflection_amount`**, the scalar the engine multiplies the whole
   reflection by.  Round-trips as a custom prop and previews as nothing at all —
   it is 1.0 in 265 of the 270 env-mapped corpus materials, 0.5 in 3 and 0.1 in
-  2. `mapping/materials.py:1122`
+  2. `mapping/materials.py:1151`
 - **Material flags.**  Eleven of the fourteen bits have a checkbox, in Material
   Properties → DTS Material.  Four of them —`MAT_MIP_MAP_ZERO_BORDER` (8),
   `MAT_IFL_FRAME` (28), `MAT_DETAIL_MAP_ONLY` (29) and `MAT_BUMP_MAP_ONLY`
@@ -336,14 +336,24 @@ you export.
   requires" and "tick the box", and the version already says which one is
   meant.  Warned at export, naming the count and v24 as what would keep them.
   The Blender-side collection is untouched — re-exporting as v24 has them
-  back.  `dtslib/writer.py:74`, `ops/export_dts.py:92`
+  back.  `dtslib/writer.py:74`, `ops/export_dts.py:104`
 - **Skin and multi-frame meshes do not share vertices across detail levels.**
   A shared skin would need `initial_verts`, `vertex_index`, `bone_index`,
   `weight` and `node_index` to be prefixes too (`dtslib/mesh_io.py:107-140`),
   and a multi-frame mesh's array runs past the shared prefix into its frame
   blocks.  A multi-frame mesh can still be a *parent*.  14 meshes in the whole
   corpus share a skin, so this costs almost nothing.
-  `mapping/blender_to_shape.py:570`
+  `mapping/blender_to_shape.py:576`
+- **A reflectance map that cannot be combined with its diffuse.**  Combining
+  writes the mask into the diffuse's alpha, so the two images have to be the
+  same size and there has to be a diffuse at all.  Neither holds by
+  construction — both are just images the user put on two sockets — and when
+  one fails the reflectance is dropped and the material exports with its slot
+  self-indexed, as if it had no mask.  Warned, naming both sizes.  Ticking
+  **Combine Diffuse and Reflectance** for the whole shape is what makes this
+  reachable for a material the author never thought about; setting that
+  material to *Separate* avoids it entirely, since separate textures have no
+  size relationship.  `mapping/materials.py:1067,1075`
 - **Sequences re-export larger than they were read.**  `gman`'s node rotations
   go from 13,556 to 18,588 entries, which is most of that shape's growth.  This
   predates the geometry work and is not caused by it: the exporter writes a key
@@ -358,7 +368,7 @@ you export.
   different file.  The geometry is unchanged and the engine draws it in a
   better order; what is lost is the original's own answer to the question.
   Set the mode to `FLAT` to keep the type without partitioning anything, or
-  make the material opaque.  `mapping/blender_to_shape.py:803`
+  make the material opaque.  `mapping/blender_to_shape.py:809`
 - **The source file's object order, when something translucent is not last.**
   Objects are drawn in list order and a blended surface only composites
   correctly over what is already in the frame buffer, so export moves every
@@ -369,14 +379,14 @@ you export.
   stable, so nothing else moves, and every index that names an object — decals,
   object states, the sequences' `vis`/`frame`/`matframe` matters sets — is
   assigned after it and follows.  What is lost is the original's own ordering
-  for those three.  `mapping/blender_to_shape.py:223`, `dtslib/translucency.py`
+  for those three.  `mapping/blender_to_shape.py:227`, `dtslib/translucency.py`
 - **`merge_indices` naming a vertex no face uses.**  A strip-packed source mesh
   carries vertices that only ever appear in a degenerate stitch triangle.  Once
   the mesh is edited and re-derived as triangle lists those vertices are gone,
   so a merge entry pointing at one has nothing left to name and is dropped with
   a warning — 15 of 61 entries on `weapon_energy_vehicle`'s first mesh.  The
   entries that survive are remapped exactly.  An unedited mesh still round-trips
-  the whole table through the payload. `mapping/blender_to_shape.py:659`
+  the whole table through the payload. `mapping/blender_to_shape.py:665`
 - **Which faces a decal covers.**  This is the big one.  A `TSDecalMesh`
   stores an authored list of target triangles (`dtslib/mesh_io.py:196`), and a
   decal is a projector empty, which cannot hold one.  Export therefore
@@ -427,7 +437,7 @@ you export.
 - **Bone channels with no DTS node.**  A bone you add in Blender animates
   nothing on export. `mapping/sequences.py:394`, `mapping/dsq.py:179`
 - **Duplicate detail sizes for one object.**  `duplicate detail 'X' for object
-  'Y'; 'Z' skipped`. `mapping/blender_to_shape.py:154`
+  'Y'; 'Z' skipped`. `mapping/blender_to_shape.py:158`
 - **`dts_bump_map` and `dts_detail_map` on a material created in Blender.**
   The export path decides whether a material carries map references by testing
   for `dts_reflectance_map` *alone* — `has_refs = _MAP_PROPS[0] in bmat` — and
@@ -436,7 +446,7 @@ you export.
   exports as `bump=NO_MAP, detail=NO_MAP`, with no warning.  Adding
   `dts_reflectance_map` as well makes all three take effect; imported materials
   always carry all three, so they are unaffected.
-  `mapping/materials.py:1145`  Reflectance is the exception now that the shader
+  `mapping/materials.py:1174`  Reflectance is the exception now that the shader
   owns it: an image feeding `Metallic` sets that slot whether or not any of the
   props are there.
 - **Whatever texture was already sitting where an export lands.**  Export
@@ -486,26 +496,26 @@ you export.
   already writes zeros and 11 shipped entries already are zero, so this is a
   shape the engine demonstrably accepts; it is still a byte change on
   re-export.  `numFrames` is the one of the three that is real, and it becomes
-  the length of the frame list.  `mapping/materials.py:901`
+  the length of the frame list.  `mapping/materials.py:910`
 - **An IFL material whose `.ifl` cannot be found imports with no frames.**  The
   material keeps its checkbox and still gets its table entry, so the shape is
   not silently un-animated, but there is nothing to preview and export writes
   no `.ifl`.  All 35 the corpus names do resolve — but only from a tree where
   `shapes/` and `textures/` are siblings, which is not how every game lays them
-  out. `mapping/materials.py:647`
+  out. `mapping/materials.py:656`
 - **The identity of a map target whose name is not unique.**  Map slots are
   stored as material *names* so they survive reordering, and resolved back
   through `index_by_name = {m.name.lower(): i ...}`, where a later entry
   overwrites an earlier one.  Material names are not unique in real shapes —
   the importer says so itself, and keys material identity on
-  `dts_material_index` for that reason (`mapping/materials.py:821`) — so a slot
+  `dts_material_index` for that reason (`mapping/materials.py:830`) — so a slot
   pointing at the *first* of two materials named `glass` comes back pointing at
   the last, silently.  104 of the 630 corpus shapes have duplicate material
   names, but none of them has a map slot targeting a duplicated name, so no
-  real file is currently mistranslated. `mapping/materials.py:1126,1135`
+  real file is currently mistranslated. `mapping/materials.py:1155,1164`
   Reflectance slots resolved from the shader do not join this hazard: they are
   matched on the image *datablock*, whose name Blender does keep unique.
-  `mapping/materials.py:1067`
+  `mapping/materials.py:1092`
 
 ---
 
@@ -531,12 +541,12 @@ exist, so adding a bone channel marks its node instead of being ignored.
   export, which is why the panel shows the blend mode as a computed label
   rather than three checkboxes.  They are not stored on the material at all:
   a prop beside the graph would be a second source for one value, and older
-  scenes have theirs deleted on load (`props/migrate.py:301`).
-  `mapping/materials.py:964`  `MAT_NEVER_ENV_MAP` is a fourth exception, but in
+  scenes have theirs deleted on load (`props/migrate.py:375`).
+  `mapping/materials.py:973`  `MAT_NEVER_ENV_MAP` is a fourth exception, but in
   one direction only: a material with an image feeding `Metallic` exports with
   env-mapping *on* however the box is set, because a reflectance map the engine
   is told never to read is not a feature.  With no such image the checkbox
-  still wins. `mapping/materials.py:1166`
+  still wins. `mapping/materials.py:1195`
 - **The blend state of a material that fades.**  The visibility and decal
   wiring force `surface_render_method = BLENDED` so a fade renders at all,
   which on an opaque material would otherwise read back as `MAT_TRANSLUCENT`.
@@ -551,6 +561,13 @@ exist, so adding a bone channel marks its node instead of being ignored.
 
 ## 6. Not a DTS feature, but missing
 
+- **No warning when a material ignores an unticked Combine box.**  One image on
+  both Base Color and Metallic *is* the combined packing — that is how an
+  env-mapped translucent material imports, since its alpha is transparency and
+  splitting it would change what the engine draws — so export keeps it combined
+  however the box is set, and says nothing.  The box is honoured for every
+  material whose two sockets hold different images, which is all of them once a
+  reflectance has been split out.  `mapping/materials.py:1059`
 - **No warning when a sequence's object-state tracks are lost to a `.dsq`.**
   The loss itself is the format's and is in §7; saying nothing about it is not.
   `mapping/dsq.py`
@@ -561,8 +578,8 @@ exist, so adding a bone channel marks its node instead of being ignored.
   DTS tab.  The rest (subshape indices, object detail numbers, default object
   states) are still raw entries in the N-panel's Custom Properties: a real
   place to edit them, but not a designed one.  The DTS Material panel now draws
-  for any material rather than only an imported one, because the Combine
-  checkbox has to be reachable in a fresh scene. `ui/panels.py:338`
+  for any material rather than only an imported one, because **Reflectance
+  Packing** has to be reachable in a fresh scene. `ui/panels.py:345`
 - Sub-shapes have no authoring path: they can be preserved but not created
   without hand-setting `dts_subshape`.
 - A scene saved by v1.2 or earlier converts on load (`props/migrate.py`), but
@@ -591,9 +608,9 @@ the same answer either way, and because someone will otherwise try to fix them.
 - **192 nodes or objects is the ceiling.**  `TSIntegerSet` is 6 dwords wide, so
   a shape cannot name a 193rd node in a matters set — there is no bit for it.
   Refused rather than written short.
-  `mapping/blender_to_shape.py:137,338`, `dtslib/primitives.py:14`
+  `mapping/blender_to_shape.py:141,342`, `dtslib/primitives.py:14`
 - **65535 unique vertices is the ceiling for one mesh.**  The index buffer is
-  u16.  Split the mesh.  `mapping/blender_to_shape.py:679`
+  u16.  Split the mesh.  `mapping/blender_to_shape.py:685`
 - **A `.dsq` cannot carry object state.**  `DsqFile` has no `object_states`,
   `decal_states` or IFL tables at all, so a sequence's visibility, frame,
   matframe and decal tracks have nowhere to go.  They round-trip through
@@ -602,7 +619,7 @@ the same answer either way, and because someone will otherwise try to fix them.
 - **A mesh cannot be both skinned and vertex-animated.**  `mesh_type` is one
   field, so `frame_*` shape keys on a skinned mesh are ignored with a warning.
   The same field is why a skin cannot also be sorted.
-  `mapping/blender_to_shape.py:759`
+  `mapping/blender_to_shape.py:765`
 - **One alpha channel carries two meanings and the file does not say which.**
   On an env-mapped material it is the reflectance mask; otherwise it is
   transparency.  There is no field to disambiguate, so a reader has to choose.
@@ -648,11 +665,11 @@ the same answer either way, and because someone will otherwise try to fix them.
 
 Two Blender suites, and the difference between them is the point.
 
-`tests/blender/test_operators.py` (93 tests) imports real fixtures, edits them
+`tests/blender/test_operators.py` (94 tests) imports real fixtures, edits them
 and exports.  That covers reading files the add-on did not write, and it is the
 only way to check a feature no fixture-free scene can produce.
 
-`tests/blender/test_authoring.py` (81 tests) never imports anything.  Every test
+`tests/blender/test_authoring.py` (84 tests) never imports anything.  Every test
 builds a shape from nothing — armature, meshes, materials, actions — exports it,
 and reads the feature back out of the file.  This is the suite that answers
 "can a user *make* one of these", which a round-trip cannot: the exporter may be
@@ -665,7 +682,8 @@ Between them they cover detail levels and LOD vertex sharing, collision
 details, node hierarchies, materials and all fourteen flag bits (eleven
 stored, three derived), the three
 blend modes through the shader, map slots, reflectance maps in both packings
-and both directions, billboards including the Z-axis
+and both directions plus the shape-wide export box and the per-material
+overrides to it, billboards including the Z-axis
 variant no shipped shape uses, sorted meshes in both modes and the promotion of translucent ones, skins, vertex
 animation, material frames, sequences, triggers, ground frames, object-state
 tracks, node scale, DSQ export, IFL flipbooks in both directions including
@@ -673,7 +691,7 @@ the .ifl sidecar, decals and the translucency a shape needs to draw them, the
 object ordering that translucency forces, the size rule both texture checkboxes
 feed, and both output versions.
 
-`scripts/mutate.py` (66 mutations) disables one capability at a time and checks
+`scripts/mutate.py` (72 mutations) disables one capability at a time and checks
 the matching test notices.  It has caught its own drift six times — two
 mutations that stopped biting when the code moved, two that were never testing
 what they claimed, and a redundant guard in the reflectance export path that no

@@ -29,6 +29,15 @@ def tmp(suffix=".dts"):
     return handle.name
 
 
+def tmp_in_own_dir(name="out.dts"):
+    """A path in a directory of its own.
+
+    ``tmp`` shares one directory with every other test, so a test that asks
+    *which* files export wrote has to have somewhere empty to write them.
+    """
+    return str(Path(tempfile.mkdtemp()) / name)
+
+
 def armature(name="Shape", bones=(("root", None),)):
     """An armature with the named bones.
 
@@ -180,12 +189,15 @@ def generated_image(name, *, size=4, colour=(0.25, 0.5, 0.75), ramp=False):
     return image
 
 
-def image_material(name, *, diffuse=None, reflectance=None, combine=None):
+def image_material(name, *, diffuse=None, reflectance=None, packing=None):
     """A Principled material with images on Base Color and Metallic.
 
     Metallic is where the add-on reads a reflectance map from, so this is how a
     user gives a material one -- there is no property to set, and that is the
     point: the shader is the only place it can live.
+
+    ``packing`` is the per-material override; left None the material follows the
+    export dialog, which is what a material a user made looks like.
     """
     mat = principled_material(name)
     nt = mat.node_tree
@@ -197,8 +209,8 @@ def image_material(name, *, diffuse=None, reflectance=None, combine=None):
         node.image = image
         node.location = (-350, y)
         nt.links.new(node.outputs["Color"], bsdf.inputs[socket])
-    if combine is not None:
-        mat.dts_material.combine_reflectance = combine
+    if packing is not None:
+        mat.dts_material.reflectance_packing = packing
     return mat
 
 
