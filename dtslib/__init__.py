@@ -1,8 +1,9 @@
 """dtslib — pure-Python Torque DTS/DSQ format library (no bpy dependency).
 
-Supports reading DTS versions 17-24 and writing versions 24 (Torque Game
-Engine 1.5) and 23 (Tribes 2).  DSQ sequence files: read 17-24, write the
-modern (v22+) layout.
+Reads and writes DTS versions 15-24 -- Tribes 1-era shapes through Torque Game
+Engine 1.5.  ``fit_to_version`` says what an older version cannot hold before
+``write_shape`` writes it.  DSQ sequence files: read 17-24, write the modern
+(v22+) layout.
 """
 
 from .errors import DtsError, DtsGuardMismatch, DtsUnsupportedVersion, DtsWriteError
@@ -22,9 +23,11 @@ from .types import (
     PRIM_STRIP,
     PRIM_TRIANGLES,
     PRIM_TYPE_MASK,
+    SEQ_ANY_SCALE,
     SEQ_BLEND,
     SEQ_CYCLIC,
     SEQ_MAKE_PATH,
+    SEQ_UNIFORM_SCALE,
     SKIN_MESH,
     SORTED_MESH,
     STANDARD_MESH,
@@ -96,6 +99,8 @@ __all__ = [
     "SEQ_CYCLIC",
     "SEQ_BLEND",
     "SEQ_MAKE_PATH",
+    "SEQ_UNIFORM_SCALE",
+    "SEQ_ANY_SCALE",
     "TRIGGER_STATE_ON",
     "TRIGGER_INVERT_ON_REVERSE",
     "NO_MAP",

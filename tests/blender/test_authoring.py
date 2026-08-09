@@ -2371,3 +2371,175 @@ def test_exporting_without_sequences():
     shape = A.read(A.export_dts(export_sequences=False))
     assert shape.sequences == []
     assert A.live_meshes(shape)
+
+
+# ----------------------------------------------------------------------
+# format versions
+# ----------------------------------------------------------------------
+
+WRITABLE_VERSIONS = tuple(range(15, 25))
+
+
+def _versioned_scene():
+    """A scene with something to lose in every version: a node hierarchy, two
+    detail levels, a material, and a rotating sequence."""
+    A.reset()
+    arm = A.armature("Rig", bones=(("root", None), ("panel", "root")))
+    A.mesh_object("body2", arm, bone="panel", material=A.principled_material("hull"))
+    A.mesh_object("body1", arm, bone="panel")
+    action = A.action_for(arm, "spin", frames=5)
+    action["dts_sequence"] = True
+    action["dts_duration"] = 1.0
+    return arm
+
+
+def test_the_version_menu_offers_exactly_what_the_library_writes():
+    """The dropdown and the writer have to agree, or a listed version errors
+    out on export and an unlisted one is unreachable."""
+    from io_scene_dts.dtslib.fit import MAX_VERSION, MIN_VERSION
+    from io_scene_dts.ops.export_dts import ExportDTS
+
+    listed = sorted(int(item[0]) for item in ExportDTS.__annotations__["version"].keywords["items"])
+    assert listed == list(range(MIN_VERSION, MAX_VERSION + 1))
+
+
+def test_every_version_is_writable_from_a_fresh_scene():
+    """No import anywhere: the shape is built in Blender and written ten times.
+
+    Each read-back is checked for the things the version does keep, so a
+    version whose layout is subtly wrong fails here rather than in the engine.
+    """
+    for version in WRITABLE_VERSIONS:
+        _versioned_scene()
+        shape = A.read(A.export_dts(version=str(version)))
+        assert shape.source_version == version, version
+        assert [shape.name(n.name_index) for n in shape.nodes] == ["root", "panel"]
+        assert A.object_names(shape) == ["body"]
+        assert sorted(d.size for d in shape.details) == [1.0, 2.0], version
+        assert [m.name for m in shape.materials] == ["hull"], version
+        assert len(shape.sequences) == 1, version
+        seq = shape.sequences[0]
+        assert shape.name(seq.name_index) == "spin", version
+        assert seq.num_keyframes == 5, (version, seq.num_keyframes)
+        assert abs(seq.duration - 1.0) < 1e-5, version
+        assert seq.rotation_matters.count() == 1, version
+        mesh = A.live_meshes(shape)[0]
+        assert mesh.verts and mesh.norms and mesh.indices, version
+        assert mesh.mesh_type == STANDARD_MESH, version
+
+
+def _two_channel_scene():
+    """Two bones rotating differently over four keys.
+
+    Two channels and more than one key is the minimum that makes the pre-v17
+    transpose observable: with one channel, keyframe-major and channel-major
+    orderings are the same list, and a transpose that never happened looks
+    correct.
+    """
+    A.reset()
+    arm = A.armature("Arm", bones=(("root", None), ("upper", "root"), ("lower", "upper")))
+    A.mesh_object("body2", arm, bone="lower")
+    action = bpy.data.actions.new("wave")
+    action.use_fake_user = True
+    action["dts_sequence"] = True
+    arm.animation_data_create()
+    arm.animation_data.action = action
+    for index, name in enumerate(("upper", "lower")):
+        bone = arm.pose.bones[name]
+        bone.rotation_mode = "QUATERNION"
+        for frame in range(1, 5):
+            angle = (frame - 1) * (0.3 + 0.4 * index)
+            bone.rotation_quaternion = (
+                math.cos(angle / 2), math.sin(angle / 2) * (1 - index), 0.0,
+                math.sin(angle / 2) * index,
+            )
+            bone.keyframe_insert("rotation_quaternion", frame=frame)
+    return arm
+
+
+def _rotation_tracks(shape):
+    """Each animated node's whole rotation track, per channel."""
+    seq = shape.sequences[0]
+    nodes = list(seq.rotation_matters.indices())
+    return {
+        node: shape.node_rotations[
+            seq.base_rotation + o * seq.num_keyframes :
+            seq.base_rotation + (o + 1) * seq.num_keyframes
+        ]
+        for o, node in enumerate(nodes)
+    }
+
+
+def test_animation_survives_the_keyframe_major_versions():
+    """v15 and v16 store animation per keyframe rather than per channel.  The
+    transpose is invisible in the file's shape, so this compares the tracks the
+    old versions come back with against the modern one's, key for key."""
+    _two_channel_scene()
+    modern = _rotation_tracks(A.read(A.export_dts(version="24")))
+    assert len(modern) == 2, modern
+    assert len(next(iter(modern.values()))) == 4
+    # the two channels must actually differ, or the transpose is unobservable
+    assert list(modern.values())[0] != list(modern.values())[1]
+
+    for version in WRITABLE_VERSIONS:
+        _two_channel_scene()
+        old = _rotation_tracks(A.read(A.export_dts(version=str(version))))
+        assert old == modern, f"v{version} rotation tracks: {old} != {modern}"
+
+
+def test_a_skin_is_authorable_in_every_version():
+    """Pre-v23 keeps skins in a section with no room for the object's name or
+    node.  Written into the mesh list instead, both survive -- and every version
+    of the reader accepts them there."""
+    for version in WRITABLE_VERSIONS:
+        A.reset()
+        arm = A.armature("Skinned", bones=(("root", None), ("spine", "root")))
+        obj = A.mesh_object("body2", arm)
+        obj.parent_type = "OBJECT"
+        obj.modifiers.new("Armature", "ARMATURE").object = arm
+        lower = obj.vertex_groups.new(name="root")
+        upper = obj.vertex_groups.new(name="spine")
+        for vertex in obj.data.vertices:
+            (upper if vertex.co.z > 0 else lower).add([vertex.index], 1.0, "REPLACE")
+
+        shape = A.read(A.export_dts(version=str(version)))
+        assert A.object_names(shape) == ["body"], version
+        mesh = A.live_meshes(shape)[0]
+        assert mesh.mesh_type == SKIN_MESH, version
+        assert mesh.initial_verts and mesh.weight and mesh.node_index, version
+
+
+def test_pre_v22_pairs_a_translation_only_channel():
+    """A bone that only slides has no rotation track to store, and v21 has no
+    way to say so: it stores one node state, rotation and translation together.
+    The rotation it gains has to be the bone's rest pose, not zero."""
+    A.reset()
+    arm = A.armature("Slider", bones=(("root", None), ("lift", "root")))
+    A.mesh_object("body2", arm, bone="lift")
+    action = bpy.data.actions.new("slide")
+    action.use_fake_user = True
+    action["dts_sequence"] = True
+    arm.animation_data_create()
+    arm.animation_data.action = action
+    bone = arm.pose.bones["lift"]
+    for frame in range(1, 5):
+        bone.location = (0.0, 0.0, frame * 0.1)
+        bone.keyframe_insert("location", frame=frame)
+
+    shape = A.read(A.export_dts(version="21"))
+    seq = shape.sequences[0]
+    assert seq.translation_matters.count() == 1
+    # v21 reads one set back into both, so rotation now "matters" too
+    assert seq.rotation_matters == seq.translation_matters
+    node = next(seq.translation_matters.indices())
+    rest = shape.default_rotations[node]
+    filled = shape.node_rotations[seq.base_rotation : seq.base_rotation + seq.num_keyframes]
+    assert filled == [rest] * seq.num_keyframes, filled
+    # and the translation the user authored is still there, still rising
+    zs = [
+        t[2]
+        for t in shape.node_translations[
+            seq.base_translation : seq.base_translation + seq.num_keyframes
+        ]
+    ]
+    assert zs == sorted(zs) and zs[-1] > zs[0], zs

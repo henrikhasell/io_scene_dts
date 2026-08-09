@@ -22,8 +22,26 @@ class ExportDTS(bpy.types.Operator, ExportHelper):
     version: EnumProperty(
         name="Format Version",
         items=[
-            ("24", "Torque (v24)", "Newest format: Torque Game Engine 1.5 (supports ground frames)"),
-            ("23", "Tribes 2 (v23)", "The format Tribes 2's own shapes use (no ground frames)"),
+            ("24", "Torque (v24)", "Newest format: Torque Game Engine 1.5.  The only "
+             "version with somewhere to keep ground frames"),
+            ("23", "Tribes 2 (v23)", "The format Tribes 2's own shapes use.  No ground "
+             "frames -- v23 and v22 have nowhere for them"),
+            ("22", "Tribes 2, older (v22)", "The bulk of Tribes 2's shapes.  Skins live "
+             "with the other meshes from here up"),
+            ("21", "v21", "One node track per node: a node that rotates also stores a "
+             "translation.  No scale animation, and no encoded normals.  Ground frames "
+             "ride at the end of the node array"),
+            ("20", "v20", "As v21, without per-material reflection amounts"),
+            ("19", "v19", "As v20; decals carry the empty mesh header they had when "
+             "decals were derived from meshes"),
+            ("18", "v18", "The flat-stream format: no mesh bounds (the engine computes "
+             "them), no vertex sharing between detail levels, no merge indices, no LOD "
+             "error metrics, and no decal projection planes"),
+            ("17", "v17", "As v18, with 32-bit primitive and index fields"),
+            ("16", "v16", "As v17, and animation is stored keyframe-major through a "
+             "keyframe table"),
+            ("15", "v15", "The oldest this add-on writes.  As v16, and meshes are "
+             "indexed through a separate list rather than a null-mesh marker"),
         ],
         default="24",
     )

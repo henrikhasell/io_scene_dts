@@ -172,6 +172,13 @@ def _assemble_shape(shape: Shape, alloc: ReadAlloc, version: int) -> None:
     shape.sub_shape_num_decals = list(alloc.get32n(num_sub_shapes))
     alloc.guard()
 
+    # pre-v16 shapes list their mesh slots separately: one entry per slot, -1
+    # where the slot draws nothing.  Later versions say the same thing with a
+    # NullMesh type word in the mesh list itself (tsShape.cc:713)
+    mesh_index_list = None
+    if version < 16:
+        mesh_index_list = list(alloc.get32n(alloc.get32()))
+
     # default + animated node transforms
     flat16 = alloc.get16n(4 * num_nodes)
     shape.default_rotations = [Quat16(*flat16[i : i + 4]) for i in range(0, len(flat16), 4)]
@@ -249,8 +256,23 @@ def _assemble_shape(shape: Shape, alloc: ReadAlloc, version: int) -> None:
 
     # meshes
     meshes: list[Mesh | None] = []
-    for _ in range(num_meshes):
-        meshes.append(read_mesh(alloc, version, meshes))
+    if mesh_index_list is None:
+        for _ in range(num_meshes):
+            meshes.append(read_mesh(alloc, version, meshes))
+    else:
+        # one slot per meshIndexList entry; only the non-negative ones have a
+        # mesh in the stream, and they are in order (tsShape.cc:860)
+        expected = 0
+        for entry in mesh_index_list:
+            if entry < 0:
+                meshes.append(None)
+                continue
+            if entry != expected:
+                raise DtsError(f"meshIndexList out of order: {entry} where {expected} was due")
+            meshes.append(read_mesh(alloc, version, meshes))
+            expected = entry + 1
+        if expected != num_meshes:
+            raise DtsError(f"meshIndexList names {expected} meshes, header says {num_meshes}")
     shape.meshes = meshes
     alloc.guard()
 

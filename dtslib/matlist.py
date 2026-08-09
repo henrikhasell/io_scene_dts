@@ -76,21 +76,31 @@ def read_material_list(r: StreamReader, version: int) -> list[Material]:
     return mats
 
 
-def write_material_list(w: StreamWriter, mats: list[Material]) -> None:
-    """Always the modern (v21+) full layout — correct for v23/v24 writes."""
+def write_material_list(w: StreamWriter, mats: list[Material], version: int = 24) -> None:
+    """The enclosing shape version decides which columns exist.
+
+    Reflection amounts arrived in v21 and are simply absent below it -- the
+    engine defaults them to 1.0 (tsMaterialList.cc:229), so a material with a
+    reflection amount of anything else loses it when written older.  Everything
+    else here has been in the list since long before v15.
+    """
     w.u8(BINARY_FILE_VERSION)
     w.u32(len(mats))
     for m in mats:
         w.pascal_string(m.name)
-    for m in mats:
-        w.u32(m.flags)
-    for m in mats:
-        w.u32(m.reflectance_map)
-    for m in mats:
-        w.u32(m.bump_map)
-    for m in mats:
-        w.u32(m.detail_map)
-    for m in mats:
-        w.f32(m.detail_scale)
-    for m in mats:
-        w.f32(m.reflection_amount)
+    if version >= 2:
+        for m in mats:
+            w.u32(m.flags)
+    if version >= 5:
+        for m in mats:
+            w.u32(m.reflectance_map)
+        for m in mats:
+            w.u32(m.bump_map)
+        for m in mats:
+            w.u32(m.detail_map)
+    if version > 11:
+        for m in mats:
+            w.f32(m.detail_scale)
+    if version > 20:
+        for m in mats:
+            w.f32(m.reflection_amount)

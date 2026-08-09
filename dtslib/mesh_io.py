@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from .errors import DtsError
 from .normals import encode_normal
+from .primitives import bits_to_f32, f32_to_bits
 from .stream import ReadAlloc, WriteAlloc
 from .types import (
     DECAL_MESH,
@@ -214,27 +215,27 @@ def _read_decal_mesh(alloc: ReadAlloc, version: int, type_word: int) -> Mesh:
 
 
 # ----------------------------------------------------------------------
-# write side (versions 23/24 only — always the modern layout)
+# write side (the three-buffer versions, 19-24)
 # ----------------------------------------------------------------------
 
 
-def write_mesh(alloc: WriteAlloc, mesh: Mesh | None) -> None:
+def write_mesh(alloc: WriteAlloc, mesh: Mesh | None, version: int = 24) -> None:
     """Write one mesh: type word + payload (TSShape::disassembleShape loop)."""
     if mesh is None:
         alloc.set32(NULL_MESH)
         return
     alloc.set32(mesh.mesh_type & MESH_TYPE_MASK)
     if mesh.mesh_type == DECAL_MESH:
-        _write_decal_mesh(alloc, mesh)
+        _write_decal_mesh(alloc, mesh, version)
         return
-    _write_base_mesh(alloc, mesh)
+    _write_base_mesh(alloc, mesh, version)
     if mesh.mesh_type == SKIN_MESH:
-        _write_skin_extension(alloc, mesh)
+        _write_skin_extension(alloc, mesh, version)
     elif mesh.mesh_type == SORTED_MESH:
         _write_sorted_extension(alloc, mesh)
 
 
-def _write_base_mesh(alloc: WriteAlloc, mesh: Mesh) -> None:
+def _write_base_mesh(alloc: WriteAlloc, mesh: Mesh, version: int = 24) -> None:
     alloc.guard()
 
     alloc.set32(mesh.num_frames)
@@ -254,11 +255,13 @@ def _write_base_mesh(alloc: WriteAlloc, mesh: Mesh) -> None:
 
     if mesh.parent_mesh < 0:
         alloc.set32fn([c for v in mesh.norms for c in v])
-        # encoded normals: preserve read bytes, else compute (TSMesh::disassemble)
-        if mesh.encoded_norms:
-            alloc.set8bytes(bytes(mesh.encoded_norms))
-        else:
-            alloc.set8bytes(bytes(encode_normal(n) for n in mesh.norms))
+        # encoded normals: v22 introduced them; preserve read bytes, else
+        # compute (TSMesh::disassemble, tsMesh.cc:3168)
+        if version > 21:
+            if mesh.encoded_norms:
+                alloc.set8bytes(bytes(mesh.encoded_norms))
+            else:
+                alloc.set8bytes(bytes(encode_normal(n) for n in mesh.norms))
 
     alloc.set32(len(mesh.primitives))
     for p in mesh.primitives:
@@ -277,15 +280,16 @@ def _write_base_mesh(alloc: WriteAlloc, mesh: Mesh) -> None:
     alloc.guard()
 
 
-def _write_skin_extension(alloc: WriteAlloc, mesh: Mesh) -> None:
+def _write_skin_extension(alloc: WriteAlloc, mesh: Mesh, version: int = 24) -> None:
     alloc.set32(len(mesh.initial_verts))
     if mesh.parent_mesh < 0:
         alloc.set32fn([c for v in mesh.initial_verts for c in v])
         alloc.set32fn([c for v in mesh.initial_norms for c in v])
-        if mesh.initial_encoded_norms:
-            alloc.set8bytes(bytes(mesh.initial_encoded_norms))
-        else:
-            alloc.set8bytes(bytes(encode_normal(n) for n in mesh.initial_norms))
+        if version > 21:
+            if mesh.initial_encoded_norms:
+                alloc.set8bytes(bytes(mesh.initial_encoded_norms))
+            else:
+                alloc.set8bytes(bytes(encode_normal(n) for n in mesh.initial_norms))
 
     alloc.set32(len(mesh.initial_transforms))
     if mesh.parent_mesh < 0:
@@ -320,17 +324,69 @@ def _write_sorted_extension(alloc: WriteAlloc, mesh: Mesh) -> None:
     alloc.guard()
 
 
-def _write_decal_mesh(alloc: WriteAlloc, mesh: Mesh) -> None:
+def _write_decal_mesh(alloc: WriteAlloc, mesh: Mesh, version: int = 24) -> None:
     dd = mesh.decal_data or DecalMeshData()
+
+    if version < 20:
+        # decals used to be derived from meshes, so a decal starts with an
+        # empty mesh header the engine reads past and discards
+        # (TSDecalMesh::assemble, tsDecal.cc:169).  Its primitives and indices
+        # then land in the base mesh's slots, which is where they already are
+        alloc.guard()
+        alloc.set32(1)  # numFrames
+        alloc.set32(1)  # numMatFrames
+        alloc.set32(-1)  # parentMesh
+        alloc.set32n([0] * 10)  # bounds, center, radius
+        alloc.set32(0)  # numVerts
+        alloc.set32(0)  # numTVerts
+
     alloc.set32(len(dd.primitives))
     for p in dd.primitives:
         alloc.set16n((p.start, p.num_elements))
         alloc.set32(p.mat_index)
     alloc.set32(len(dd.indices))
     alloc.setu16n(dd.indices)
+
+    if version < 20:
+        alloc.set32(0)  # mergeIndices
+        alloc.set32(0)  # vertsPerFrame
+        alloc.set32(0)  # flags
+        alloc.guard()
+
     alloc.set32(len(dd.start_primitive))
     alloc.set32n(dd.start_primitive)
-    alloc.set32fn([c for v in dd.texgen_s for c in v])
-    alloc.set32fn([c for v in dd.texgen_t for c in v])
+    if version >= 19:
+        # one plane pair per start primitive, always: the reader sizes these off
+        # the count above, so a decal that came from a v18 file (which stores no
+        # planes at all) gets null ones rather than a short buffer
+        zero = (0.0, 0.0, 0.0, 0.0)
+        n = len(dd.start_primitive)
+        for planes in (dd.texgen_s, dd.texgen_t):
+            padded = list(planes[:n]) + [zero] * (n - len(planes[:n]))
+            alloc.set32fn([c for v in padded for c in v])
     alloc.set32(dd.material_index)
     alloc.guard()
+
+
+def compute_mesh_bounds(mesh: Mesh) -> None:
+    """Port of TSMesh::computeBounds (tsMesh.cc:2966).
+
+    The bounds, centre and radius a pre-v19 file leaves out: the loader works
+    them out from the vertices, so anything writing that far back has to do the
+    same to know what the file will read back as.
+    """
+    verts = mesh.verts or mesh.initial_verts
+    if not verts:
+        return
+    xs, ys, zs = zip(*verts)
+    mn = (min(xs), min(ys), min(zs))
+    mx = (max(xs), max(ys), max(zs))
+    mesh.bounds = mn + mx
+    # keep the center float32-representable so a rewrite round-trips exactly
+    center = tuple(bits_to_f32(f32_to_bits((a + b) / 2.0)) for a, b in zip(mn, mx))
+    mesh.center = center
+    radius = max(
+        ((v[0] - center[0]) ** 2 + (v[1] - center[1]) ** 2 + (v[2] - center[2]) ** 2) ** 0.5
+        for v in verts
+    )
+    mesh.radius_int = int(radius)

@@ -16,6 +16,7 @@ from tests.corpus import (  # noqa: E402,F401
     corpus_dsq_files,
     corpus_dts_files,
     corpus_dts_files_of_version,
+    corpus_unique_dts_files,
     dts_version,
 )
 

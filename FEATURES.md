@@ -39,11 +39,13 @@ listed in `UNSUPPORTED.md` §3.
 
 | Feature | Read | Write | Notes |
 | --- | --- | --- | --- |
-| DTS v24 (Torque Game Engine 1.5) | ● | ● | The default output. |
+| DTS v24 (Torque Game Engine 1.5) | ● | ● | The default output.  The only version with ground-frame storage of its own. |
 | DTS v23 (Tribes 2) | ● | ● | Selectable in the export dialog.  No ground-frame storage — see §5. |
-| DTS v22–v19 | ● | ○ | Normalized to the v24 in-memory layout on load (pre-v22 ground frames migrated out of the node arrays, pre-v23 skin section folded in).  Written back as 23 or 24 only.  `dtslib/writer.py:22` |
-| DTS v18–v17 | ● | ○ | The flat-stream format, handled by a separate reader. |
-| DTS v16–v15 | ○ | ○ | Refused: the keyframe-table era stores animation in a layout nothing else shares.  `dtslib/old_reader.py:40` |
+| DTS v22 | ● | ● | As v23, plus a skin section this add-on writes nothing into: a skin goes in the mesh list, where every version's reader accepts it and the object keeps its name and node.  `dtslib/writer.py:128` |
+| DTS v21–v19 | ● | ● | Normalized to the v24 in-memory layout on load and put back on write: one node track per node (rotation and translation paired from the rest pose where a channel is missing), ground frames at the end of that array, no scale animation, no encoded normals.  `dtslib/fit.py:177` |
+| DTS v18–v17 | ● | ● | The flat-stream format, read and written by modules of their own (`old_reader.py`, `old_writer.py`).  No mesh bounds, no vertex sharing between detail levels, no merge indices, no LOD error metrics, no decal projection planes. |
+| DTS v16–v15 | ● | ● | The keyframe-table era: animation is stored keyframe-major and transposed both ways, and v15 indexes meshes through a list instead of a null-mesh marker.  `dtslib/old_reader.py:288`, `dtslib/old_writer.py:108` |
+| DTS v14 and older | ○ | ○ | Refused: no file that old exists in any corpus here, and the branches it needs would be written blind.  `dtslib/old_reader.py:50` |
 | DTS v25+ | ○ | ○ | Refused.  Torque 3D–era shapes are not read.  `dtslib/reader.py:71` |
 | DSQ v17–v24 | ● | ● | Reads every version, writes the modern layout.  Binds to bones by node-name matching. |
 | Buffer padding | ● | ● | The uninitialised bytes original files pad their 16- and 8-bit buffers with are captured on read and reused on write, so a rewrite stays byte-close. |
@@ -83,7 +85,7 @@ listed in `UNSUPPORTED.md` §3.
 | Triangle primitives | ● | ● | ● | ● | Export emits indexed Triangles grouped per material — the same policy as the engine's own `.mdl` exporter. |
 | Strip and fan primitives | ● | – | ○ | ○ | Decoded into triangles on import; never written.  Measured across the corpus this costs **×1.00** — 312,733 strip primitives become triangles for no size change, because the u16 index buffer is dwarfed by the float vertex arrays. |
 | `parent_mesh` vertex sharing across LODs | ● | – | ● | ● | Re-derived, not carried: each object's levels are interned into one pool lowest-detail-first, so every smaller level occupies a prefix of the larger one.  Skins and multi-frame meshes are excluded — their parallel arrays would have to be prefixes too.  `mapping/vertex_pool.py`, `mapping/blender_to_shape.py:609` |
-| `merge_indices` (legacy LOD morph table) | ● | ◐ | ◐ | ◐ | A raw int array on the mesh object, editable only as numbers in the N-panel — order matters and entries repeat, so a vertex group cannot hold it.  Entries naming a vertex no face uses any more are dropped with a warning.  *Blind.*  `mapping/blender_to_shape.py:791` |
+| `merge_indices` (legacy LOD morph table) | ● | ◐ | ◐ | ◐ | A raw int array on the mesh object, editable only as numbers in the N-panel — order matters and entries repeat, so a vertex group cannot hold it.  Entries naming a vertex no face uses any more are dropped with a warning.  Exporting as v18 or older drops the whole table — the flat-stream format has no field for it — also with a warning.  *Blind.*  `mapping/blender_to_shape.py:791`, `dtslib/fit.py:264` |
 | Billboard flag | ● | ● | ● | ● | Checkbox in Object Properties → DTS Mesh.  *Blind* — nothing in the viewport turns a billboard to face you, and authoring one the engine actually turns is not solved (`UNSUPPORTED.md` §3).  A round-tripped billboard keeps working. |
 | Z-axis billboard flag | ● | ● | ● | ● | Same, and worse: no shipped Tribes 2 shape sets it, so there is no reference render to compare against. |
 | `MESH_HAS_DETAIL_TEXTURE`, `MESH_USE_ENCODED_NORMALS` | ● | ● | ● | ● | Checkboxes.  Neither occurs in the corpus. |
@@ -157,10 +159,10 @@ happen to match.
 | Node translation channels | ● | ● | ● | ● | |
 | Rotation / translation matters sets | ● | – | ● | ● | Inferred from the channels that exist, so adding a bone channel marks its node. |
 | Blend sequences | ● | ● | ● | ● | Raw blend offsets are stored in the pose, which is correct for export but does not look like the additive result the engine produces.  *Blind.* |
-| Uniform node scale | ● | ● | ● | ● | Rides the pose bones' own `scale` channels; `Scale Mode` on the sequence panel says which DTS form to write.  *Blind*: nothing shows that a scale channel means *node* scale. |
+| Uniform node scale | ● | ● | ● | ● | Rides the pose bones' own `scale` channels; `Scale Mode` on the sequence panel says which DTS form to write.  *Blind*: nothing shows that a scale channel means *node* scale.  Arrived in v22 — exporting as v21 or older drops it with a warning.  `dtslib/fit.py:222` |
 | Aligned node scale | ● | ● | ● | ● | Same. |
 | Arbitrary node scale | ● | ○ | ○ | ○ | Per-axis factors *plus* an orientation naming the axes to measure along.  A pose bone's scale cannot express the second half, so it is refused on export rather than half-written.  No corpus sequence uses it.  `mapping/sequences.py:562` |
-| Ground frames (root motion) | ● | ● | ● | ● | A collection on the action, in the Dope Sheet / NLA DTS tab, holding raw `Quat16` int16s so a frame round-trips bit-exactly.  *Blind*: nothing shows them as motion.  v23 has nowhere to store them, so exporting as v23 drops them with a warning.  `dtslib/writer.py:74` |
+| Ground frames (root motion) | ● | ● | ● | ● | A collection on the action, in the Dope Sheet / NLA DTS tab, holding raw `Quat16` int16s so a frame round-trips bit-exactly.  *Blind*: nothing shows them as motion.  v23 and v22 have nowhere to store them, so exporting as either drops them with a warning; v24 has arrays of its own and v21 and older keep them at the end of the node-transform array.  `dtslib/fit.py:419` |
 | Triggers | ● | ● | ● | ● | A collection on the action: a state 1..30 and two flags rather than the packed U32 the file holds.  Pose markers show where they fire; nothing plays a sound.  *Blind.* |
 | Object visibility (`vis`) track | ● | ● | ● | ● | Keyframed as a custom property on the armature, in the same slot as the bones; each mesh built from that object reads it through a driver into alpha and the hide flags.  **Export samples the curves**, so editing a key changes the file. |
 | Vertex-frame (`frame`) track | ● | ● | ● | ● | Keyframed the same way.  *Blind*: nothing drives the shape keys from it. |
@@ -181,7 +183,7 @@ the projector and export recomputes the rest.
 | --- | --- | --- | --- | --- | --- |
 | Decal table, names, owners, indices | ● | ● | ● | ● | The index is a decal's identity — `decal_states[i]` and each sequence's `decal_matters` bits are keyed by it — because names are not unique (`turret_tank_base` gives all fourteen of its decals the same one). |
 | Projection (texgen planes) | ● | ● | ● | ● | Derived from the empty's transform.  All 24 of `bioderm_light`'s decals round-trip their planes exactly. |
-| Covered faces | ◐ | ● | ● | ● | **The known loss.**  The file stores an authored triangle list (`dtslib/mesh_io.py:197`); a projector cannot hold one, so export recomputes coverage from the volume.  The original exporter also used a filter bitmap that lived in the Max scene and is in no `.dts`, so this was never going to be exact — 0.4% of the corpus's 27,243 decal mesh slots come back identical.  Import fits rule, depth and angle per decal (recall 0.444 on `bioderm_light`).  What it costs in the engine is a burn mark covering a different patch of the same surface.  See `DECALS.md`. |
+| Covered faces | ◐ | ● | ● | ● | **The known loss.**  The file stores an authored triangle list (`dtslib/mesh_io.py:198`); a projector cannot hold one, so export recomputes coverage from the volume.  The original exporter also used a filter bitmap that lived in the Max scene and is in no `.dts`, so this was never going to be exact — 0.4% of the corpus's 27,243 decal mesh slots come back identical.  Import fits rule, depth and angle per decal (recall 0.444 on `bioderm_light`).  What it costs in the engine is a burn mark covering a different patch of the same surface.  See `DECALS.md`. |
 | Coverage controls (rule, depth, max angle) | – | ● | ● | – | The format stores no depth axis, so `Depth` and `Coverage` are choices the user makes rather than recovered values.  `Max Angle` is the original exporter's `DECAL::MAX_ANGLE`, same 90° default. |
 | Per-detail-level decal meshes | ● | ● | ● | ● | A decal owns a mesh run parallel to its owner's slots, so export writes one `TSDecalMesh` per LOD.  The preview draws on the target only. |
 | Decal material | ● | ● | ● | ● | A pointer on the empty — it had nowhere to live once a decal stopped being a mesh with a material slot. |
@@ -215,8 +217,8 @@ None of these corrupt a file; all stop with an error.
 
 | Refusal | Why | Where |
 | --- | --- | --- |
-| DTS versions 15–16 and 25+ | Layouts this reader does not share. | `dtslib/old_reader.py:40`, `dtslib/reader.py:71` |
-| Writing any version but 23/24 | Older versions keep skins in a separate section. | `dtslib/writer.py:22` |
+| DTS versions 14 and older, and 25+ | Nothing that old exists to test against; nothing that new is documented here. | `dtslib/old_reader.py:50`, `dtslib/reader.py:71` |
+| Writing a shape an older version cannot hold | `write_shape` refuses rather than lose ground frames, scale animation, merge indices or LOD error metrics quietly.  The export dialog calls `fit_to_version` first, which drops them *and warns*, so the refusal is a library guard rather than something a user meets. | `dtslib/fit.py:469` |
 | Exporting without an armature | The armature *is* the shape. | `mapping/blender_to_shape.py:102` |
 | More than 192 nodes or objects | `TSIntegerSet` is 6 dwords wide, so there is no bit for a 193rd in a matters set.  A format limit, not a gap. | `mapping/blender_to_shape.py:144`, `mapping/blender_to_shape.py:357` |
 | More than 65535 vertices in one mesh | The index buffer is u16.  Split the mesh. | `mapping/blender_to_shape.py:730` |

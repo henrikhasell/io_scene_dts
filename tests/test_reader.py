@@ -26,11 +26,49 @@ class TestHeader:
             read_header(b"ab")
 
 
+class TestKeyframeEra:
+    """v15-16 store animation keyframe-major, indexed through a table the
+    engine reads and throws away.  Getting the transpose wrong does not fail
+    loudly, so these check the shape of the result rather than just that it
+    parsed."""
+
+    def test_v15_parses(self):
+        shape = read_shape(fixture_bytes("v15_chaingun_shot.dts"))
+        assert shape.source_version == 15
+        assert len(shape.nodes) == 5
+        assert len(shape.sequences) == 1
+        seq = shape.sequences[0]
+        # the base indices are not in a v15 sequence record: they came out of
+        # the keyframe table, rebased past the default node transforms
+        assert seq.num_keyframes == 12
+        assert seq.base_rotation == seq.base_translation == 0
+        # one rotation and one translation per animated node per keyframe
+        assert len(shape.node_rotations) == seq.num_keyframes * seq.rotation_matters.count()
+        assert len(shape.node_rotations) == len(shape.node_translations)
+
+    def test_v16_parses(self):
+        shape = read_shape(fixture_bytes("v16_borg11.dts"))
+        assert shape.source_version == 16
+        assert len(shape.details) == 8
+        assert [m is not None for m in shape.meshes].count(True) == len(shape.meshes)
+        assert any(m.mesh_type == SORTED_MESH for m in shape.meshes)
+
+    def test_v15_mesh_index_list(self):
+        """v15 lists its mesh slots separately; every slot in this one is filled,
+        and the object mesh ranges have to land on real meshes."""
+        shape = read_shape(fixture_bytes("v15_chaingun_shot.dts"))
+        for obj in shape.objects:
+            for i in range(obj.num_meshes):
+                assert shape.meshes[obj.start_mesh_index + i] is not None
+
+
 class TestUnsupportedVersions:
-    def test_pre_keyframe_era_refused(self, name="v15_chaingun_shot.dts"):
+    def test_pre_keyframe_era_refused(self):
+        data = bytearray(fixture_bytes("v15_chaingun_shot.dts"))
+        data[0] = 14
         with pytest.raises(DtsUnsupportedVersion) as e:
-            read_shape(fixture_bytes(name))
-        assert e.value.version < 17
+            read_shape(bytes(data))
+        assert e.value.version == 14
 
     def test_v18_old_format_parses(self):
         shape = read_shape(fixture_bytes("v18_octahedron.dts"))

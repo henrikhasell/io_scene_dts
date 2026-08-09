@@ -33,9 +33,9 @@ result rather than because this add-on will not — they are in §7.
 
 | Feature | Behaviour | Where |
 | --- | --- | --- |
-| DTS versions 15–16 | `unsupported DTS version 15 (supported: 17-24)`.  The keyframe-table era stores animation in a layout nothing else in the reader shares. | `dtslib/old_reader.py:40` |
+| DTS versions 14 and older | `unsupported DTS version 14 (supported: 15-24)`.  Nothing that old is in any corpus on this machine, and what it needs — default decal states, sequences with no trigger or tool-begin fields, IFL materials identified by filename extension — would be written from the engine's source with no file to check it against. | `dtslib/old_reader.py:50` |
 | DTS version 25+ | Same error.  Torque 3D–era shapes are not read. | `dtslib/reader.py:71` |
-| Writing any version but 23/24 | `only 24 (Torque) and 23 (Tribes 2) are supported — older versions keep skins in a separate section`.  You cannot import a v19 shape and write a v19 shape. | `dtslib/writer.py:22` |
+| Writing a shape an older version has no room for | `write_shape` refuses rather than drop ground frames, node-scale animation, merge indices, LOD error metrics, decal projection planes or per-material reflection amounts without saying so.  Each message names `fit_to_version` as the way to say "lose it, but tell me", which is what the export dialog does — so this is a library guard, not something an export meets.  What each loss costs is in §4. | `dtslib/fit.py:469` |
 | Exporting without an armature | `select an armature (the DTS shape root)` — the armature *is* the shape. | `mapping/blender_to_shape.py:102` |
 | Exporting decals with nothing translucent | `this shape has N decal(s) and nothing translucent to draw them against`.  The engine needs a blended mesh in a shape that carries decals; without one the file is valid and the decals draw wrong, which nothing downstream can diagnose.  Refused rather than warned because it is one click to fix — Render Method → Blended on the decal's own material or on the mesh it sits on — and because every one of the corpus's 153 decal-bearing shapes does one or the other.  Not reached when **Export Decals as Meshes** is ticked: the check is about the decal table, and a baked shape has none. | `mapping/blender_to_shape.py:433` |
 
@@ -325,21 +325,43 @@ you export.
   kept out of the object list rather than emitted as phantom objects.  Warned
   at import and again at export, which names `Migrate DTS Scene` as the way to
   turn them into projectors.  `mapping/shape_to_blender.py:191`
-- **Ground frames, when the export version is v23.**  The third *asked for*
-  loss, and the one asked for least directly: the ask is the version, not the
-  drop.  v23 has nowhere to put ground frames (§7), so exporting as v23 clears
-  the arrays and zeroes every sequence's `first_ground_frame` and
-  `num_ground_frames`, and every movement animation in that file has no ground
-  speed for `PlayerData::getGroundInfo` to read.  This used to be an error the
-  user could override with a **Strip Ground Frames** checkbox; the checkbox is
-  gone, because the only two answers were "refuse an export the target engine
+- **Ground frames, when the export version is v23 or v22.**  The third *asked
+  for* loss, and the one asked for least directly: the ask is the version, not
+  the drop.  Those two versions have nowhere to put ground frames — the engine
+  calls it an accident (§7) — so exporting as either clears the arrays and
+  zeroes every sequence's `first_ground_frame` and `num_ground_frames`, and
+  every movement animation in that file has no ground speed for
+  `PlayerData::getGroundInfo` to read.  This used to be an error the user could
+  override with a **Strip Ground Frames** checkbox; the checkbox is gone,
+  because the only two answers were "refuse an export the target engine
   requires" and "tick the box", and the version already says which one is
-  meant.  Warned at export, naming the count and v24 as what would keep them.
-  The Blender-side collection is untouched — re-exporting as v24 has them
-  back.  `dtslib/writer.py:74`, `ops/export_dts.py:130`
+  meant.  Warned at export, naming the count and the versions that would keep
+  them.  The Blender-side collection is untouched — re-exporting as v24 has
+  them back.  **v21 and older keep them**, at the end of the node-transform
+  array, which is where the engine looks for them in a shape that old.
+  `dtslib/fit.py:419`, `ops/export_dts.py:135`
+- **Node-scale animation, when the export version is v21 or older.**  Scale
+  tracks arrived in v22; below it there is no array, no `baseScale` and no flag
+  bit for them, so a bone that scaled over time exports holding its rest size.
+  Warned at export with the key count and v22 named as the fix.
+  `dtslib/fit.py:222`
+- **Merge indices, LOD error metrics and decal projection planes, when the
+  export version is v18 or older.**  The flat-stream format has no field for
+  any of them: the loader writes a zero merge-index count and an average and
+  max error of -1 for every detail (tsShapeOldRead.cc:585), and a decal that
+  old carries no texgen planes.  Detail levels of an affected mesh pop instead
+  of morphing, the engine picks details by size instead of by error, and a
+  decal exported that far back has no projection.  Each is warned separately at
+  export.  Poly counts go too and are *not* warned about: `TSShape::init`
+  recomputes every one of them.  `dtslib/fit.py:264`, `dtslib/fit.py:277`,
+  `dtslib/fit.py:295`
+- **Per-material reflection amounts, when the export version is v20 or
+  older.**  The column arrived in v21; the engine defaults it to 1.0 below
+  that, so a material set to reflect at anything else comes back
+  full-strength.  Warned with the count.  `dtslib/fit.py:372`
 - **Skin and multi-frame meshes do not share vertices across detail levels.**
   A shared skin would need `initial_verts`, `vertex_index`, `bone_index`,
-  `weight` and `node_index` to be prefixes too (`dtslib/mesh_io.py:107-140`),
+  `weight` and `node_index` to be prefixes too (`dtslib/mesh_io.py:131-161`),
   and a multi-frame mesh's array runs past the shared prefix into its frame
   blocks.  A multi-frame mesh can still be a *parent*.  14 meshes in the whole
   corpus share a skin, so this costs almost nothing.
@@ -403,7 +425,7 @@ you export.
   entries that survive are remapped exactly.  An unedited mesh still round-trips
   the whole table through the payload. `mapping/blender_to_shape.py:710`
 - **Which faces a decal covers.**  This is the big one.  A `TSDecalMesh`
-  stores an authored list of target triangles (`dtslib/mesh_io.py:196`), and a
+  stores an authored list of target triangles (`dtslib/mesh_io.py:198`), and a
   decal is a projector empty, which cannot hold one.  Export therefore
   *recomputes* coverage from the projector volume, and that does not reproduce
   what the shipped files say.
@@ -616,10 +638,39 @@ the same answer either way, and because someone will otherwise try to fix them.
 
 ### The DTS format
 
-- **Ground frames cannot be written to v23.**  v23 has no ground-frame storage
-  at all — no count word, no arrays, no guard.  Nothing done here would change
-  that; exporting as v23 drops them (§4) and writing v24 keeps them.
-  `dtslib/writer.py:164`
+- **Ground frames cannot be written to v23 or v22.**  Neither has ground-frame
+  storage at all — no count word, no arrays, no guard — and the engine's own
+  comment calls it an accident: "version 22 & 23 shapes accidentally had no
+  ground transforms" (tsShape.cc:786).  Nothing done here would change that;
+  exporting as either drops them (§4), while v24 has arrays of its own and v21
+  and older keep them at the end of the node-transform array.
+  `dtslib/writer.py:182`, `dtslib/fit.py:51`
+- **A pre-v23 skin section has no name and no node for its object.**  Versions
+  below 23 keep skins in a section after the meshes, and the loader invents an
+  object per skin with `nameIndex = 0` and `nodeIndex = -1`
+  (`fixupOldSkins`, tsShapeOldRead.cc:783) — so a shape written that way loses
+  which object a skin belonged to, what it was called, and any node it hung
+  off.  This add-on writes skins into the ordinary mesh list instead, which
+  every version's reader accepts (tsShape.cc:875) and which keeps all three.
+  The file is then not laid out the way that version's own exporter laid it
+  out; it is read identically and carries strictly more.  `dtslib/writer.py:128`
+- **A pre-v19 file stores no mesh bounds, no vertex sharing and no runtime
+  links.**  The flat-stream format leaves a mesh's bounds, centre and radius as
+  filler and has no `parentMesh` field at all; the loader recomputes the bounds
+  (tsMesh.cc:3135) and each detail level carries its own copy of the vertices.
+  Sub-shape counts, the smallest visible detail, and the sibling links on nodes,
+  objects and decals are derived from what *is* stored.  So exporting v18 or
+  older costs file size and nothing else — `fit_to_version` recomputes all of it
+  up front, which is why a v18 write reads back exactly.  `dtslib/fit.py:323`
+- **A shape written as v15 or v16 does not reproduce the original's bytes.**
+  Three fields in a file that old are read and thrown away: an obsolete
+  per-node bool (tsShapeOldRead.cc:437) and two obsolete membership sets in
+  every sequence record (:1425, :1441).  They are written as zeros rather than
+  carried through a `.blend` as junk nobody can edit, so the four v15/v16
+  shapes in the corpus rewrite to the same shape but not the same file.  The
+  same goes for the empty mesh header in front of a pre-v20 decal, which in the
+  original is uninitialised memory (`0xcdcdcdcd`).
+  `tests/test_roundtrip_corpus.py:40`
 - **192 nodes or objects is the ceiling.**  `TSIntegerSet` is 6 dwords wide, so
   a shape cannot name a 193rd node in a matters set — there is no bit for it.
   Refused rather than written short.
@@ -684,7 +735,7 @@ Two Blender suites, and the difference between them is the point.
 and exports.  That covers reading files the add-on did not write, and it is the
 only way to check a feature no fixture-free scene can produce.
 
-`tests/blender/test_authoring.py` (89 tests) never imports anything.  Every test
+`tests/blender/test_authoring.py` (94 tests) never imports anything.  Every test
 builds a shape from nothing — armature, meshes, materials, actions — exports it,
 and reads the feature back out of the file.  This is the suite that answers
 "can a user *make* one of these", which a round-trip cannot: the exporter may be
@@ -705,13 +756,41 @@ tracks, node scale, DSQ export, IFL flipbooks in both directions including
 the .ifl sidecar, decals in both the projected and the baked form and the translucency a shape
 needs to draw the projected one, the
 object ordering that translucency forces, the size rule both texture checkboxes
-feed, and both output versions.
+feed, and all ten output versions.
 
-`scripts/mutate.py` (78 mutations) disables one capability at a time and checks
-the matching test notices.  It has caught its own drift six times — two
-mutations that stopped biting when the code moved, two that were never testing
+Versions get three fresh-scene tests of their own, because a version is the one
+choice where the *export* is what has to be checked and there is nothing in
+Blender to look at afterwards.  One writes a scene with a hierarchy, two detail
+levels, a material and a sequence as each of the ten and reads all of it back.
+One compares the rotation tracks a pre-v17 file comes back with against the v24
+ones, channel by channel — that is the keyframe-major transpose, and with fewer
+than two animated channels it is an identity, so the test animates two bones
+differently on purpose.  The third checks a skin authored from scratch keeps its
+object's name and node in every version, which is the thing a pre-v23 skin
+section cannot do (§7).  The version dropdown is also checked against
+`dtslib.fit`'s own range, so a version cannot be listed but unwritable or
+writable but unreachable.
+
+The library side backs that with the corpus: `test_dts_convert_to_every_version`
+fits, writes and re-reads each of the 302 distinct corpus shapes as all ten
+versions — 3020 conversions, every one required to come back exactly equal to
+what `fit_to_version` said would go in — and `test_dts_roundtrip` requires a
+same-version rewrite of all 856 paths to be byte-identical, with three named
+exceptions where the original holds bytes the engine discards (§7).
+
+`scripts/mutate.py` (88 mutations) disables one capability at a time and checks
+the matching test notices.  It has caught its own drift seven times — two
+mutations that stopped biting when the code moved, three that were never testing
 what they claimed, and a redundant guard in the reflectance export path that no
 mutation could make fail because the line after it already did the same job.
+
+The third of those is worth the space, because the test looked airtight.
+`keyframe-major-transpose` turns the pre-v17 write-side transpose into a no-op,
+and the fresh-scene test that compares old tracks against v24 ones passed
+anyway: the scene animated a single bone, and a transpose of one channel is the
+identity.  The test asserted a real property of a case that could not exhibit the
+bug.  It now animates two bones differently and asserts up front that the two
+channels differ — the mutation fails it in every version below 17.
 The second of the two stale ones is the reason a mutation should anchor on the
 line that *does* the thing rather than on the expression it reads:
 `texture-overwrite` named `write.image.save(...)` and went quietly unrun the

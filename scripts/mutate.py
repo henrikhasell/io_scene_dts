@@ -634,24 +634,104 @@ MUTATIONS = {
         ["test_a_translucent_decal_mesh_counts"],
     ),
     "ground-drop": (
-        "dtslib/writer.py",
-        "    warnings = []\n    if version <= 23 and shape.ground_translations:",
-        "    warnings = []\n    if False:",
+        "dtslib/fit.py",
+        "    if version in NO_GROUND_STORAGE and shape.ground_translations:",
+        "    if False:",
         [
             "test_v23_drops_ground_frames_rather_than_refusing",
             "test_v23_drops_ground_frames",
         ],
     ),
     "ground-drop-version-gate": (
-        "dtslib/writer.py",
-        "    warnings = []\n    if version <= 23 and shape.ground_translations:",
-        "    warnings = []\n    if shape.ground_translations:",
+        "dtslib/fit.py",
+        "    if version in NO_GROUND_STORAGE and shape.ground_translations:",
+        "    if shape.ground_translations:",
         [
             "test_v24_keeps_the_ground_frames_v23_would_drop",
             "test_ground_frames_are_authorable",
         ],
     ),
+    # --- the older output versions ----------------------------------------
+    # Every one of these breaks a layout the *reader* is a port of, so the
+    # damage shows up as a guard mismatch or a wrong value on the way back in --
+    # never as an exception at write time, which is exactly why they need
+    # mutating rather than eyeballing.
+    "pair-node-tracks": (
+        "dtslib/fit.py",
+        "        pair_node_tracks(shape)",
+        "        pass",
+        ["test_pre_v22_pairs_a_translation_only_channel"],
+    ),
+    "keyframe-major-transpose": (
+        "dtslib/old_writer.py",
+        "    block = arr[start : start + total]",
+        "    return",
+        ["test_animation_survives_the_keyframe_major_versions"],
+    ),
+    "keyframe-table": (
+        "dtslib/old_writer.py",
+        "    if version < 17:\n        w.s32(len(keyframes))",
+        "    if False:\n        w.s32(len(keyframes))",
+        ["test_roundtrip"],
+    ),
+    "mesh-index-list": (
+        "dtslib/old_writer.py",
+        "            if mesh is None:\n                w.s32(-1)",
+        "            if mesh is None:\n                w.s32(next_mesh)",
+        ["test_roundtrip"],
+    ),
+    "encoded-normals-version-gate": (
+        "dtslib/mesh_io.py",
+        "        # compute (TSMesh::disassemble, tsMesh.cc:3168)\n        if version > 21:",
+        "        # compute (TSMesh::disassemble, tsMesh.cc:3168)\n        if True:",
+        ["test_roundtrip"],
+    ),
+    "pre-v20-decal-header": (
+        "dtslib/mesh_io.py",
+        "        alloc.set32(1)  # numFrames",
+        "        pass  # numFrames",
+        ["test_roundtrip"],
+    ),
+    "empty-skin-section": (
+        "dtslib/writer.py",
+        "        alloc.set32(0)  # numSkins",
+        "        alloc.set32(1)  # numSkins",
+        ["test_skins_survive_every_version"],
+    ),
+    "trim-matters-to-tables": (
+        "dtslib/fit.py",
+        "        trim_matters_to_tables(shape)",
+        "        pass",
+        ["test_roundtrip"],
+    ),
+    "matlist-reflection-gate": (
+        "dtslib/matlist.py",
+        "    if version > 20:\n        for m in mats:\n            w.f32(m.reflection_amount)",
+        "    if False:\n        for m in mats:\n            w.f32(m.reflection_amount)",
+        ["test_byte_identical"],
+    ),
+    "sequence-pre-v22-bools": (
+        "dtslib/sequence_io.py",
+        "    if version < 22:\n        w.u8(1 if seq.flags & SEQ_BLEND else 0)",
+        "    if False:\n        w.u8(1 if seq.flags & SEQ_BLEND else 0)",
+        ["test_roundtrip"],
+    ),
 }
+
+# the version mutations above are caught by the pytest fixture sweep, not by
+# Blender: TestEveryVersion writes every fixture as all ten versions
+RUNNERS.update(
+    {
+        "keyframe-table": "pytest",
+        "mesh-index-list": "pytest",
+        "encoded-normals-version-gate": "pytest",
+        "pre-v20-decal-header": "pytest",
+        "empty-skin-section": "pytest",
+        "trim-matters-to-tables": "pytest",
+        "matlist-reflection-gate": "pytest",
+        "sequence-pre-v22-bools": "pytest",
+    }
+)
 
 
 def _run_blender(work: Path, tests, blender: str) -> tuple[set, set]:

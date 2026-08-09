@@ -1,4 +1,4 @@
-"""Reader for pre-v19 DTS shapes (versions 17-18).
+"""Reader for pre-v19 DTS shapes (versions 15-18).
 
 Port of TSShape::readOldShape (tsShapeOldRead.cc:390): the old format is one
 flat stream; the engine converts it into the three-buffer memory image and
@@ -6,9 +6,20 @@ then runs the ordinary assembler over it.  We do the same — build the buffers
 with WriteAlloc (whose guard() matches the engine's DebugGuard) and feed
 reader._assemble_shape, so all the v<19 assembly branches are shared.
 
-Versions below 17 (the keyframe-table era) are refused: they need the
-obsolete Keyframe vector and rearrangeKeyframeData, and only a handful of
-files that old exist.
+Two eras live in here:
+
+- v17-18: node/object/decal animation state is already stored per channel, the
+  way every later version stores it.
+- v15-16: state is stored per *keyframe* instead, indexed through an obsolete
+  Keyframe table.  ``_rearrange_keyframe_data`` transposes it into the modern
+  layout and lifts each sequence's base indices out of that table, exactly as
+  TSShape::rearrangeKeyframeData does (:697).  v15 additionally keeps a
+  meshIndexList instead of null-mesh type words.
+
+Versions below 15 are refused: no file that old exists in any corpus here, and
+the branches they need (default decal states pre-14, missing trigger and
+tool-begin fields, ifl materials identified by file extension) would be
+written blind.
 """
 
 from __future__ import annotations
@@ -17,8 +28,9 @@ import struct
 
 from .errors import DtsError, DtsUnsupportedVersion
 from .matlist import read_material_list
+from .mesh_io import compute_mesh_bounds
 from .primitives import bits_to_f32, f32_to_bits
-from .sequence_io import read_sequence
+from .sequence_io import object_membership, read_sequence
 from .stream import ReadAlloc, StreamReader, WriteAlloc
 from .types import (
     DECAL_MESH,
@@ -32,7 +44,7 @@ from .types import (
     Shape,
 )
 
-OLD_MIN_VERSION = 17
+OLD_MIN_VERSION = 15
 
 
 def read_old_shape(data: bytes, version: int, exporter_version: int) -> Shape:
@@ -114,19 +126,36 @@ def _read_old_shape(data: bytes, version: int, exporter_version: int) -> Shape:
         w.set32n(nums)
     w.guard()
 
+    if version < 16:
+        # mesh presence list: one entry per object mesh slot, -1 where a slot
+        # has no mesh (what a NullMesh type word says in v16+)
+        mesh_index_list_size = stored32()
+        w.b32 += r.raw(4 * mesh_index_list_size)
+
+    keyframes = []
+    if version < 17:
+        # obsolete Keyframe table: read whole, kept out of the buffer.  Only
+        # the first entry of each sequence's range is ever used
+        for _ in range(r.s32()):
+            keyframes.append((r.s32(), r.s32(), r.s32()))
+
     # node states: interleaved Quat16 + Point3F (defaults are the first
     # numNodes entries; the split happens in the assembler)
     num_node_states = counted32(5)
+    node_state_start32 = len(w.b32)
+    node_state_start16 = len(w.b16)
     for _ in range(num_node_states):
         w.b16 += r.raw(8)
         w.b32 += r.raw(12)
     w.guard()
 
     num_object_states = counted32(6)
+    object_state_start = len(w.b32)
     w.b32 += r.raw(12 * num_object_states)
     w.guard()
 
     num_decal_states = counted32(7)
+    decal_state_start = len(w.b32)
     w.b32 += r.raw(4 * num_decal_states)
     w.guard()
 
@@ -151,7 +180,11 @@ def _read_old_shape(data: bytes, version: int, exporter_version: int) -> Shape:
 
     # sequences, mid-stream
     num_sequences = r.s32()
-    sequences = [read_sequence(r, version, read_name_index=True) for _ in range(num_sequences)]
+    kf_starts: list[int] = []
+    sequences = [
+        read_sequence(r, version, read_name_index=True, kf_starts=kf_starts)
+        for _ in range(num_sequences)
+    ]
 
     # meshes: type word + payload straight from the stream
     num_meshes = counted32(10)
@@ -199,6 +232,19 @@ def _read_old_shape(data: bytes, version: int, exporter_version: int) -> Shape:
         struct.pack_into(f"<{2 * num_details}i", w.b32, skin_counts_offset, *(firsts + nums))
     w.guard()
 
+    if version < 17:
+        for seq, kf_start in zip(sequences, kf_starts):
+            _rearrange_keyframe_data(
+                seq,
+                keyframes,
+                kf_start,
+                w,
+                node_state_start32,
+                node_state_start16,
+                object_state_start,
+                decal_state_start,
+            )
+
     # patch the counts header
     struct.pack_into("<15i", w.b32, 0, *counts)
 
@@ -214,8 +260,70 @@ def _read_old_shape(data: bytes, version: int, exporter_version: int) -> Shape:
     # old files carry no mesh bounds — the engine recomputes them on load
     for mesh in shape.meshes:
         if mesh is not None and mesh.mesh_type != DECAL_MESH:
-            _compute_mesh_bounds(mesh)
+            compute_mesh_bounds(mesh)
     return shape
+
+
+def _rearrange_states(buf: bytearray, region: int, start: int, a: int, b: int, size: int) -> None:
+    """Port of TSShape::rearrangeStates (tsShapeOldRead.cc:766).
+
+    Pre-v17 files store animation state keyframe-major -- all of keyframe 0's
+    channels, then all of keyframe 1's.  Every later version stores it
+    channel-major, one channel's whole track at a time, which is what the
+    assembler and the base indices expect.  This is that transpose, in place.
+    """
+    if a * b == 0:
+        return
+    base = region + start * size
+    end = base + a * b * size
+    if end > len(buf):
+        raise DtsError(f"keyframe state block runs past the buffer ({end} > {len(buf)})")
+    copy = bytes(buf[base:end])
+    for i in range(a):
+        for j in range(b):
+            dst = region + size * (start + j * a + i)
+            src = size * (i * b + j)
+            buf[dst : dst + size] = copy[src : src + size]
+
+
+def _rearrange_keyframe_data(
+    seq,
+    keyframes: list[tuple[int, int, int]],
+    kf_start: int,
+    w: WriteAlloc,
+    node_state_start32: int,
+    node_state_start16: int,
+    object_state_start: int,
+    decal_state_start: int,
+) -> None:
+    """Port of TSShape::rearrangeKeyframeData (tsShapeOldRead.cc:697).
+
+    Recovers the sequence's base state indices from the keyframe table -- pre-17
+    sequence records have no base fields -- and transposes the three state
+    arrays out of keyframe-major order.  The indices are still in file space
+    (they count the default node states); the assembler rebases them, the same
+    way it does for every other v<22 shape.
+    """
+    if not seq.num_keyframes:
+        return
+    if not 0 <= kf_start < len(keyframes):
+        raise DtsError(f"sequence names keyframe {kf_start}, table has {len(keyframes)}")
+    num_nodes = seq.rotation_matters.count()
+    num_objects = object_membership(seq).count()
+    num_decals = seq.decal_matters.count()
+    first_node_state, first_object_state, first_decal_state = keyframes[kf_start]
+
+    seq.base_rotation = seq.base_translation = first_node_state if num_nodes else 0
+    seq.base_object_state = first_object_state if num_objects else 0
+    seq.base_decal_state = first_decal_state if num_decals else 0
+
+    a = seq.num_keyframes
+    # translations (3 x F32) and rotations (4 x S16) live in different buffers,
+    # so each is a contiguous array of its own
+    _rearrange_states(w.b32, node_state_start32, seq.base_translation, a, num_nodes, 12)
+    _rearrange_states(w.b16, node_state_start16, seq.base_rotation, a, num_nodes, 8)
+    _rearrange_states(w.b32, object_state_start, seq.base_object_state, a, num_objects, 12)
+    _rearrange_states(w.b32, decal_state_start, seq.base_decal_state, a, num_decals, 4)
 
 
 def _read_old_mesh(r: StreamReader, w: WriteAlloc, version: int, mesh_type: int) -> None:
@@ -312,22 +420,3 @@ def _read_old_mesh(r: StreamReader, w: WriteAlloc, version: int, mesh_type: int)
 def _s16(v: int) -> int:
     v &= 0xFFFF
     return v - 0x10000 if v >= 0x8000 else v
-
-
-def _compute_mesh_bounds(mesh) -> None:
-    """Port of TSMesh::computeBounds for old shapes (stored bounds untrusted)."""
-    verts = mesh.verts or mesh.initial_verts
-    if not verts:
-        return
-    xs, ys, zs = zip(*verts)
-    mn = (min(xs), min(ys), min(zs))
-    mx = (max(xs), max(ys), max(zs))
-    mesh.bounds = mn + mx
-    # keep the center float32-representable so a rewrite round-trips exactly
-    center = tuple(bits_to_f32(f32_to_bits((a + b) / 2.0)) for a, b in zip(mn, mx))
-    mesh.center = center
-    radius = max(
-        ((v[0] - center[0]) ** 2 + (v[1] - center[1]) ** 2 + (v[2] - center[2]) ** 2) ** 0.5
-        for v in verts
-    )
-    mesh.radius_int = int(radius)

@@ -54,16 +54,31 @@ def write_integer_set(w: StreamWriter, s: TSIntegerSet) -> None:
 # ----------------------------------------------------------------------
 
 
-def read_sequence(r: StreamReader, version: int, read_name_index: bool) -> Sequence:
-    """Sequence::read.  version is the enclosing file's version."""
+def read_sequence(
+    r: StreamReader, version: int, read_name_index: bool, kf_starts: list | None = None
+) -> Sequence:
+    """Sequence::read.  version is the enclosing file's version.
+
+    Pre-v17 files track a *range* of keyframes rather than a count, and the
+    sequence's base state indices live in the (obsolete) keyframe table instead
+    of in the sequence record.  ``kf_starts`` collects each sequence's start
+    keyframe for the caller's fixup pass — the engine's ``kfStart`` vector
+    (tsShapeOldRead.cc:374).
+    """
     seq = Sequence()
     if read_name_index:
         seq.name_index = r.s32()
     if version > 21:
         seq.flags = r.u32()
     if version < 17:
-        raise DtsUnsupportedVersion(version, "sequence")
-    seq.num_keyframes = r.s32()
+        start_keyframe = r.s32()
+        end_keyframe = r.s32()
+        seq.num_keyframes = end_keyframe - start_keyframe
+        if kf_starts is None:
+            raise DtsError(f"v{version} sequence needs the keyframe table to be readable")
+        kf_starts.append(start_keyframe)
+    else:
+        seq.num_keyframes = r.s32()
     seq.duration = r.f32()
 
     if version < 22:
@@ -84,11 +99,12 @@ def read_sequence(r: StreamReader, version: int, read_name_index: bool) -> Seque
         seq.base_scale = r.s32()
         seq.base_object_state = r.s32()
         seq.base_decal_state = r.s32()
-    else:  # 17 <= version <= 21
+    elif version >= 17:
         seq.base_rotation = r.s32()
         seq.base_translation = seq.base_rotation
         seq.base_object_state = r.s32()
         seq.base_decal_state = r.s32()
+    # pre-17: no base indices in the record at all — the keyframe table has them
     seq.first_trigger = r.s32()
     seq.num_triggers = r.s32()
     seq.tool_begin = r.f32()
@@ -99,41 +115,92 @@ def read_sequence(r: StreamReader, version: int, read_name_index: bool) -> Seque
     else:
         seq.translation_matters = read_integer_set(r)
         seq.scale_matters = read_integer_set(r)
+    if version < 17:
+        read_integer_set(r)  # obsolete objectMembership, recomputed from the three below
     seq.decal_matters = read_integer_set(r)
     seq.ifl_matters = read_integer_set(r)
     seq.vis_matters = read_integer_set(r)
     seq.frame_matters = read_integer_set(r)
     seq.mat_frame_matters = read_integer_set(r)
+    if version < 17:
+        read_integer_set(r)  # obsolete nodeTransformStatic
     return seq
 
 
-def write_sequence(w: StreamWriter, seq: Sequence, write_name_index: bool) -> None:
-    """Sequence::write — always the modern (v22+) layout."""
+def object_membership(seq: Sequence) -> TSIntegerSet:
+    """The pre-v17 objectMembership set: every object the sequence touches.
+
+    The engine reads the stored set and throws it away, recomputing it as this
+    union (rearrangeKeyframeData, tsShapeOldRead.cc:722) — so this is what to
+    write, and a stored set that disagreed never mattered.
+    """
+    return TSIntegerSet(
+        seq.frame_matters.mask | seq.mat_frame_matters.mask | seq.vis_matters.mask
+    )
+
+
+def write_sequence(
+    w: StreamWriter,
+    seq: Sequence,
+    write_name_index: bool,
+    version: int = 24,
+    start_keyframe: int = 0,
+) -> None:
+    """Sequence::write, in ``version``'s layout.
+
+    The engine only ever writes the current version, so the reference for
+    anything older is Sequence::read run backwards (tsShapeOldRead.cc:1350).
+    Fields the older record has nowhere for — the base indices pre-v17, the
+    scale bases and the flags word pre-v22 — are the caller's problem: pass a
+    sequence whose ground/base indices are already in ``version``'s address
+    space (``dataclasses.replace``), and clear scale animation first.
+    """
     if write_name_index:
         w.s32(seq.name_index)
-    w.u32(seq.flags)
-    w.s32(seq.num_keyframes)
+    if version > 21:
+        w.u32(seq.flags)
+    if version < 17:
+        # a keyframe *range*, and the state bases come from the keyframe table
+        w.s32(start_keyframe)
+        w.s32(start_keyframe + seq.num_keyframes)
+    else:
+        w.s32(seq.num_keyframes)
     w.f32(seq.duration)
+    if version < 22:
+        w.u8(1 if seq.flags & SEQ_BLEND else 0)
+        w.u8(1 if seq.flags & SEQ_CYCLIC else 0)
+        w.u8(1 if seq.flags & SEQ_MAKE_PATH else 0)
     w.s32(seq.priority)
     w.s32(seq.first_ground_frame)
     w.s32(seq.num_ground_frames)
-    w.s32(seq.base_rotation)
-    w.s32(seq.base_translation)
-    w.s32(seq.base_scale)
-    w.s32(seq.base_object_state)
-    w.s32(seq.base_decal_state)
+    if version > 21:
+        w.s32(seq.base_rotation)
+        w.s32(seq.base_translation)
+        w.s32(seq.base_scale)
+        w.s32(seq.base_object_state)
+        w.s32(seq.base_decal_state)
+    elif version >= 17:
+        # one node track per node: rotation and translation share a base
+        w.s32(seq.base_rotation)
+        w.s32(seq.base_object_state)
+        w.s32(seq.base_decal_state)
     w.s32(seq.first_trigger)
     w.s32(seq.num_triggers)
     w.f32(seq.tool_begin)
 
     write_integer_set(w, seq.rotation_matters)
-    write_integer_set(w, seq.translation_matters)
-    write_integer_set(w, seq.scale_matters)
+    if version > 21:
+        write_integer_set(w, seq.translation_matters)
+        write_integer_set(w, seq.scale_matters)
+    if version < 17:
+        write_integer_set(w, object_membership(seq))
     write_integer_set(w, seq.decal_matters)
     write_integer_set(w, seq.ifl_matters)
     write_integer_set(w, seq.vis_matters)
     write_integer_set(w, seq.frame_matters)
     write_integer_set(w, seq.mat_frame_matters)
+    if version < 17:
+        write_integer_set(w, TSIntegerSet())  # obsolete nodeTransformStatic
 
 
 # ----------------------------------------------------------------------

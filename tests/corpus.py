@@ -7,6 +7,7 @@ selection rules.  ``tests/conftest.py`` re-exports everything here.
 """
 
 import glob
+import hashlib
 import sys
 from pathlib import Path
 
@@ -37,6 +38,22 @@ def _collect(*roots, pattern):
 
 def corpus_dts_files():
     return _collect(*DTS_ROOTS, pattern="*.dts")
+
+
+def corpus_unique_dts_files():
+    """One path per distinct file, by content.
+
+    The roots overlap heavily -- the same shape ships in a game directory and in
+    an SDK sample -- so 856 paths are 302 distinct files.  A sweep that costs
+    real time per file (every version of every shape) wants each set of bytes
+    once; a sweep that is cheap can stay on the full list and check that every
+    path on this machine still parses.
+    """
+    seen = {}
+    for path in corpus_dts_files():
+        digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        seen.setdefault(digest, path)
+    return sorted(seen.values())
 
 
 def corpus_dsq_files():
