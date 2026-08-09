@@ -101,10 +101,24 @@ if [ "$skip_tests" = false ]; then
     fi
     "$REPO/scripts/check_citations.py" >/dev/null || die "UNSUPPORTED.md citations do not land"
     if command -v blender >/dev/null 2>&1; then
-        blender --background --factory-startup \
-                --python tests/blender/run_blender_tests.py 2>&1 \
-            | tee /dev/stderr | grep -qE "^[0-9]+/\1 blender integration tests passed" \
-            || die "Blender integration tests failed"
+        # The result line is the evidence, not the exit status: a run that dies
+        # before it collects anything can still exit 0, and "nothing failed" is
+        # not the same claim as "the tests ran" -- the same reason
+        # mutate.py's pytest runner demands a summary line.
+        #
+        # The two counts are compared in the shell because a back reference
+        # cannot do it: `grep -E` has none by definition, and the grep on this
+        # machine (ugrep) has none in either dialect, so the pattern this
+        # replaces errored out and failed the *release* rather than the tests.
+        out="$(blender --background --factory-startup \
+                       --python tests/blender/run_blender_tests.py 2>&1 | tee /dev/stderr)" || true
+        summary="$(printf '%s\n' "$out" \
+                   | grep -oE "[0-9]+/[0-9]+ blender integration tests passed" | tail -1)" || true
+        [ -n "$summary" ] || die "Blender integration suite printed no result line"
+        ran="${summary%%/*}"
+        total="${summary#*/}"; total="${total%% *}"
+        [ "$ran" = "$total" ] || die "Blender integration tests failed: $summary"
+        echo "publish_version: blender: $summary"
     else
         echo "publish_version: blender not on PATH, skipping the integration suite" >&2
     fi
