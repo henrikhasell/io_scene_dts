@@ -5,13 +5,13 @@ exports Torque three-space shapes (`.dts`) and standalone sequence files
 (`.dsq`) — geometry, materials, node hierarchy, detail levels, skinning, and
 animation.
 
-- **Reads and writes** every DTS version from **15** to **24** — the Tribes 1
-  era through Torque Game Engine 1.5 — with the target selectable in the export
-  dialog (v24 "Torque" by default, v23 "Tribes 2" for the game's own format).
-  Anything the chosen version has no storage for is dropped with a warning that
-  names it and says which version would keep it: ground frames outside v24 and
-  v21-and-older, scale animation before v22, merge indices and LOD error
-  metrics before v19.
+- **Reads and writes** every DTS version from **15** to **24** — the
+  keyframe-table era through Torque Game Engine 1.5 — with the target selectable
+  in the export dialog (v24 "Torque" by default, v23 "Tribes 2" for the game's
+  own format).  Anything the chosen version has no storage for is dropped with a
+  warning that names it and says which version would keep it: ground frames
+  outside v24 and v21-and-older, scale animation before v22, merge indices and
+  LOD error metrics before v19.
 - **DSQ**: reads 17–24, writes the modern layout.  Sequences bind to an
   armature's bones by node-name matching — either onto the active armature
   (File → Import → Torque Sequence), or by selecting `.dsq` files alongside

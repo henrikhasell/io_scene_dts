@@ -1,9 +1,9 @@
 """dtslib — pure-Python Torque DTS/DSQ format library (no bpy dependency).
 
-Reads and writes DTS versions 15-24 -- Tribes 1-era shapes through Torque Game
-Engine 1.5.  ``fit_to_version`` says what an older version cannot hold before
-``write_shape`` writes it.  DSQ sequence files: read 17-24, write the modern
-(v22+) layout.
+Reads and writes DTS versions 15-24 -- the keyframe-table era through Torque
+Game Engine 1.5.  ``fit_to_version`` says what an older version cannot hold
+before ``write_shape`` writes it.  DSQ sequence files: read 17-24, write the
+modern (v22+) layout.
 """
 
 from .errors import DtsError, DtsGuardMismatch, DtsUnsupportedVersion, DtsWriteError
