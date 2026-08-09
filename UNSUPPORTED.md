@@ -1,6 +1,6 @@
 # Unsupported and partially supported DTS features
 
-What this add-on does *not* do, as of v1.3.0.  Everything here was read out of
+What this add-on does *not* do, as of v1.4.0.  Everything here was read out of
 the code rather than remembered; file:line references point at the deciding
 line so a claim can be checked or corrected.
 

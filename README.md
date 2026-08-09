@@ -28,7 +28,7 @@ the data allows.
 ## Install
 
 ```sh
-blender --command extension build   # produces io_scene_dts-1.3.0.zip
+blender --command extension build   # produces io_scene_dts-1.4.0.zip
 ```
 
 then install the zip via Edit → Preferences → Get Extensions → Install from
