@@ -347,6 +347,7 @@ def export_sequences(
     node_index_by_bone: dict[str, int],
     object_index_by_name: dict[str, int],
     decal_index_map: dict[int, int] | None = None,
+    baked_decal_objects: dict[int, int] | None = None,
 ) -> list[str]:
     """Append sequences built from actions to shape.  Returns warnings."""
     # the IFL table is derived and already built by the time this runs, so a
@@ -358,6 +359,7 @@ def export_sequences(
     }
     warnings = []
     decal_index_map = decal_index_map or {}
+    baked_decal_objects = baked_decal_objects or {}
     rest_local = _rest_local_matrices(shape)
 
     for action in actions:
@@ -477,9 +479,27 @@ def export_sequences(
                 frame_set.set(oi)
             if "matframe" in tracks:
                 matframe_set.set(oi)
+
+        # a baked decal is an object, so its state track is a visibility track.
+        # A decal state is -1 for off and a frame index for on, and the baked
+        # form has one frame, so the whole range of "on" collapses to visible.
+        for key, track in read_decal_tracks(action, n).items():
+            oi = baked_decal_objects.get(int(key))
+            if oi is None:
+                if baked_decal_objects:
+                    warnings.append(
+                        f"action {action.name!r}: decal {key} was not baked as a "
+                        f"mesh (it covers no faces); its state track was dropped"
+                    )
+                continue
+            vis = [1.0 if float(x) >= 0.0 else 0.0 for x in track[:n]]
+            vis += [0.0] * max(0, n - len(vis))
+            tracked.append((oi, {"vis": vis}))
+            vis_set.set(oi)
+
         seq.vis_matters, seq.frame_matters, seq.mat_frame_matters = vis_set, frame_set, matframe_set
         seq.base_object_state = len(shape.object_states)
-        for oi, tracks in sorted(tracked):
+        for oi, tracks in sorted(tracked, key=lambda pair: pair[0]):
             vis = tracks.get("vis", [1.0] * n)
             frame = tracks.get("frame", [0] * n)
             matframe = tracks.get("matframe", [0] * n)
@@ -511,8 +531,10 @@ def export_sequences(
             iset.set(index)
         seq.ifl_matters = iset
 
-        # decal-state tracks, likewise
-        decal_anim = read_decal_tracks(action, n)
+        # decal-state tracks, likewise.  Empty when the decals were baked as
+        # meshes: there is no decal table to index, and the tracks already left
+        # as visibility on the baked objects above.
+        decal_anim = {} if baked_decal_objects else read_decal_tracks(action, n)
         dset = TSIntegerSet()
         decal_tracked = []
         for k, track in decal_anim.items():

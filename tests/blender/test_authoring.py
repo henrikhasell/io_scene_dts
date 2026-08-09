@@ -1284,6 +1284,115 @@ def test_a_decal_is_made_by_an_operator():
     assert A.object_names(shape) == ["wall"], A.object_names(shape)
 
 
+def _decal_scene(*, blended=True):
+    """A wall with a decal on all of its faces, built from nothing."""
+    from io_scene_dts.mapping.decals import create_decal
+
+    A.reset()
+    arm = A.armature("Wall")
+    verts, faces = A.quad_geometry()
+    skin = A.blended_material("wall_skin") if blended else A.principled_material("wall_skin")
+    target = A.mesh_object("wall2", arm, bone="root", verts=verts, faces=faces, material=skin)
+    scorch = A.image_material("scorch", diffuse=A.generated_image("scorch", ramp=True))
+    for polygon in target.data.polygons:
+        polygon.select = True
+    bpy.context.view_layer.objects.active = target
+    index, projector = create_decal(arm, target, name="scorch", material=scorch)
+    return arm, target, index, projector
+
+
+def test_a_decal_is_authorable_as_a_baked_mesh():
+    """Ticked, a decal leaves the file as geometry instead of a TSDecalMesh.
+
+    Fresh scene: the projector is the only decal in it, and what comes back is
+    an ordinary object any reader draws -- with the projection evaluated into
+    its UVs, which is the whole substitute for the texgen planes that are now
+    not in the file.
+    """
+    _decal_scene()
+
+    shape = A.read(A.export_dts(decals_as_meshes=True))
+    assert shape.decals == [], "the decal table must be empty, or it draws twice"
+    assert A.object_names(shape) == ["wall", "scorch"], A.object_names(shape)
+
+    baked = shape.objects[1]
+    mesh = shape.meshes[baked.start_mesh_index]
+    assert mesh is not None and mesh.mesh_type == 0, "a baked decal is a STANDARD_MESH"
+    assert mesh.decal_data is None
+    assert len(mesh.indices) == 6, mesh.indices  # the quad, as two triangles
+    assert len(mesh.primitives) == 1
+
+    # the projection has to land inside the texture, or it samples its edge
+    us = [uv[0] for uv in mesh.tverts]
+    vs = [uv[1] for uv in mesh.tverts]
+    assert min(us) >= -1e-4 and max(us) <= 1 + 1e-4, sorted(us)
+    assert min(vs) >= -1e-4 and max(vs) <= 1 + 1e-4, sorted(vs)
+    # a degenerate projection also lands inside the square, so the span is the
+    # assertion that matters -- the operator's projector leaves a margin, so
+    # this quad covers the middle half of its texture
+    assert max(us) - min(us) > 0.4, sorted(us)
+    assert max(vs) - min(vs) > 0.4, sorted(vs)
+
+
+def test_a_baked_decal_covers_what_the_decal_form_covers():
+    """The checkbox changes the representation and nothing else.
+
+    Both paths call the same ``covered_faces``, and if they ever stopped
+    agreeing the box would quietly be changing which faces get a decal on them
+    as well as how they are stored.
+    """
+    _decal_scene()
+    projected = A.read(A.export_dts(decals_as_meshes=False))
+    _decal_scene()
+    baked = A.read(A.export_dts(decals_as_meshes=True))
+
+    decal = projected.decals[0]
+    dd = projected.meshes[decal.raw[2]].decal_data
+    assert len(dd.indices) == len(baked.meshes[baked.objects[1].start_mesh_index].indices)
+
+
+def test_a_baked_decal_is_lifted_off_its_target():
+    """Coplanar geometry z-fights, and the polygon offset went with the decal.
+
+    Checked against the target's own exported vertices rather than a constant,
+    so it stays true if the fixture moves.
+    """
+    _decal_scene()
+    from io_scene_dts.mapping.decals import DECAL_LIFT
+
+    shape = A.read(A.export_dts(decals_as_meshes=True))
+
+    wall = shape.meshes[shape.objects[0].start_mesh_index]
+    scorch = shape.meshes[shape.objects[1].start_mesh_index]
+    # the quad is flat, so every baked vertex sits one lift off the wall plane
+    # along the shared normal
+    normal = scorch.norms[0]
+    plane = sum(w[i] * normal[i] for i in range(3) for w in [wall.verts[0]])
+    for v in scorch.verts:
+        assert abs(sum(v[i] * normal[i] for i in range(3)) - plane - DECAL_LIFT) < 1e-5, v
+
+
+def test_baking_decals_needs_nothing_translucent():
+    """The refusal is about the decal table, and a baked shape has none.
+
+    A shape whose decals are geometry does not need a blended mesh for the
+    engine to draw them against -- that requirement is what a TSDecalMesh
+    brings, so lifting it here is not a loosened check but a different file.
+    """
+    _decal_scene(blended=False)
+    shape = A.read(A.export_dts(decals_as_meshes=True))
+    assert A.object_names(shape) == ["wall", "scorch"]
+
+    # ...and it is still refused the other way, so the check did not just go
+    _decal_scene(blended=False)
+    try:
+        A.export_dts(decals_as_meshes=False)
+    except Exception:
+        pass
+    else:
+        raise AssertionError("a decal with nothing translucent must still be refused")
+
+
 def test_a_decal_branch_projects_the_decals_own_image():
     """The branch must sample the *decal's* texture, not fall back to a colour.
 
@@ -1408,6 +1517,57 @@ def test_a_damage_ramp_of_decals_is_authorable():
         ])
     assert tracks[0] == [-1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0], tracks[0]
     assert tracks[1] == [-1] * 7 + [0] * 4, tracks[1]
+
+
+def test_a_baked_decals_state_track_becomes_object_visibility():
+    """Baked, a decal has no entry to hold a state, so the track has to move.
+
+    Without this the Damage sequence above exports a shape whose scorch marks
+    are all on from frame one -- the geometry is there, nothing switches it,
+    and the loss is invisible in the file.
+    """
+    from io_scene_dts.mapping.decals import create_decal, decal_path, decal_prop
+
+    A.reset()
+    arm = A.armature("Hull", bones=(("root", None), ("shell", "root")))
+    verts, faces = A.quad_geometry()
+    target = A.mesh_object(
+        "hull2", arm, bone="shell", verts=verts, faces=faces,
+        material=A.blended_material("hull_skin"),
+    )
+    for polygon in target.data.polygons:
+        polygon.select = True
+    bpy.context.view_layer.objects.active = target
+    create_decal(arm, target, name="burn", index=0, all_details=False)
+
+    action = A.action_for(arm, "Damage", frames=4)
+    action["dts_sequence"] = True
+    bag = A.channelbag(action, arm)
+    arm[decal_prop(0, "burn")] = -1.0
+    curve = bag.fcurves.new(data_path=decal_path(0, "burn"), index=0)
+    curve.keyframe_points.add(4)
+    for kf in range(4):
+        point = curve.keyframe_points[kf]
+        point.co = (kf + 1, 0.0 if kf >= 2 else -1.0)
+        point.interpolation = "CONSTANT"
+    curve.update()
+
+    shape = A.read(A.export_dts(decals_as_meshes=True))
+    names = A.object_names(shape)
+    assert names == ["hull", "burn"], names
+    # off at rest: a decal that a sequence switches on must not start visible
+    assert shape.object_states[1].vis == 0.0, shape.object_states[1]
+
+    seq = shape.sequences[0]
+    assert seq.decal_matters.count() == 0, "there is no decal table to point into"
+    assert sorted(seq.vis_matters.indices()) == [1], sorted(seq.vis_matters.indices())
+    n_keys = seq.num_keyframes
+    ordinal = seq.vis_matters.ordinal_of(1)
+    track = [
+        shape.object_states[seq.base_object_state + ordinal * n_keys + kf].vis
+        for kf in range(n_keys)
+    ]
+    assert track == [0.0, 0.0, 1.0, 1.0], track
 
 
 def test_a_decal_projects_inside_the_zero_to_one_square():

@@ -51,9 +51,12 @@ from ..dtslib import (
     PRIM_INDEXED,
     PRIM_MATERIAL_MASK,
     PRIM_TRIANGLES,
+    STANDARD_MESH,
     Decal,
     DecalMeshData,
     Mesh,
+    Object,
+    ObjectState,
     Primitive,
     Shape,
 )
@@ -981,11 +984,198 @@ def build_decals(
     return decal_index_map
 
 
-# The engine draws decals with a polygon offset; Blender has no per-object
-# depth bias, so a Displace modifier lifts the mesh form off its target instead.
-# A modifier and not an edit, so the copied vertices stay where the file put
-# them and the mesh still says exactly what the file says.
+# The engine draws decals with a polygon offset, and two places here have to
+# stand in for one: the imported mesh form, where a Displace modifier lifts the
+# copy off its target (a modifier and not an edit, so the copied vertices stay
+# where the file put them), and a baked decal, whose lift is in the exported
+# vertices because the file has nowhere else to put it.
+#
+# Not an export option.  It is in shape units, so the number that is right for
+# one shape is right for every shape built at the same scale, and every shape
+# this format is aimed at is: 0.002 is well under the thickness of any surface
+# in the corpus and well over the depth precision of the era's hardware.
 DECAL_LIFT = 0.002
+
+
+def _baked_decal_mesh(bobj, faces, s, t, to_dts, normal_mat, mat_index):
+    """The covered faces as a ``STANDARD_MESH``, with the texgen baked into UVs.
+
+    The other half of ``Export Decals as Meshes``.  A ``TSDecalMesh`` stores
+    indices into its target and two planes the engine turns into UVs at draw
+    time; this evaluates those planes per vertex instead and writes ordinary
+    geometry, so a reader that skips the decal section still draws the decal.
+
+    ``s`` and ``t`` are in ``bobj``'s *local* space, which is what
+    :func:`projector_to_texgen` returns for ``bobj.matrix_world`` -- so the UV
+    is computed before ``to_dts`` and the position after it, and neither has to
+    care which space the other is in.
+
+    ``lift`` moves each vertex along its own normal.  Baked geometry is
+    coplanar with the surface it was copied from and the polygon offset that
+    used to keep it in front is gone with the decal, so without this the two
+    z-fight.  Along the *vertex* normal rather than the projector's axis: a
+    decal wrapping a curved surface has no single direction to be lifted in.
+    """
+    from .vertex_pool import VertexPool
+
+    me = bobj.data
+    me.calc_loop_triangles()
+    wanted = set(faces)
+
+    store = VertexPool()
+    corner_index = {}
+    for tri in me.loop_triangles:
+        if tri.polygon_index not in wanted:
+            continue
+        for loop_index in tri.loops:
+            loop = me.loops[loop_index]
+            vi = loop.vertex_index
+            co = me.vertices[vi].co
+            normal = Vector(loop.normal if hasattr(loop, "normal") else me.vertices[vi].normal)
+            uv = (
+                co[0] * s[0] + co[1] * s[1] + co[2] * s[2] + s[3],
+                co[0] * t[0] + co[1] * t[1] + co[2] * t[2] + t[3],
+            )
+            n = normal_mat @ normal
+            n.normalize()
+            # lift in DTS space, so the offset is the distance it looks like
+            # rather than whatever the object's scale makes of it
+            corner_index[loop_index] = store.intern(
+                tuple(to_dts @ co + n * DECAL_LIFT),
+                uv,  # already DTS convention: the texgen is what the engine reads
+                tuple(n),
+            )
+
+    if not corner_index:
+        return None
+
+    length = store.seal()
+    indices = []
+    for tri in me.loop_triangles:
+        if tri.polygon_index not in wanted:
+            continue
+        # DTS winding is the reverse of Blender's, the same as an ordinary mesh
+        indices.extend(corner_index[li] for li in reversed(tri.loops))
+
+    word = PRIM_TRIANGLES | PRIM_INDEXED | (mat_index & PRIM_MATERIAL_MASK)
+    mesh = Mesh(mesh_type=STANDARD_MESH)
+    mesh.verts = store.verts[:length]
+    mesh.tverts = store.tverts[:length]
+    mesh.norms = store.norms[:length]
+    mesh.indices = indices
+    mesh.primitives = [Primitive(0, len(indices), word)]
+    mesh.verts_per_frame = len(mesh.verts)
+    return mesh
+
+
+def bake_decals_as_objects(
+    shape: Shape, arm_obj, subshape: int, object_index_by_name, material_index_of,
+    placement_of, warnings, slot_objects=None,
+) -> dict:
+    """Write this subshape's decals as ordinary objects.
+
+    Called from inside ``blender_to_shape``'s per-subshape loop rather than
+    after it, because ``sub_shape_first_object`` and ``sub_shape_num_objects``
+    are contiguous ranges -- an object appended later would fall outside the
+    range of the subshape it belongs to.  ``build_decals`` has no such problem
+    and runs afterwards, which is why the two are separate functions rather
+    than two branches of one.
+
+    ``shape.decals`` is left empty on purpose: an engine that understands
+    decals would otherwise draw the same art twice, once as geometry and once
+    projected.
+
+    Returns ``{decal index: (object index, default visibility)}``.  The caller
+    owns ``shape.object_states`` -- it fills one per object after every
+    subshape is placed -- so the rest state comes back rather than being
+    appended here.
+    """
+    projectors = {d.dts_decal.index: d for d in decal_objects()}
+    if not projectors:
+        return {}
+
+    first = shape.sub_shape_first_object[subshape]
+    mine = []
+    for index, projector in sorted(projectors.items()):
+        props = projector.dts_decal
+        name = str(props.decal_name)
+        owner = str(props.object_name)
+        obj_index = object_index_by_name.get(owner)
+        if obj_index is None:
+            warnings.append(
+                f"decal {name!r}: owner object {owner!r} was not exported; decal dropped"
+            )
+            continue
+        if obj_index < first or obj_index >= len(shape.objects):
+            continue  # another subshape's, and its own pass will take it
+        if props.target is None:
+            warnings.append(f"decal {name!r} (#{index}): no target mesh; decal dropped")
+            continue
+        mine.append((index, name, obj_index, projector))
+
+    baked = {}
+    for index, name, obj_index, projector in mine:
+        props = projector.dts_decal
+        owner_obj = shape.objects[obj_index]
+        by_slot = (slot_objects or {}).get(str(props.object_name), {})
+        mat_index = max(material_index_of(props.material), 0) if props.material else 0
+
+        start = len(shape.meshes)
+        node_index, any_geometry = -1, False
+        for j in range(owner_obj.num_meshes):
+            bobj = by_slot.get(j)
+            if bobj is None:
+                shape.meshes.append(None)
+                continue
+            faces = covered_faces(
+                bobj, projector.matrix_world,
+                depth=props.depth, rule=props.rule, max_angle=props.max_angle,
+            )
+            if not faces:
+                shape.meshes.append(None)
+                continue
+            _skin, node, to_dts, normal_mat = placement_of(bobj)
+            s, t = projector_to_texgen(projector.matrix_world, bobj.matrix_world)
+            mesh = _baked_decal_mesh(
+                bobj, faces, s, t, to_dts, normal_mat, mat_index
+            )
+            shape.meshes.append(mesh)
+            if mesh is not None:
+                any_geometry = True
+                if node_index < 0:
+                    node_index = node
+
+        if not any_geometry:
+            # the meshes are already appended and other objects' start indices
+            # depend on where they are, so the slots stay and the object does
+            # not.  A decal covering nothing is the coverage rule's answer, and
+            # it is the same answer build_decals gives.
+            warnings.append(
+                f"decal {name!r} (#{index}): covers no faces at any detail level; "
+                f"nothing was baked"
+            )
+            continue
+
+        baked[index] = (len(shape.objects), 1.0 if _rest_state(arm_obj, index, name) else 0.0)
+        shape.objects.append(
+            Object(
+                name_index=shape.add_name(name),
+                num_meshes=owner_obj.num_meshes,
+                start_mesh_index=start,
+                node_index=node_index if node_index >= 0 else owner_obj.node_index,
+            )
+        )
+    return baked
+
+
+def _rest_state(arm_obj, index: int, name: str) -> bool:
+    """Is this decal on before any sequence runs?
+
+    A decal state is -1 for off and a frame index for on, and a baked decal is
+    an object, whose equivalent is visibility.  Most decals rest at -1 and a
+    Damage sequence switches them on; a wreck's rest at 0.
+    """
+    return float(arm_obj.get(decal_prop(index, name), -1.0)) >= 0.0
 
 
 def _decal_uvs(mesh, verts, s, t) -> None:

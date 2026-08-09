@@ -1024,6 +1024,55 @@ def _decal_triangles(shape, decal, slot, mesh):
     }
 
 
+def test_a_shipped_shapes_decals_can_export_as_meshes():
+    """The other checkbox, on a real shape: 24 decals become 24 objects.
+
+    A fresh scene proves the feature is authorable; this proves it survives the
+    thing users actually do, which is open a shipped shape and re-export it.
+    The object count is the assertion that matters -- a decal that silently
+    baked nothing would still produce a valid file.
+    """
+    _reset()
+    assert bpy.ops.io_scene_dts.import_dts(
+        filepath=str(FIXTURES / "v23_bioderm_light.dts"), import_details=True
+    ) == {"FINISHED"}
+
+    src = read_shape_file(FIXTURES / "v23_bioderm_light.dts")
+    out = Path(tempfile.mkdtemp()) / "baked.dts"
+    assert bpy.ops.io_scene_dts.export_dts(
+        filepath=str(out), version="24", decals_as_meshes=True, export_textures=False
+    ) == {"FINISHED"}
+
+    dst = read_shape_file(out)
+    assert dst.decals == [], "baked decals must leave no decal table behind"
+    plain = Path(tempfile.mkdtemp()) / "plain.dts"
+    assert bpy.ops.io_scene_dts.export_dts(
+        filepath=str(plain), version="24", export_textures=False
+    ) == {"FINISHED"}
+    projected = read_shape_file(plain)
+    assert len(projected.decals) == len(src.decals) == 24
+
+    # one object per decal that covered something, on top of the ordinary ones
+    extra = len(dst.objects) - len(projected.objects)
+    assert extra == 24, (extra, len(dst.objects), len(projected.objects))
+    # the default states run in step with the objects, and the sequence tracks
+    # start after them -- a baked object appended without its state would shift
+    # every track that follows
+    assert len(dst.object_states) >= len(dst.objects)
+    assert dst.sequences[0].base_object_state == len(dst.objects), (
+        dst.sequences[0].base_object_state, len(dst.objects)
+    )
+    # and the baked geometry is real, not empty slots
+    baked = dst.objects[len(projected.objects):]
+    live = [
+        dst.meshes[o.start_mesh_index + j]
+        for o in baked for j in range(o.num_meshes)
+        if dst.meshes[o.start_mesh_index + j] is not None
+    ]
+    assert live, "every baked object is empty"
+    assert all(m.mesh_type == 0 and m.indices and m.tverts for m in live)
+
+
 def test_decals_can_import_as_meshes():
     """The checkbox, on: the faces the *file* names, which a projector cannot.
 

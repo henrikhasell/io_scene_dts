@@ -46,6 +46,18 @@ class ExportDTS(bpy.types.Operator, ExportHelper):
         "not art",
         default=True,
     )
+    decals_as_meshes: BoolProperty(
+        name="Export Decals as Meshes",
+        description="Write each decal as an ordinary mesh object -- the faces it "
+        "covers, copied, lifted just off the surface so the two do not z-fight, "
+        "with the projection baked into its UVs -- instead of as a TSDecalMesh.  "
+        "Anything that reads "
+        "a .dts then draws the decal, including tools that skip the decal "
+        "section, and the shape no longer needs a translucent mesh to draw "
+        "decals against.  The file carries no decal entries afterwards, so "
+        "re-importing gives meshes and no projectors",
+        default=False,
+    )
     combine_reflectance: BoolProperty(
         name="Combine Diffuse and Reflectance",
         description="Write each material's reflectance map into its diffuse "
@@ -91,6 +103,7 @@ class ExportDTS(bpy.types.Operator, ExportHelper):
                 selected_only=self.selected_only,
                 do_export_sequences=self.export_sequences,
                 combine_reflectance=self.combine_reflectance,
+                decals_as_meshes=self.decals_as_meshes,
             )
         except ExportError as e:
             self.report({"ERROR"}, str(e))

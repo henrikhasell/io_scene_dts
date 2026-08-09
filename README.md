@@ -152,7 +152,12 @@ viewport, dropped outright, or frozen against Blender-side edits.
   have selected, across every detail level of the object.  A shape that carries
   decals must have **something translucent** in it for the engine to draw them
   against — the decal's own material or the mesh it sits on — and export
-  refuses one that does not.
+  refuses one that does not.  Ticking **Export Decals as Meshes** writes them
+  as ordinary geometry instead: the faces each decal covers, copied, lifted
+  just off the surface, with the projection baked into their UVs.
+  The file then carries no decal table, so anything that reads a `.dts` draws
+  them and the translucency requirement does not apply — but it is one-way,
+  since re-importing gives meshes and no projectors.
 - **Translucent objects are written last.**  Objects are drawn in list order
   and a blended surface only composites correctly over what is already in the
   frame buffer, so export moves everything with a translucent mesh to the end

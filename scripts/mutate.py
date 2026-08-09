@@ -238,6 +238,57 @@ MUTATIONS = {
         "        index = 0",
         ["test_a_reflectance_map_is_authorable"],
     ),
+    # -- decals baked as meshes -------------------------------------------
+    # the checkbox pinned off: decals go back to being TSDecalMeshes, which is
+    # a valid file and the wrong one
+    "bake-decals-ignored": (
+        "mapping/blender_to_shape.py",
+        "        if decals_as_meshes:\n            baked_decals.update(",
+        "        if False:\n            baked_decals.update(",
+        [
+            "test_a_decal_is_authorable_as_a_baked_mesh",
+            "test_a_shipped_shapes_decals_can_export_as_meshes",
+        ],
+    ),
+    # baked and projected at once -- the thing the "baked meshes only" answer
+    # rules out, because a decal-aware engine then draws the art twice
+    "bake-decals-also-projects": (
+        "mapping/blender_to_shape.py",
+        "    decal_index_map = {}\n    if decals_as_meshes:",
+        "    decal_index_map = {}\n    if False:",
+        ["test_a_decal_is_authorable_as_a_baked_mesh"],
+    ),
+    # the lift: without it the baked mesh is coplanar with its target and
+    # z-fights, which no structural assertion about the file would catch
+    "bake-decals-not-lifted": (
+        "mapping/decals.py",
+        "                tuple(to_dts @ co + n * DECAL_LIFT),",
+        "                tuple(to_dts @ co),",
+        ["test_a_baked_decal_is_lifted_off_its_target"],
+    ),
+    # the UVs: a baked decal with no projection samples one texel of its
+    # texture and renders as a flat colour
+    "bake-decals-no-texgen": (
+        "mapping/decals.py",
+        "            uv = (\n                co[0] * s[0] + co[1] * s[1] + co[2] * s[2] + s[3],",
+        "            uv = (\n                0.0 * s[0] + 0.0 * s[1] + 0.0 * s[2] + s[3],",
+        ["test_a_decal_is_authorable_as_a_baked_mesh"],
+    ),
+    # the state track: the geometry is there and nothing switches it, so every
+    # scorch mark in a Damage sequence is on from the first frame
+    "bake-decals-lose-state-track": (
+        "mapping/sequences.py",
+        "            tracked.append((oi, {\"vis\": vis}))\n            vis_set.set(oi)",
+        "            pass",
+        ["test_a_baked_decals_state_track_becomes_object_visibility"],
+    ),
+    # ...and the rest state, which decides whether it is on before any sequence
+    "bake-decals-rest-state": (
+        "mapping/blender_to_shape.py",
+        "            shape.object_states.append(ObjectState(baked_vis[i], 0, 0))",
+        "            shape.object_states.append(ObjectState(1.0, 0, 0))",
+        ["test_a_baked_decals_state_track_becomes_object_visibility"],
+    ),
     # the export checkbox itself: pinned on, and the shape-wide "separate" the
     # user asked for silently becomes the combined packing instead
     "export-box-ignored": (

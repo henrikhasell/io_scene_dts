@@ -42,7 +42,7 @@ from ..dtslib.types import (
 
 from ..props import migrate
 from . import matframes
-from .decals import blender_lookup_of, build_decals
+from .decals import bake_decals_as_objects, blender_lookup_of, build_decals
 from .materials import ifl_materials_from_blender, is_translucent, materials_from_blender
 from .naming import (
     detail_name_for_size,
@@ -95,13 +95,15 @@ def blender_to_shape(
     selected_only: bool = False,
     do_export_sequences: bool = True,
     combine_reflectance: bool = True,
+    decals_as_meshes: bool = False,
 ) -> tuple[Shape, list, list[str]]:
     """The shape, the textures export has to write beside it, and warnings."""
     if arm_obj is None or arm_obj.type != "ARMATURE":
         raise ExportError("select an armature (the DTS shape root)")
     with flushed_edit_mode(context):
         return _blender_to_shape(
-            context, arm_obj, selected_only, do_export_sequences, combine_reflectance
+            context, arm_obj, selected_only, do_export_sequences, combine_reflectance,
+            decals_as_meshes,
         )
 
 
@@ -111,6 +113,7 @@ def _blender_to_shape(
     selected_only: bool,
     do_export_sequences: bool,
     combine_reflectance: bool = True,
+    decals_as_meshes: bool = False,
 ) -> tuple[Shape, list, list[str]]:
     """The body, with Edit Mode already flushed by the wrapper above."""
     reset_material_cache()
@@ -304,6 +307,8 @@ def _blender_to_shape(
     # DTS object name -> {detail slot: Blender object}, so a decal can reach
     # every detail level of its owner and not just the one it points at
     decal_slot_objects: dict[str, dict] = {}
+    # when decals are baked: decal index -> (object index, rest visibility)
+    baked_decals: dict[int, tuple[int, float]] = {}
 
     for s in range(len(subshapes)):
         shape.sub_shape_first_object.append(len(shape.objects))
@@ -336,14 +341,32 @@ def _blender_to_shape(
             )
             object_index_by_name[base] = len(shape.objects)
             shape.objects.append(obj)
+        # inside the loop, before the count is taken: a baked decal is an object
+        # of this subshape and the object ranges are contiguous
+        if decals_as_meshes:
+            baked_decals.update(
+                bake_decals_as_objects(
+                    shape, arm_obj, s, object_index_by_name, _material_slot_index,
+                    lambda b: _dts_placement(b, arm_obj, node_index_by_bone, node_arm_matrix),
+                    warnings, slot_objects=decal_slot_objects,
+                )
+            )
         shape.sub_shape_num_objects.append(len(shape.objects) - shape.sub_shape_first_object[-1])
 
     if len(shape.objects) > MAX_TS_SET_SIZE:
         raise ExportError(f"{len(shape.objects)} objects exceed the DTS limit of {MAX_TS_SET_SIZE}")
 
     # default object states, one per object
+    baked_vis = {index: vis for index, vis in baked_decals.values()}
     for i, obj in enumerate(shape.objects):
         vis, frame, matframe = 1.0, 0, 0
+        if i in baked_vis:
+            # a baked decal is not in `grouped` -- it has no Blender mesh object
+            # -- so its rest state comes from the decal's own, and the loop
+            # below would leave it visible, which is wrong for the
+            # overwhelming majority that rest off
+            shape.object_states.append(ObjectState(baked_vis[i], 0, 0))
+            continue
         for (sub, base), by_size in grouped.items():
             if object_index_by_name.get(base) == i:
                 for bobj in by_size.values():
@@ -358,12 +381,21 @@ def _blender_to_shape(
     # -- decals (recomputed from the projector empties) ---------------
     # before the material list is built: a decal's material is often used by
     # nothing else, so this is where it gets registered
-    decal_index_map = build_decals(
-        shape, arm_obj, object_index_by_name, _material_slot_index, warnings,
-        target_lookups=decal_target_lookups,
-        slot_objects=decal_slot_objects,
-    )
-    if not decal_index_map:
+    decal_index_map = {}
+    if decals_as_meshes:
+        if baked_decals:
+            warnings.append(
+                f"decals: {len(baked_decals)} baked as mesh object(s).  The file "
+                f"carries no decal entries, so re-importing gives ordinary meshes "
+                f"and no projectors"
+            )
+    else:
+        decal_index_map = build_decals(
+            shape, arm_obj, object_index_by_name, _material_slot_index, warnings,
+            target_lookups=decal_target_lookups,
+            slot_objects=decal_slot_objects,
+        )
+    if not decal_index_map and not baked_decals:
         # a scene imported with "Import Decals as Meshes" has decals in it and
         # exports none, because nothing here reads a mesh.  Silence would make
         # that look like a shape that never had any
@@ -435,7 +467,8 @@ def _blender_to_shape(
     if do_export_sequences:
         actions = [a for a in bpy.data.actions if a.get("dts_sequence") or _action_targets_armature(a, arm_obj)]
         warnings += export_sequences(
-            shape, arm_obj, actions, node_index_by_bone, object_index_by_name, decal_index_map
+            shape, arm_obj, actions, node_index_by_bone, object_index_by_name, decal_index_map,
+            baked_decal_objects={i: obj for i, (obj, _vis) in baked_decals.items()},
         )
 
     return shape, texture_writes, warnings
@@ -608,14 +641,13 @@ def _export_object_meshes(
     return node_index, lookups, dict(odn_map)
 
 
-def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warnings, pool=None):
-    """Returns (dtslib.Mesh, node_index, verbatim, pool_length, bvert_to_dts).
+def _dts_placement(bobj, arm_obj, node_index_by_bone, node_arm_matrix):
+    """Where a mesh object sits in the file: (is_skin, node, to_dts, normal_mat).
 
-    ``pool`` shares one vertex array across the detail levels of an object; see
-    mapping/vertex_pool.py.  ``pool_length`` is the prefix this mesh occupies,
-    or None when it did not use the pool (a skin, or a replayed payload).
-    ``bvert_to_dts`` maps Blender vertex index to DTS vertex index, which the
-    decal exporter needs to match faces without going through float drift.
+    Split out of :func:`_export_mesh` because the decal baker needs the same
+    answer: a baked decal is geometry copied off its target and has to land in
+    exactly the space the target's own vertices did, or it exports a few
+    millimetres from the surface it is supposed to sit on.
     """
     is_skin = bool(bobj.vertex_groups) and any(
         m.type == "ARMATURE" and m.object == arm_obj for m in bobj.modifiers
@@ -628,14 +660,27 @@ def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warn
         if node_index < 0:
             node_index = 0 if node_arm_matrix else -1
 
-    # vertex transform into DTS space
     arm_world_inv = arm_obj.matrix_world.inverted()
     if is_skin:
         to_dts = arm_world_inv @ bobj.matrix_world  # shape space
     else:
         node_mat = node_arm_matrix[node_index] if 0 <= node_index < len(node_arm_matrix) else Matrix.Identity(4)
         to_dts = node_mat.inverted() @ arm_world_inv @ bobj.matrix_world  # node space
-    normal_mat = to_dts.to_3x3().inverted_safe().transposed()
+    return is_skin, node_index, to_dts, to_dts.to_3x3().inverted_safe().transposed()
+
+
+def _export_mesh(shape, bobj, arm_obj, node_index_by_bone, node_arm_matrix, warnings, pool=None):
+    """Returns (dtslib.Mesh, node_index, verbatim, pool_length, bvert_to_dts).
+
+    ``pool`` shares one vertex array across the detail levels of an object; see
+    mapping/vertex_pool.py.  ``pool_length`` is the prefix this mesh occupies,
+    or None when it did not use the pool (a skin, or a replayed payload).
+    ``bvert_to_dts`` maps Blender vertex index to DTS vertex index, which the
+    decal exporter needs to match faces without going through float drift.
+    """
+    is_skin, node_index, to_dts, normal_mat = _dts_placement(
+        bobj, arm_obj, node_index_by_bone, node_arm_matrix
+    )
 
     me = bobj.data
     me.calc_loop_triangles()
