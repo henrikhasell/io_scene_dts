@@ -18,7 +18,10 @@ from ..dtslib.types import MAT_ADDITIVE, MAT_SUBTRACTIVE, MAT_TRANSLUCENT
 from ..mapping import materials
 from .operators import (
     DTS_OT_add_decal,
+    DTS_OT_add_reflectance,
+    DTS_OT_rebuild_env_map,
     DTS_OT_refresh_ifl,
+    DTS_OT_remove_reflectance,
     DTS_OT_dismiss_migration_note,
     DTS_OT_migrate_scene,
     list_buttons,
@@ -185,7 +188,7 @@ class OBJECT_PT_dts_decal(Panel):
         return obj is not None and obj.type == "EMPTY" and obj.dts_decal.is_dts
 
     def draw(self, context):
-        from .operators import DTS_OT_refresh_decal
+        from .operators import DTS_OT_rebuild_decal_preview, DTS_OT_refresh_decal
 
         props = context.object.dts_decal
         layout = self.layout
@@ -197,6 +200,12 @@ class OBJECT_PT_dts_decal(Panel):
         column = layout.column(align=True)
         column.prop(props, "target")
         column.prop(props, "material")
+        # the branch is built once and then left alone, so changing the
+        # material above -- or opening a scene built by an older version --
+        # needs this to show
+        column.operator(
+            DTS_OT_rebuild_decal_preview.bl_idname, icon="NODETREE"
+        ).all_decals = False
 
         box = layout.box()
         box.label(text="Covered Faces", icon="FACESEL")
@@ -374,29 +383,107 @@ class MATERIAL_PT_dts_material(Panel):
         ]
         box.label(text=", ".join(names) if names else "Opaque")
 
-        box = layout.box()
-        box.label(text="Reflectance (environment map)")
-        box.prop(mat.dts_material, "reflectance_packing")
-        if mat.dts_material.reflectance_packing == "DEFAULT":
-            box.label(
-                text="Combine Diffuse and Reflectance, in the export dialog",
-                icon="EXPORT",
-            )
-        node = materials.reflectance_image_node(mat)
-        if node is not None:
-            box.label(text=f"From {node.image.name}", icon="TEXTURE")
-        else:
-            box.label(
-                text="Link an image to Metallic to give this material one",
-                icon="INFO",
-            )
+        _draw_reflectance(layout, mat)
 
         column = layout.column(align=True)
         column.label(text="Maps (no preview; the Principled shader ignores them)")
         for prop in ("dts_reflectance_map", "dts_bump_map", "dts_detail_map",
-                     "dts_detail_scale", "dts_reflection_amount"):
+                     "dts_detail_scale"):
             if prop in mat:
                 column.prop(mat, f'["{prop}"]', text=prop.removeprefix("dts_"))
+
+
+def _draw_reflectance(layout, mat) -> None:
+    """The reflectance map, its amount, and how it will be packed.
+
+    The image slot is drawn on the *node*, not on a property of the material.
+    A PointerProperty beside the node would be a second place the same fact
+    lives, and the two would disagree the first time someone edited the graph;
+    this way the panel and the node editor are two views of one value.
+    """
+    from ..mapping import envmap
+
+    box = layout.box()
+    box.label(text="Reflectance (environment map)")
+
+    group = envmap.group_node(mat)
+    node = materials.reflectance_image_node(mat)
+
+    if group is None and node is not None:
+        # imported before the env-map preview existed: it still exports, it
+        # just does not show what the engine draws
+        box.label(text=f"From {node.image.name}, on Metallic", icon="TEXTURE")
+        box.operator(
+            DTS_OT_rebuild_env_map.bl_idname, icon="NODETREE"
+        ).all_materials = False
+    elif group is None:
+        box.operator(DTS_OT_add_reflectance.bl_idname, icon="ADD")
+        box.label(text="No reflectance map; this material does not reflect", icon="INFO")
+    else:
+        source = envmap.mask_socket(mat)
+        owner = source.node if source is not None else None
+        if owner is not None and owner.type == "TEX_IMAGE":
+            box.template_ID(owner, "image", new="image.new", open="image.open")
+            if source.name == "Alpha":
+                box.label(
+                    text="The mask is this texture's alpha, shared with transparency",
+                    icon="INFO",
+                )
+        else:
+            box.label(text="The mask comes from the node graph", icon="NODETREE")
+        box.prop(mat.dts_material, "reflection_amount")
+        box.operator(DTS_OT_remove_reflectance.bl_idname, icon="X")
+
+    box.prop(mat.dts_material, "reflectance_packing")
+    if mat.dts_material.reflectance_packing == "DEFAULT":
+        box.label(
+            text="Combine Diffuse and Reflectance, in the export dialog",
+            icon="EXPORT",
+        )
+    if group is not None and not _has_environment_image():
+        box.label(text="No environment map set; see Scene Properties", icon="ERROR")
+
+
+def _has_environment_image() -> bool:
+    scene = bpy.context.scene
+    props = getattr(scene, "dts_scene", None)
+    return props is not None and props.env_map_image is not None
+
+
+class SCENE_PT_dts_environment(Panel):
+    """Preview settings, and the only ones this add-on has.
+
+    Neither value is in a `.dts`.  The engine's environment map is the mission
+    sky's (``engine/terrain/sky.h:227``) and the strength is set by whatever is
+    drawing the shape -- 1.0 for everything the game renders.  So they are
+    scene state, they are never exported, and a shape moved to another mission
+    reflects that mission instead, which is what the engine does too.
+    """
+
+    bl_label = "DTS Environment Map"
+    bl_idname = "SCENE_PT_dts_environment"
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "scene"
+
+    @classmethod
+    def poll(cls, context):
+        # unconditional in Blender, where the Scene tab always has one; the
+        # check is for the callers that hand draw() a stand-in context
+        return getattr(context, "scene", None) is not None
+
+    def draw(self, context):
+        layout = self.layout
+        props = context.scene.dts_scene
+
+        layout.template_ID(props, "env_map_image", new="image.new", open="image.open")
+        layout.prop(props, "env_map_strength")
+        column = layout.column(align=True)
+        column.label(text="Preview only; never written to a .dts", icon="INFO")
+        column.label(text="The engine takes it from the mission sky's .dml")
+        layout.operator(
+            DTS_OT_rebuild_env_map.bl_idname, text="Rebuild All Materials", icon="NODETREE"
+        ).all_materials = True
 
 
 def _action_in_context(context):
@@ -494,6 +581,7 @@ CLASSES = (
     OBJECT_PT_dts_mesh,
     OBJECT_PT_dts_decal,
     BONE_PT_dts_node,
+    SCENE_PT_dts_environment,
     MATERIAL_PT_dts_material,
     MATERIAL_PT_dts_ifl,
     DOPESHEET_PT_dts_sequence,

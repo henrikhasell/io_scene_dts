@@ -24,6 +24,7 @@ __all__ = [
     "VIS_PREFIX",
     "animated_object_names",
     "apply_default_vis",
+    "flush_driver_relations",
     "fractional_object_names",
     "refresh_driver_relations",
     "vis_path",
@@ -55,14 +56,83 @@ _REFRESH_PASSES = [0]
 _REFRESH_DELAY = 0.1
 
 
-def _do_refresh():
+# Drivers do not only live on objects: the frame preview's live on the mesh's
+# shape-key datablock (mapping/framepreview.py), which is a different bpy.data
+# collection and cannot be looked up by name alone.
+_COLLECTION_OF = {"Object": "objects", "Key": "shape_keys"}
+
+
+def _dirty_pending() -> int:
     """Re-assign every pending driver's expression, marking it dirty so the
-    dependency graph rebuilds its relations."""
-    for name in list(_PENDING_REFRESH):
-        obj = bpy.data.objects.get(name)
-        if obj is not None and obj.animation_data is not None:
-            for fcurve in obj.animation_data.drivers:
+    dependency graph rebuilds its relations.  Returns the datablocks touched."""
+    touched = 0
+    for collection, name in list(_PENDING_REFRESH):
+        owner = getattr(bpy.data, collection).get(name)
+        if owner is not None and owner.animation_data is not None:
+            for fcurve in owner.animation_data.drivers:
                 fcurve.driver.expression = fcurve.driver.expression
+            touched += 1
+    return touched
+
+
+def flush_driver_relations() -> int:
+    """Dirty every queued driver now and stop waiting for an evaluation.
+
+    Idempotent, and what a caller that has just finished building a scene by
+    script should call instead of hoping an update lands.
+    """
+    touched = _dirty_pending()
+    _PENDING_REFRESH.clear()
+    _FLUSHES_LEFT[0] = 0
+    _unregister_handler()
+    return touched
+
+
+_FLUSHES_LEFT = [0]
+_FLUSHING = [False]
+# The first evaluation after wiring is still inside the importing operator,
+# where dirtying does nothing; the one after it is not.  Flushing on a few
+# consecutive updates covers both without having to detect which is which.
+_FLUSH_UPDATES = 3
+
+
+@bpy.app.handlers.persistent
+def _on_depsgraph_update(scene, depsgraph=None):
+    """Flush on the evaluations that follow wiring.
+
+    The timer below only runs in an interactive Blender; a background session
+    -- the integration tests, and anything scripted -- never fires it, and the
+    drivers sit there valid and unevaluated.  This fires in both.
+    """
+    if _FLUSHING[0]:
+        return  # dirtying triggers the update this handler listens for
+    _FLUSHING[0] = True
+    try:
+        if _dirty_pending():
+            # dirtying alone leaves the geometry a step behind: the shape-key
+            # drivers evaluate, and the mesh that reads them was already
+            # deformed with the previous values.  Re-evaluating here settles it
+            # within the frame the user is looking at.
+            bpy.context.view_layer.update()
+        _FLUSHES_LEFT[0] -= 1
+        if _FLUSHES_LEFT[0] <= 0:
+            _PENDING_REFRESH.clear()
+            _unregister_handler()
+    finally:
+        _FLUSHING[0] = False
+
+
+def _unregister_handler() -> None:
+    for handlers in (
+        bpy.app.handlers.depsgraph_update_post,
+        bpy.app.handlers.frame_change_post,
+    ):
+        if _on_depsgraph_update in handlers:
+            handlers.remove(_on_depsgraph_update)
+
+
+def _do_refresh():
+    _dirty_pending()
     _REFRESH_PASSES[0] -= 1
     if _REFRESH_PASSES[0] > 0:
         return _REFRESH_DELAY
@@ -70,24 +140,39 @@ def _do_refresh():
     return None
 
 
-def refresh_driver_relations(objects) -> None:
-    """Queue a dependency-relation rebuild for these objects' drivers.
+def refresh_driver_relations(owners) -> None:
+    """Queue a dependency-relation rebuild for these datablocks' drivers.
 
     A driver added while its target property is *already* animated gets no
     relation to that animation, so the strip moves the property and nothing
     follows.  Re-assigning an expression marks the driver dirty — but only
-    once the importing operator has returned, so it is deferred to a timer.
-    There is no public "rebuild relations" call and drivers.update() does not
-    do it.
+    once the importing operator has returned, so it is deferred: to the next
+    depsgraph evaluation, and to a timer behind it.  There is no public
+    "rebuild relations" call and drivers.update() does not do it.
 
     Sequences that animate a bone as well as a property are unaffected: the
     bone channel gives the armature a real animation component for the driver
     to depend on.  A decal-only sequence like light_male's Damage has none.
     """
     _PENDING_REFRESH.update(
-        obj.name for obj in objects if obj.animation_data is not None
+        (_COLLECTION_OF[owner.rna_type.identifier], owner.name)
+        for owner in owners
+        if owner is not None
+        and owner.animation_data is not None
+        and owner.rna_type.identifier in _COLLECTION_OF
     )
-    if _PENDING_REFRESH and not bpy.app.timers.is_registered(_do_refresh):
+    if not _PENDING_REFRESH:
+        return
+    _FLUSHES_LEFT[0] = _FLUSH_UPDATES
+    # depsgraph_update_post covers editing, frame_change_post covers scrubbing
+    # -- and a background session only ever fires the second
+    for handlers in (
+        bpy.app.handlers.depsgraph_update_post,
+        bpy.app.handlers.frame_change_post,
+    ):
+        if _on_depsgraph_update not in handlers:
+            handlers.append(_on_depsgraph_update)
+    if not bpy.app.timers.is_registered(_do_refresh):
         _REFRESH_PASSES[0] = 2
         bpy.app.timers.register(_do_refresh, first_interval=_REFRESH_DELAY)
 

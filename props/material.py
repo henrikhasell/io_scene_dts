@@ -29,17 +29,29 @@ from bpy.props import (
     BoolProperty,
     CollectionProperty,
     EnumProperty,
+    FloatProperty,
     IntProperty,
     PointerProperty,
 )
 from bpy.types import PropertyGroup
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # The key `reflectance_packing` replaced.  A bool with no third state could not
 # say "follow the export setting", which is what the overwhelming majority of
 # materials want; props/migrate.py converts it.
 LEGACY_COMBINE_KEY = "combine_reflectance"
+
+# The ID property `reflection_amount` replaced.  It was a bare float in Custom
+# Properties, which meant it could be read and written but previewed nothing and
+# was absent on any material the importer had not touched.
+LEGACY_REFLECTION_AMOUNT_KEY = "dts_reflection_amount"
+
+
+def _sync_amount(self, context):
+    from ..mapping import envmap
+
+    envmap.sync_amount(self.id_data)
 
 
 class DtsIflFrame(PropertyGroup):
@@ -76,6 +88,24 @@ class DtsMaterialProps(PropertyGroup):
     # sidecar was missing would be a worse answer than an empty list.
     ifl_frames: CollectionProperty(type=DtsIflFrame)
     ifl_frames_index: IntProperty(default=0)
+
+    # In the file since v21 (dtslib/matlist.py:66) and 1.0 in 265 of the 270
+    # env-mapped corpus materials.  A real property rather than the ID property
+    # it was, for the reason props/mesh.py gives: a slider can only be drawn for
+    # a property that exists, and one written only by the importer leaves a
+    # material made in a fresh scene with nothing to edit.
+    reflection_amount: FloatProperty(
+        name="Reflection Amount",
+        description=(
+            "How much of the environment map this material reflects, on top of its "
+            "reflectance mask.  The engine multiplies the two (tsMesh.cc:1003)"
+        ),
+        default=1.0,
+        min=0.0,
+        max=1.0,
+        subtype="FACTOR",
+        update=_sync_amount,
+    )
 
     reflectance_packing: EnumProperty(
         name="Reflectance Packing",

@@ -43,11 +43,30 @@ def test_merge_is_the_inverse_of_split():
     assert merge_rgba(*split_rgba(source)) == source
 
 
-def test_merge_reads_the_reflectance_red_channel():
-    """A user editing the mask in Blender edits a greyscale image; red is the
-    channel split_rgba writes first and the one merge must agree on."""
+def test_merge_reduces_a_colour_mask_by_luminance():
+    """The mask reaches the shader as a Color into a Float input, and Blender
+    reduces that by Rec.709 luminance -- measured, not assumed.  Export has to
+    use the same reduction or a hand-painted, slightly-off-grey mask exports as
+    a different mask than the one the viewport was showing.
+
+    This used to take the red channel, which is right for a mask split_rgba
+    produced and wrong for one a user painted.
+    """
     diffuse = array("f", [0.1, 0.2, 0.3, 1.0])
     reflectance = array("f", [0.6, 0.0, 0.0, 1.0])
+    assert list(merge_rgba(diffuse, reflectance)) == pytest.approx(
+        [0.1, 0.2, 0.3, 0.2126 * 0.6]
+    )
+
+
+def test_merge_is_exact_for_a_greyscale_mask():
+    """And the mask this add-on produces is grey, so nothing it made changes.
+
+    The luminance weights sum to 1, so R=G=B reduces to that same value; the
+    strided fast path returns it without touching a pixel in Python.
+    """
+    diffuse = array("f", [0.1, 0.2, 0.3, 1.0])
+    reflectance = array("f", [0.6, 0.6, 0.6, 1.0])
     assert list(merge_rgba(diffuse, reflectance)) == pytest.approx([0.1, 0.2, 0.3, 0.6])
 
 

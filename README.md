@@ -99,8 +99,9 @@ Disk.  For development, symlink this checkout into
   The other eleven have a checkbox, in Material Properties → **DTS Material**.
   A material with no reflectance map exports a self-index one (never
   `0xFFFFFFFF`, which crashes the engine).
-- **Reflectance (environment) maps** are the second image in the material,
-  feeding **Metallic**.  A DTS packs one there by putting it in the *alpha
+- **Reflectance (environment) maps** are the second image in the material, and
+  they mask the environment map the material reflects.  A DTS packs one by
+  putting it in the *alpha
   channel* of the diffuse texture, so an env-mapped material imports as two
   images — an RGB diffuse and a greyscale mask — and the **Combine Diffuse and
   Reflectance** checkbox in the export dialog says which packing to write back
@@ -110,6 +111,18 @@ Disk.  For development, symlink this checkout into
   entry in the shape's material list.  A material that has to disagree with the
   rest of the shape says so with **Reflectance Packing** in Material Properties
   → **DTS Material**, which is *Follow Export Setting* unless you change it.
+  A material that has never had a mask gets one from **Add Reflectance Map** in
+  the same panel.
+- **The reflection is previewed the way the engine draws it.**  The mask does
+  not reach the Principled BSDF; it mixes a sphere-mapped environment texture
+  over the top — `env*k + lit*(1-k)`, with the environment contribution unlit
+  and `k` the mask times the material's **Reflection Amount** times a
+  scene-level strength.  That is `GL_SPHERE_MAP` texgen and a `GL_INTERPOLATE`
+  combine, which is what the engine does.  *Which* image is reflected is not in
+  the `.dts` — the engine takes it from the mission sky's `.dml` — so it is set
+  in Scene Properties → **DTS Environment Map**, it is preview only, and with
+  none chosen nothing reflects.
+
   Export writes a `.png` beside the `.dts` for
   every texture the shape names — made in Blender or loaded from disk — so an
   exported shape carries its art with it.  Existing files are overwritten, so
@@ -164,8 +177,8 @@ viewport, dropped outright, or frozen against Blender-side edits.
   frame buffer, so export moves everything with a translucent mesh to the end
   of its sub-shape.  Nothing else moves, and an all-opaque shape comes out in
   exactly the order you built it.
-- Multi-frame (vertex-animated) meshes import as shape keys (`frame_NNN`);
-  nothing drives them from the sequence's `frame` track.
+- Multi-frame (vertex-animated) meshes import as shape keys (`frame_NNN`),
+  driven by the sequence's `frame` track, so scrubbing plays the animation.
 - Extra material frames are `FLOAT2` mesh attributes; only frame 0 renders.
 - IFL flipbooks import their `.ifl`, preview as a keyframed image switch, and
   are written back out beside the exported `.dts`.

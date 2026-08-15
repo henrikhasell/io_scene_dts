@@ -46,12 +46,15 @@ io_scene_dts.register()
 
 sys.path.insert(0, str(REPO / "tests" / "blender"))
 import test_authoring  # noqa: E402
+import test_envmap  # noqa: E402
 import test_operators  # noqa: E402
 
 # test_operators round-trips real files; test_authoring builds shapes from
 # nothing, which is the only check that a feature can actually be *created*
-# rather than merely preserved (see CLAUDE.md).
-MODULES = (test_operators, test_authoring)
+# rather than merely preserved (see CLAUDE.md).  test_envmap is the odd one:
+# it renders, because the environment map is a shader and reading a file back
+# cannot tell you whether a shader is right.
+MODULES = (test_operators, test_authoring, test_envmap)
 
 patterns = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
 

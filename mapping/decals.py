@@ -60,6 +60,7 @@ from ..dtslib import (
     Primitive,
     Shape,
 )
+from ..dtslib.types import MAT_ADDITIVE, MAT_SUBTRACTIVE
 from ..props.decal import SCHEMA_VERSION as DECAL_SCHEMA_VERSION
 from .materials import diffuse_image_node
 
@@ -484,6 +485,33 @@ def sync_host_gate(decal_obj) -> int:
     return host
 
 
+def rebuild_branch(decal_obj) -> bool:
+    """Throw one decal's shader branch away and build it again.
+
+    ``wire_decal_branch`` refuses to touch a label it already finds, which is
+    what stops a re-import stacking branches -- and which also means a branch
+    built by an older version of this add-on stays exactly as it was built.  A
+    scene saved before decals were previewed *lit* keeps its unlit Emission
+    forever, and so does one whose decal material has been changed since.
+
+    Removing the branch first is what makes the rebuild possible; the removal
+    closes the surface chain behind it, so nothing is left dangling if the
+    rewire then declines (a decal with no target, say).
+    """
+    props = decal_obj.dts_decal
+    label = _branch_label(props.index)
+    rebuilt = False
+    for mat in bpy.data.materials:
+        nt = getattr(mat, "node_tree", None)
+        if nt is not None and any(n.label == label for n in nt.nodes):
+            remove_decal_branch(nt, label)
+            rebuilt = True
+    target_mat = _host_material_for(props.target)
+    if target_mat is None:
+        return rebuilt
+    return wire_decal_branch(target_mat, decal_obj, _shape_armature_for(decal_obj)) or rebuilt
+
+
 def refresh_coverage(decal_obj) -> int:
     """Recompute one decal's coverage cache from its empty.  Returns the count."""
     props = decal_obj.dts_decal
@@ -526,6 +554,55 @@ def _image_of(mat):
         if node.type == "TEX_IMAGE" and node.image is not None:
             return node.image
     return None
+
+
+def _decal_shader(nt, mat, colour_out, label, location):
+    """The surface a decal branch mixes in: lit, unless the engine says not.
+
+    A decal is ordinary geometry to the engine.  ``TSDecalMesh::render`` hands
+    it ``glNormalPointer`` from the *target mesh's* normals and
+    ``initDecalMaterials`` sets ``GL_MODULATE`` without ever touching
+    ``GL_LIGHTING`` (``engine/ts/tsDecal.cc``), so a decal is shaded exactly
+    like the surface it sits on -- with that surface's normals, which is why a
+    Principled here and not the host's own shader re-used: same lights, same
+    normals, the decal's colour.
+
+    Lighting comes off only where ``TSMesh::setMaterial`` turns it off:
+    ``MAT_SELF_ILLUMINATING``, or a material with no lighting to modulate at
+    all.  Additive and subtractive are on that list because their graph has no
+    Principled to read a base colour from in the first place.
+
+    This used to be an Emission unconditionally, which made every decal preview
+    as though it were self-illuminating -- neon on a surface the engine would
+    have shaded down into shadow with the rest of the mesh.
+    """
+    if _decal_is_unlit(mat):
+        emit = nt.nodes.new("ShaderNodeEmission")
+        emit.label = label
+        emit.location = location
+        nt.links.new(colour_out, emit.inputs["Color"])
+        return emit.outputs["Emission"]
+
+    bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf.label = label
+    bsdf.location = location
+    # the same roughness material_to_blender gives an imported material: the
+    # engine's fixed-function lighting has no gloss term, so anything less
+    # would add a highlight the game never draws
+    bsdf.inputs["Roughness"].default_value = 1.0
+    nt.links.new(colour_out, bsdf.inputs["Base Color"])
+    return bsdf.outputs["BSDF"]
+
+
+def _decal_is_unlit(mat) -> bool:
+    """Whether the engine would draw this decal's material with lighting off."""
+    if mat is None:
+        return False
+    if mat.get("dts_self_illuminating"):
+        return True
+    from .materials import blend_flags_from_material
+
+    return bool(blend_flags_from_material(mat) & (MAT_ADDITIVE | MAT_SUBTRACTIVE))
 
 
 def _base_colour_of(mat):
@@ -752,17 +829,14 @@ def wire_decal_branch(target_mat, decal_obj, arm_obj=None) -> bool:
         nt.links.new(same.outputs[0], mine.inputs[1])
         factor = mine
 
-    emit = nt.nodes.new("ShaderNodeEmission")
-    emit.label = label
-    emit.location = (x - 400, y + 150)
-    nt.links.new(colour_out, emit.inputs["Color"])
+    shader = _decal_shader(nt, props.material, colour_out, label, (x - 400, y + 150))
 
     mix = nt.nodes.new("ShaderNodeMixShader")
     mix.label = label
     mix.location = (x - 200, y)
     nt.links.new(factor.outputs[0], mix.inputs["Fac"])
     nt.links.new(surface, mix.inputs[1])
-    nt.links.new(emit.outputs["Emission"], mix.inputs[2])
+    nt.links.new(shader, mix.inputs[2])
     nt.links.new(mix.outputs["Shader"], output.inputs["Surface"])
 
     # deliberately *not* forcing the target material to BLEND.  Both sides of

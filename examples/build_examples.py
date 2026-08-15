@@ -252,7 +252,7 @@ def build_material_flags():
     lamp["dts_self_illuminating"] = True
     chrome = textured_material("chrome", checker)
     chrome["dts_never_env_map"] = False
-    chrome["dts_reflection_amount"] = 0.6
+    chrome.dts_material.reflection_amount = 0.6
     for index, mat in enumerate((lamp, chrome)):
         verts, faces = A.cube_geometry(0.4)
         obj = A.mesh_object(f"panel{index}_2", arm, bone="root", verts=verts,

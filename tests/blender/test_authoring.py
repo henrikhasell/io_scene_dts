@@ -293,7 +293,7 @@ def test_map_slots_are_authorable():
     hull["dts_bump_map"] = "hull.bump"
     hull["dts_detail_map"] = "hull.detail"
     hull["dts_detail_scale"] = 4.0
-    hull["dts_reflection_amount"] = 0.75
+    hull.dts_material.reflection_amount = 0.75
     for index, mat in enumerate((hull, spec, bump, detail)):
         A.mesh_object(f"part{index}_2", arm, bone="root", material=mat)
 
@@ -379,6 +379,117 @@ def test_a_combined_reflectance_is_authorable():
     combined = bpy.data.images.load(str(written))
     alpha = list(combined.pixels)[3::4]
     assert min(alpha) < 0.05 and max(alpha) > 0.95, sorted(set(alpha))
+
+
+def test_reflection_amount_is_authorable():
+    """The scalar the engine multiplies the whole reflection by.
+
+    It was an ID property the importer wrote, which meant a material made in a
+    fresh scene had no such key and no way to grow one from the UI -- the
+    condition CLAUDE.md calls (3), failed quietly.  It is a slider on
+    `dts_material` now, so this test sets it the way the panel does.
+    """
+    A.reset()
+    arm = A.armature("Shiny")
+    mat = A.image_material(
+        "hull",
+        diffuse=A.generated_image("hull_diffuse"),
+        reflectance=A.generated_image("hull_refl", ramp=True),
+        packing="SEPARATE",
+    )
+    mat.dts_material.reflection_amount = 0.25
+    A.mesh_object("body2", arm, bone="root", material=mat)
+
+    hull = A.read(A.export_dts()).materials[0]
+    assert abs(hull.reflection_amount - 0.25) < 1e-5, hull.reflection_amount
+    assert not hull.flags & MAT_NEVER_ENV_MAP
+
+
+def test_a_reflectance_map_is_authorable_by_operator():
+    """The button, not the node editor: (3) means the UI can do it too.
+
+    ``io_scene_dts.add_reflectance`` is the only thing standing between "a
+    reflectance map is a node" and "a material that has never had one shows no
+    way to get one" -- the same shape of gap billboards had.
+    """
+    A.reset()
+    arm = A.armature("Shiny")
+    mat = A.principled_material("hull")
+    A.mesh_object("body2", arm, bone="root", material=mat)
+
+    from io_scene_dts.mapping import envmap
+
+    with A.material_context(mat):
+        assert bpy.ops.io_scene_dts.add_reflectance() == {"FINISHED"}
+    node = envmap.mask_socket(mat).node
+    assert node.type == "TEX_IMAGE"
+    node.image = A.generated_image("hull_refl", ramp=True)
+    mat.dts_material.reflectance_packing = "SEPARATE"
+
+    shape = A.read(A.export_dts())
+    assert len(shape.materials) == 2, [m.name for m in shape.materials]
+    hull, refl = shape.materials
+    assert hull.reflectance_map == 1
+    assert not hull.flags & MAT_NEVER_ENV_MAP, "asking for a map asks for env-mapping"
+    assert refl.flags & MAT_REFLECTANCE_MAP_ONLY
+
+    with A.material_context(mat):
+        assert bpy.ops.io_scene_dts.remove_reflectance() == {"FINISHED"}
+    assert envmap.group_node(mat) is None
+    assert A.read(A.export_dts()).materials[0].flags & MAT_NEVER_ENV_MAP, (
+        "with the map gone the material must go back to never env-mapping"
+    )
+
+
+def test_the_reflection_previews_over_the_principled():
+    """The graph has to be the engine's equation, not merely present.
+
+    ``env*k + lit*(1-k)`` is a Mix Shader whose second input is an unlit
+    Emission -- the reflection displaces the diffuse and no light touches it.
+    A material wired any other way would export the same bytes and show the
+    wrong thing, which is the failure this whole change is about.
+    """
+    A.reset()
+    mat = A.image_material(
+        "hull",
+        diffuse=A.generated_image("hull_diffuse"),
+        reflectance=A.generated_image("hull_refl", ramp=True),
+    )
+
+    nt = mat.node_tree
+    output = next(n for n in nt.nodes if n.type == "OUTPUT_MATERIAL")
+    surface = output.inputs["Surface"].links[0].from_node
+    assert surface.type == "MIX_SHADER", surface.type
+    assert surface.inputs[1].links[0].from_node.type == "BSDF_PRINCIPLED"
+    assert surface.inputs[2].links[0].from_node.type == "EMISSION"
+    assert surface.inputs["Fac"].links[0].from_socket.name == "Factor"
+    # and Metallic is left alone: two paths to the same fact is the bug
+    assert not next(n for n in nt.nodes if n.type == "BSDF_PRINCIPLED").inputs[
+        "Metallic"
+    ].is_linked
+
+
+def test_a_reflectance_left_on_metallic_still_exports():
+    """A .blend from before the preview existed keeps working.
+
+    Nothing writes Metallic any more, and migration deliberately does not
+    re-wire node trees on load, so the export path has to keep reading it.
+    """
+    A.reset()
+    arm = A.armature("Legacy")
+    mat = A.image_material(
+        "hull",
+        diffuse=A.generated_image("hull_diffuse"),
+        reflectance=A.generated_image("hull_refl", ramp=True),
+        packing="SEPARATE",
+        on_metallic=True,
+    )
+    A.mesh_object("body2", arm, bone="root", material=mat)
+
+    shape = A.read(A.export_dts())
+    assert len(shape.materials) == 2, [m.name for m in shape.materials]
+    assert shape.materials[0].reflectance_map == 1
+    assert not shape.materials[0].flags & MAT_NEVER_ENV_MAP
 
 
 def _shiny_scene(*, packing=None, count=1):
@@ -786,6 +897,52 @@ def test_vertex_animation_is_authorable():
     mesh = A.live_meshes(A.read(A.export_dts()))[0]
     assert mesh.num_frames == 4, mesh.num_frames
     assert len(mesh.verts) == mesh.num_frames * mesh.verts_per_frame
+
+
+def test_vertex_animation_previews_in_a_fresh_scene():
+    """The frame track drives the frame_NNN keys of a shape nobody imported,
+    so scrubbing shows the animation rather than one pose for every keyframe."""
+    from io_scene_dts.mapping.framepreview import wire_frame_drivers
+    from io_scene_dts.mapping.objectstate import ensure_props, path_for
+
+    A.reset()
+    arm = A.armature("Waver", bones=(("root", None), ("mount", "root")))
+    obj = A.mesh_object("cloth2", arm, bone="mount")
+    obj.shape_key_add(name="Basis")
+    for frame in range(1, 4):
+        key = obj.shape_key_add(name=f"frame_{frame:03d}", from_mix=False)
+        key.value = 0.0
+        for point in key.data:
+            point.co = Vector((point.co.x, point.co.y, point.co.z + frame))
+
+    action = A.action_for(arm, "wave", frames=4)
+    action["dts_sequence"] = True
+    bag = A.channelbag(action, arm)
+    ensure_props(arm, "frame", ["cloth"])
+    curve = bag.fcurves.new(data_path=path_for("frame", "cloth"), index=0)
+    curve.keyframe_points.add(4)
+    for index, value in enumerate((0, 1, 2, 3)):
+        point = curve.keyframe_points[index]
+        point.co = (index + 1, float(value))
+        point.interpolation = "CONSTANT"
+    curve.update()
+
+    assert wire_frame_drivers(arm, {"cloth"}) == 1
+
+    rest = [v.co.z for v in obj.data.vertices]
+    for scene_frame, expected in ((1, 0), (2, 1), (3, 2), (4, 3)):
+        bpy.context.scene.frame_set(scene_frame)
+        deps = bpy.context.evaluated_depsgraph_get()
+        evaluated = obj.evaluated_get(deps)
+        shown = evaluated.to_mesh()
+        try:
+            lift = [v.co.z - z for v, z in zip(shown.vertices, rest)]
+        finally:
+            evaluated.to_mesh_clear()
+        assert all(abs(z - expected) < 1e-5 for z in lift), (
+            f"scene frame {scene_frame}: expected frame {expected} "
+            f"(lift {expected}), got {lift[:4]}"
+        )
 
 
 def test_material_frames_are_authorable():
@@ -1426,6 +1583,115 @@ def test_a_decal_branch_projects_the_decals_own_image():
     assert images, "the branch fell back to a flat colour instead of the image"
     assert any(n.image is not None and n.image.name.startswith("scorch")
                for n in images), [getattr(n.image, "name", None) for n in images]
+
+
+def _decal_branch_shader(host_mat, index=0):
+    """The node the decal branch mixes over the host surface."""
+    from io_scene_dts.mapping.decals import _branch_label
+
+    mix = next(
+        n for n in host_mat.node_tree.nodes
+        if n.label == _branch_label(index) and n.type == "MIX_SHADER"
+    )
+    return mix.inputs[2].links[0].from_node
+
+
+def _wall_with_decal(*, self_illuminating=False):
+    """A wall carrying one decal; returns the host material the branch is in.
+
+    Everything is built after the reset -- a datablock made before it is gone
+    by the time the scene exists, which is the whole point of a fresh scene.
+    """
+    from io_scene_dts.mapping.decals import create_decal
+
+    A.reset()
+    arm = A.armature("Wall")
+    verts, faces = A.quad_geometry()
+    target = A.mesh_object("wall2", arm, bone="root", verts=verts, faces=faces,
+                           material=A.blended_material("wall_skin"))
+    decal_mat = A.blended_material("mark_skin")
+    if self_illuminating:
+        decal_mat["dts_self_illuminating"] = True
+
+    for polygon in target.data.polygons:
+        polygon.select = True
+    bpy.context.view_layer.objects.active = target
+    # create_decal rather than the operator: the operator takes the target's
+    # own material as the decal's, and the branch is wired during creation, so
+    # a distinct decal material has to be named up front
+    create_decal(arm, target, name="mark", material=decal_mat)
+    # wire_decal_branch gives the target its own copy of the host material, so
+    # the branch is in that copy and not in the one built above
+    return target.material_slots[0].material
+
+
+def test_a_decal_previews_lit_the_way_the_engine_lights_it():
+    """A decal is ordinary geometry to the engine, shaded like its host.
+
+    ``TSDecalMesh::render`` supplies the *target mesh's* normals and
+    ``initDecalMaterials`` sets GL_MODULATE without disabling GL_LIGHTING
+    (engine/ts/tsDecal.cc), so a decal falls into shadow with the surface it
+    sits on.  This previewed as an unlit Emission for a long time, which made
+    every decal look self-illuminating -- the flags round-tripped perfectly and
+    the viewport lied about all of them.
+    """
+    host_mat = _wall_with_decal()
+    shader = _decal_branch_shader(host_mat)
+    assert shader.type == "BSDF_PRINCIPLED", shader.type
+    assert shader.inputs["Roughness"].default_value == 1.0, (
+        "the engine's fixed-function lighting has no gloss term"
+    )
+
+
+def test_a_self_illuminating_decal_previews_unlit():
+    """...and the one case where the engine really does drop lighting.
+
+    ``TSMesh::setMaterial`` disables GL_LIGHTING for MAT_SELF_ILLUMINATING, so
+    the Emission is right here and only here.
+    """
+    host_mat = _wall_with_decal(self_illuminating=True)
+    assert _decal_branch_shader(host_mat).type == "EMISSION"
+
+
+def test_rebuilding_a_decal_preview_relights_an_old_branch():
+    """A scene saved before decals previewed lit has to be fixable.
+
+    ``wire_decal_branch`` refuses a label it already finds -- that is what stops
+    a re-import stacking branches -- so a branch built by an older version stays
+    unlit forever unless something rebuilds it.  Without this operator the fix
+    reaches new imports and no existing .blend, which is most of them.
+    """
+    from io_scene_dts.mapping.decals import _branch_label
+
+    host_mat = _wall_with_decal()
+    assert _decal_branch_shader(host_mat).type == "BSDF_PRINCIPLED"
+
+    # put the branch back the way the older add-on built it: unlit Emission
+    nt = host_mat.node_tree
+    mix = next(n for n in nt.nodes
+               if n.label == _branch_label(0) and n.type == "MIX_SHADER")
+    old = mix.inputs[2].links[0].from_node
+    colour = old.inputs["Base Color"].links[0].from_socket
+    nt.nodes.remove(old)
+    emit = nt.nodes.new("ShaderNodeEmission")
+    emit.label = _branch_label(0)
+    nt.links.new(colour, emit.inputs["Color"])
+    nt.links.new(emit.outputs["Emission"], mix.inputs[2])
+    assert _decal_branch_shader(host_mat).type == "EMISSION"
+
+    projector = next(o for o in bpy.data.objects if o.dts_decal.is_dts)
+    with bpy.context.temp_override(object=projector):
+        assert bpy.ops.io_scene_dts.rebuild_decal_preview(all_decals=False) == {"FINISHED"}
+
+    host_mat = projector.dts_decal.target.material_slots[0].material
+    assert _decal_branch_shader(host_mat).type == "BSDF_PRINCIPLED", (
+        "the rebuild has to relight a branch an older version left emissive"
+    )
+    # and it must not stack: exactly one branch, still reaching the output
+    labelled = [n for n in host_mat.node_tree.nodes if n.label == _branch_label(0)]
+    assert sum(1 for n in labelled if n.type == "MIX_SHADER") == 1, len(labelled)
+    output = next(n for n in host_mat.node_tree.nodes if n.type == "OUTPUT_MATERIAL")
+    assert output.inputs["Surface"].is_linked
 
 
 def test_an_operator_decal_projects_inside_its_texture():

@@ -30,6 +30,7 @@ import bpy
 from mathutils import Matrix, Quaternion, Vector
 
 from ..dtslib import ObjectState, Quat16, Sequence, Shape, Trigger, TSIntegerSet
+from ..dtslib.sequence_io import object_membership
 from ..dtslib.types import (
     SEQ_ALIGNED_SCALE,
     SEQ_ANY_SCALE,
@@ -72,9 +73,22 @@ def dts_local_matrix(q: Quat16, t) -> Matrix:
 
 
 def _action_channelbag(action: bpy.types.Action, id_obj):
-    """Return the fcurve container for id_obj, creating slot/layer as needed."""
+    """Return the fcurve container for id_obj, creating slot/layer as needed.
+
+    The slot must be the one *id_obj is bound to*, not a fresh one.  Minting a
+    slot per call put hand-written curves -- an authored vis or frame track --
+    in a bag nothing evaluates: the fcurve was there, sampled correctly on
+    export, and moved nothing in the viewport.
+    """
     if hasattr(action, "slots"):
-        slot = action.slots.new(id_type="OBJECT", name=id_obj.name)
+        anim = getattr(id_obj, "animation_data", None)
+        slot = anim.action_slot if anim is not None and anim.action == action else None
+        if slot is None:
+            slot = next(
+                (s for s in action.slots if s.name_display == id_obj.name), None
+            )
+        if slot is None:
+            slot = action.slots.new(id_type="OBJECT", name=id_obj.name)
         layer = action.layers.new("Layer") if not action.layers else action.layers[0]
         strip = layer.strips.new(type="KEYFRAME") if not layer.strips else layer.strips[0]
         return strip.channelbag(slot, ensure=True), slot
@@ -257,28 +271,33 @@ def _decal_tracks(shape: Shape, seq: Sequence) -> dict[int, list]:
 
 
 def _object_state_tracks(shape: Shape, seq: Sequence) -> dict[str, dict[str, list]]:
-    """{object name: {vis|frame|matframe: [value per keyframe]}} for a sequence."""
+    """{object name: {vis|frame|matframe: [value per keyframe]}} for a sequence.
+
+    One block of states per object in the *union* of the three matters sets --
+    an object with both a vis and a frame track has one block carrying both,
+    not one per channel.  Indexing with a per-channel ordinal reads the right
+    block only while the sets happen to agree: v22_disc's Activate fades two
+    objects and animates the frames of the second, so the frame track read out
+    of the first object's block, which has none, and arrived as sixteen zeroes.
+    """
     n = seq.num_keyframes
+    membership = object_membership(seq)
     tracks: dict[str, dict[str, list]] = {}
-    for kind, matters in (
-        ("vis", seq.vis_matters),
-        ("frame", seq.frame_matters),
-        ("matframe", seq.mat_frame_matters),
-    ):
-        for obj_index in matters.indices():
-            if obj_index >= len(shape.objects):
-                continue
-            base_name = shape.name(shape.objects[obj_index].name_index)
-            track = []
-            for kf in range(n):
-                st = shape.object_states[
-                    seq.base_object_state + matters.ordinal_of(obj_index) * n + kf
-                ]
-                track.append(
-                    st.vis if kind == "vis"
-                    else (st.frame_index if kind == "frame" else st.mat_frame_index)
-                )
-            tracks.setdefault(base_name, {})[kind] = track
+    for obj_index in membership.indices():
+        if obj_index >= len(shape.objects):
+            continue
+        first = seq.base_object_state + membership.ordinal_of(obj_index) * n
+        if first + n > len(shape.object_states):
+            continue  # a short state table; the sequence names more than it has
+        states = shape.object_states[first : first + n]
+        base_name = shape.name(shape.objects[obj_index].name_index)
+        by_kind = tracks.setdefault(base_name, {})
+        if seq.vis_matters.test(obj_index):
+            by_kind["vis"] = [st.vis for st in states]
+        if seq.frame_matters.test(obj_index):
+            by_kind["frame"] = [st.frame_index for st in states]
+        if seq.mat_frame_matters.test(obj_index):
+            by_kind["matframe"] = [st.mat_frame_index for st in states]
     return tracks
 
 

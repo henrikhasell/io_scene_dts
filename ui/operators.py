@@ -264,6 +264,194 @@ class DTS_OT_migrate_scene(Operator):
         return {"FINISHED"}
 
 
+class DTS_OT_add_reflectance(Operator):
+    """Give a material a reflectance map, from nothing.
+
+    The map is a node, not a property -- the shader is where it lives, so that
+    export and the viewport read one thing -- which leaves a material that has
+    never had one with nothing for a panel to draw.  This is the button that
+    makes the node, and the image slot appears once it exists.  Without it the
+    feature is authorable only by hand in the node editor, which is the
+    billboard problem in CLAUDE.md wearing a different hat.
+    """
+
+    bl_idname = "io_scene_dts.add_reflectance"
+    bl_label = "Add Reflectance Map"
+    bl_description = (
+        "Add an environment-map mask to this material and wire it up.  The mask "
+        "says which texels reflect; pick or paint an image for it afterwards"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        mat = getattr(context, "material", None)
+        return mat is not None and mat.use_nodes
+
+    def execute(self, context):
+        from ..mapping import envmap
+
+        mat = context.material
+        if envmap.group_node(mat) is not None:
+            self.report({"INFO"}, "this material already has a reflectance map")
+            return {"CANCELLED"}
+
+        nt = mat.node_tree
+        bsdf = next((n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"), None)
+        if bsdf is None:
+            self.report(
+                {"ERROR"},
+                "this material has no Principled BSDF to mix the reflection over; "
+                "additive and subtractive materials never env-map in the engine",
+            )
+            return {"CANCELLED"}
+
+        node = nt.nodes.new("ShaderNodeTexImage")
+        node.location = (bsdf.location.x - 400, bsdf.location.y - 480)
+        # a mask is data, not colour: an sRGB curve would change which texels
+        # the engine reads as reflective
+        node.label = "Reflectance"
+        if not envmap.wire(mat, node.outputs["Color"]):
+            nt.nodes.remove(node)
+            return {"CANCELLED"}
+        # `dts_never_env_map` is deliberately not touched.  Export already
+        # clears the bit for any material showing a reflectance map and sets it
+        # for any fresh material without one, so writing it here would be a
+        # stored copy of something derived -- and it would outlive the map,
+        # leaving a material env-mapping with nothing to mask it.
+        return {"FINISHED"}
+
+
+class DTS_OT_remove_reflectance(Operator):
+    bl_idname = "io_scene_dts.remove_reflectance"
+    bl_label = "Remove Reflectance Map"
+    bl_description = "Take the environment-map mask and its preview back out of this material"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        from ..mapping import envmap
+
+        mat = getattr(context, "material", None)
+        return mat is not None and envmap.group_node(mat) is not None
+
+    def execute(self, context):
+        from ..mapping import envmap
+
+        mat = context.material
+        socket = envmap.mask_socket(mat)
+        source = socket.node if socket is not None else None
+        envmap.unwire(mat)
+        # only if it was there for the mask alone.  A combined material feeds
+        # the mask off the diffuse node's alpha, and that node is still the
+        # material's texture.
+        if source is not None and source.type == "TEX_IMAGE":
+            if not any(out.is_linked for out in source.outputs):
+                mat.node_tree.nodes.remove(source)
+        return {"FINISHED"}
+
+
+class DTS_OT_rebuild_env_map(Operator):
+    """Move a reflectance map from Metallic onto the environment-map preview.
+
+    Materials imported before ``mapping/envmap.py`` existed have theirs on the
+    Principled's Metallic input.  Those still export correctly, so this is not a
+    migration and does not run on load: it changes the user's node tree, which
+    is theirs, and it is offered rather than done.
+    """
+
+    bl_idname = "io_scene_dts.rebuild_env_map"
+    bl_label = "Rebuild Environment Preview"
+    bl_description = (
+        "Re-wire reflectance maps that are still on the Principled BSDF's Metallic "
+        "input so they show the engine's environment map instead"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    all_materials: BoolProperty(
+        name="All Materials",
+        description="Every material in the file, not just the active one",
+        default=False,
+    )
+
+    def execute(self, context):
+        from ..mapping import envmap, materials
+
+        if self.all_materials:
+            targets = list(bpy.data.materials)
+        else:
+            targets = [context.material] if getattr(context, "material", None) else []
+
+        moved = 0
+        for mat in targets:
+            if not mat.use_nodes or envmap.group_node(mat) is not None:
+                continue
+            node = materials._image_node_feeding(mat, "Metallic")
+            if node is None:
+                continue
+            bsdf = next((n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+            socket = bsdf.inputs["Metallic"]
+            source = socket.links[0].from_socket
+            for link in list(socket.links):
+                mat.node_tree.links.remove(link)
+            socket.default_value = 0.0
+            if envmap.wire(mat, source):
+                moved += 1
+        self.report({"INFO"}, f"re-wired {moved} material(s)")
+        return {"FINISHED"}
+
+
+class DTS_OT_rebuild_decal_preview(Operator):
+    """Build a decal's shader branch again from what it says now.
+
+    The sibling of ``rebuild_env_map``, and it exists for the same reason: a
+    branch is built once and then left alone, so an improvement to how decals
+    preview reaches new imports and no existing scene.  A scene saved while
+    decals previewed as unlit Emission keeps that until something rebuilds it.
+
+    Preview only.  Export recomputes coverage and reads the decal's properties,
+    never this graph, so nothing here changes what gets written.
+    """
+
+    bl_idname = "io_scene_dts.rebuild_decal_preview"
+    bl_label = "Rebuild Decal Preview"
+    bl_description = (
+        "Rebuild the shader branch that previews this decal, picking up its "
+        "current material and how the add-on now shades decals.  Affects the "
+        "viewport only; export is unchanged"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    all_decals: BoolProperty(
+        name="Every Decal",
+        description="Rebuild every decal in the scene, not just the selected one",
+        default=True,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        from ..mapping.decals import decal_objects
+
+        obj = context.object
+        if obj is not None and obj.type == "EMPTY" and obj.dts_decal.is_dts:
+            return True
+        return bool(decal_objects())
+
+    def execute(self, context):
+        from ..mapping.decals import decal_objects, rebuild_branch
+
+        obj = context.object
+        if self.all_decals or obj is None or not obj.dts_decal.is_dts:
+            targets = decal_objects()
+        else:
+            targets = [obj]
+        # index order, so chained branches come back in the order they were in
+        rebuilt = sum(1 for d in sorted(targets, key=lambda o: o.dts_decal.index)
+                      if rebuild_branch(d))
+        self.report({"INFO"}, f"rebuilt {rebuilt} decal preview(s)")
+        return {"FINISHED"}
+
+
 class DTS_OT_dismiss_migration_note(Operator):
     bl_idname = "io_scene_dts.dismiss_migration_note"
     bl_label = "Dismiss"
@@ -293,6 +481,10 @@ def list_buttons(layout, path: str, *, move: bool = False) -> None:
 CLASSES = (
     DTS_OT_add_decal,
     DTS_OT_refresh_decal,
+    DTS_OT_add_reflectance,
+    DTS_OT_remove_reflectance,
+    DTS_OT_rebuild_env_map,
+    DTS_OT_rebuild_decal_preview,
     DTS_OT_list_add,
     DTS_OT_list_remove,
     DTS_OT_list_move,

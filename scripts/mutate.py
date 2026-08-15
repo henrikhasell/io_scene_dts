@@ -34,6 +34,7 @@ REPO = Path(__file__).resolve().parent.parent
 RUNNERS = {
     "sorted-threading": "pytest",
     "decal-material-counts-as-translucent": "pytest",
+    "mask-reduced-by-red": "pytest",
 }
 
 # name -> (file, find, replace, tests that must fail)
@@ -219,9 +220,89 @@ MUTATIONS = {
     # -- reflectance maps -----------------------------------------------
     "reflectance-import": (
         "mapping/materials.py",
-        '        links.new(reflectance.outputs["Color"], bsdf.inputs["Metallic"])',
+        '        envmap.wire(bmat, reflectance.outputs["Color"])',
         "        pass",
         ["test_a_self_reflectance_imports_as_two_images"],
+    ),
+    # -- the environment map ----------------------------------------------
+    # The one mutation that earns the render test.  Without the Z flip the
+    # group computes a sphere map in Blender's camera space instead of GL's
+    # eye space -- a graph that still builds, still exports the same bytes, and
+    # reflects the wrong half of the environment.  Nothing that reads a file
+    # back can see it.
+    "envmap-camera-space": (
+        "mapping/envmap.py",
+        '    eye_gl.inputs[1].default_value = (1.0, 1.0, -1.0)',
+        "    eye_gl.inputs[1].default_value = (1.0, 1.0, 1.0)",
+        ["test_the_group_computes_the_engines_sphere_map"],
+    ),
+    "envmap-normal-space": (
+        "mapping/envmap.py",
+        '    normal_gl.inputs[1].default_value = (1.0, 1.0, -1.0)',
+        "    normal_gl.inputs[1].default_value = (1.0, 1.0, 1.0)",
+        ["test_the_group_computes_the_engines_sphere_map"],
+    ),
+    # the reflectance is read off the group now; if that lookup goes, every
+    # material authored the new way silently exports with no reflectance at all
+    "envmap-mask-anchor": (
+        "mapping/materials.py",
+        '        return _image_node_upstream(group.inputs["Mask"])',
+        "        return None",
+        ["test_a_reflectance_map_is_authorable"],
+    ),
+    # an environment map with no image must read as "do not reflect", not as
+    # "reflect black" -- the difference between an unset scene looking untouched
+    # and every reflective material going dark
+    "envmap-unset-strength": (
+        "mapping/envmap.py",
+        "        value.outputs[0].default_value = strength if image is not None else 0.0",
+        "        value.outputs[0].default_value = strength",
+        ["test_no_environment_image_means_no_reflection"],
+    ),
+    # a decal is lit by the engine unless its material says otherwise; the
+    # unconditional Emission this replaced made every decal preview as though
+    # it were self-illuminating
+    "decal-preview-unlit": (
+        "mapping/decals.py",
+        "    if _decal_is_unlit(mat):",
+        "    if True:",
+        ["test_a_decal_previews_lit_the_way_the_engine_lights_it"],
+    ),
+    "decal-preview-ignores-self-illumination": (
+        "mapping/decals.py",
+        '    if mat.get("dts_self_illuminating"):\n        return True',
+        '    if False:\n        return True',
+        ["test_a_self_illuminating_decal_previews_unlit"],
+    ),
+    # the exporter reduced a colour mask by its red channel while the shader
+    # reduced it by luminance, so a hand-painted off-grey mask exported as a
+    # different mask than the viewport was showing
+    "mask-reduced-by-red": (
+        "mapping/texture_split.py",
+        "    if red == green == blue:",
+        "    if True:",
+        ["test_merge_reduces_a_colour_mask_by_luminance"],
+    ),
+    # the rebuild has to *remove* the old branch first: wire_decal_branch
+    # refuses a label it already finds, so without the removal the operator
+    # reports success and changes nothing
+    "decal-rebuild-keeps-the-old-branch": (
+        "mapping/decals.py",
+        "            remove_decal_branch(nt, label)\n            rebuilt = True",
+        "            rebuilt = True",
+        ["test_rebuilding_a_decal_preview_relights_an_old_branch"],
+    ),
+    "reflection-amount-export": (
+        "mapping/materials.py",
+        "                reflection_amount=float(bmat.dts_material.reflection_amount),",
+        "                reflection_amount=1.0,",
+        ["test_reflection_amount_is_authorable"],
+    ),
+    "reflection-amount-migration-keeps-old-key": (
+        "props/migrate.py",
+        "    del mat[LEGACY_REFLECTION_AMOUNT_KEY]",
+        "    pass",
+        ["test_migration_converts_the_old_reflection_amount"],
     ),
     # the gate in the *permissive* direction: without the env-map check a
     # translucent material's alpha would be read as a reflectance mask too,
@@ -715,6 +796,41 @@ MUTATIONS = {
         "    if version < 22:\n        w.u8(1 if seq.flags & SEQ_BLEND else 0)",
         "    if False:\n        w.u8(1 if seq.flags & SEQ_BLEND else 0)",
         ["test_roundtrip"],
+    ),
+    # A key added from Python arrives at 1.0, so leaving it there shows every
+    # frame of the animation summed onto the rest pose.
+    "frame-keys-rest-at-zero": (
+        "mapping/shape_to_blender.py",
+        "        sk.value = 0.0",
+        "        pass",
+        ["test_imported_frames_rest_at_the_first_frame"],
+    ),
+    # Object states are one block per object in the union of the matters sets;
+    # indexing with a per-channel ordinal reads another object's block, and the
+    # frame track arrives as zeroes.
+    "object-state-union-ordinal": (
+        "mapping/sequences.py",
+        "        first = seq.base_object_state + membership.ordinal_of(obj_index) * n",
+        "        first = seq.base_object_state + seq.frame_matters.ordinal_of(obj_index) * n",
+        ["test_frame_track_previews_the_vertex_animation"],
+    ),
+    # The driver picks the key by its position among the frame keys; an offset
+    # one out previews a neighbouring frame.
+    "frame-driver-position": (
+        "mapping/framepreview.py",
+        'drv.expression = f"max(0.0, 1.0 - abs(frame - {position}))"',
+        'drv.expression = f"max(0.0, 1.0 - abs(frame - {position + 1}))"',
+        [
+            "test_frame_track_previews_the_vertex_animation",
+            "test_vertex_animation_previews_in_a_fresh_scene",
+        ],
+    ),
+    # Wiring is what makes the track visible at all.
+    "frame-preview-wiring": (
+        "mapping/shape_to_blender.py",
+        "            frame_wired = wire_frame_drivers(arm_obj, frame_names, warnings)",
+        "            frame_wired = 0",
+        ["test_frame_track_previews_the_vertex_animation"],
     ),
 }
 

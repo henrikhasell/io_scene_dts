@@ -10,8 +10,9 @@ Mapping conventions (mirrored by blender_to_shape):
   dts_subshape, dts_detail_size, dts_node_index.
 - Rigid meshes are parented to their node's bone; skins get vertex groups +
   an armature modifier.
-- Multi-frame meshes import as shape keys; sorted meshes record how their
-  cluster tree should be rebuilt on export (dts_sorted_mode).
+- Multi-frame meshes import as shape keys, driven by the sequences' frame track
+  (mapping/framepreview.py); sorted meshes record how their cluster tree should
+  be rebuilt on export (dts_sorted_mode).
 - Decals import as projector empties, or as a copy of the faces they cover
   when "Import Decals as Meshes" is on.  A DECAL_MESH in an object's own slots
   is skipped either way; the decal table is what import walks.
@@ -46,6 +47,7 @@ from ..dtslib.types import (
 
 from . import matframes
 from .decals import apply_default_states, import_decal_meshes, import_decals
+from .framepreview import apply_default_frame, wire_frame_drivers
 from .materials import is_translucent, material_to_blender, reset_texture_cache
 from .naming import object_display_name
 from .nla import scene_fps, stack_actions
@@ -238,6 +240,16 @@ def shape_to_blender(
             warnings.append(
                 f"visibility: {len(names)} object(s) driven across {wired} mesh(es); "
                 f"{len(fades)} fade via alpha ({mats} material(s) rewired)"
+            )
+        # the same trick for the frame track: the shape keys are the frames, so
+        # the property picks which one shows
+        frame_names = animated_object_names(actions, "frame")
+        if frame_names:
+            apply_default_frame(arm_obj, frame_names)
+            frame_wired = wire_frame_drivers(arm_obj, frame_names, warnings)
+            warnings.append(
+                f"vertex animation: {len(frame_names)} object(s) previewed across "
+                f"{frame_wired} mesh(es)"
             )
         if shape.decals:
             # re-seed the states here, after the sequences have created their
@@ -579,8 +591,12 @@ def _add_frame_shape_keys(mesh: Mesh, bobj) -> None:
     bobj.shape_key_add(name="Basis")
     for f in range(1, mesh.num_frames):
         sk = bobj.shape_key_add(name=f"frame_{f:03d}", from_mix=False)
+        # a key added from Python arrives at value 1.0, so every frame would
+        # otherwise stack on the rest pose and show the sum of the animation
+        sk.value = 0.0
         for vi in range(min(vpf, len(bobj.data.vertices))):
             sk.data[vi].co = Vector(mesh.verts[f * vpf + vi])
+    bobj.active_shape_key_index = 0
 
 
 def _parent_rigid(bobj, arm_obj, node_index, bone_name_by_node, node_mats) -> None:

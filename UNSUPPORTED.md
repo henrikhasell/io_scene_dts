@@ -88,11 +88,6 @@ encoded-normal table) or detail levels stop matching each other.
 The data survives a round trip, but Blender shows you nothing, so there is no
 way to check your work short of re-reading the exported file.
 
-- **`frame` (vertex animation) tracks.**  Multi-frame meshes import as shape
-  keys `frame_001…frame_NNN`, and the sequence's `frame` track is keyframed on
-  the armature as `dts_frame_<object>` — but nothing drives the shape keys from
-  it.  The frames are there and the animation is there; they are not connected.
-  `mapping/shape_to_blender.py:581`
 - **`matframe` (material/UV animation) tracks.**  Keyframed as
   `dts_mat_frame_<object>` on the armature, no preview at all.
 - **The material frames themselves.**  A mesh with `num_mat_frames > 1` is a
@@ -106,7 +101,7 @@ way to check your work short of re-reading the exported file.
 - **`merge_indices`**, the legacy LOD-morph table.  An int array on the mesh
   object (`dts_merge_indices`), editable only as raw numbers in the N-panel.
   Order matters and entries repeat, so a vertex group cannot hold it.  See §4
-  for what an edit costs. `mapping/shape_to_blender.py:488`
+  for what an edit costs. `mapping/shape_to_blender.py:500`
 - **Sorted meshes.**  A `SORTED_MESH` is the engine's answer to translucency:
   its triangles are partitioned into a small tree of clusters, and at draw time
   the engine walks the tree from the camera to get a back-to-front order without
@@ -197,38 +192,41 @@ way to check your work short of re-reading the exported file.
   Scaling a pose bone now produces scale animation; it used to be a
   `dts_scale_anim` blob that the bone had no connection to.  Nothing shows you
   that a scale channel means *node* scale rather than object scale.
-  `mapping/sequences.py:176`
+  `mapping/sequences.py:190`
 - **Bump and detail maps**, plus `detail_scale`.  Round-trip as `dts_*` custom
   props on the material; the Principled BSDF the importer builds ignores both.
   Neither is used anywhere in the 852-file corpus — 0 materials of 3185 set
   either slot, and `detail_scale` is 1.0 in all of them.  A map referencing a
   material that was not exported is dropped with a warning.
-  `mapping/materials.py:1150`
+  `mapping/materials.py:1172`
   Two further ways a map slot can be lost or silently retargeted are in §4.
-  The reflectance map is no longer on this list; see below.
-- **`reflection_amount`**, the scalar the engine multiplies the whole
-  reflection by.  Round-trips as a custom prop and previews as nothing at all —
-  it is 1.0 in 265 of the 270 env-mapped corpus materials, 0.5 in 3 and 0.1 in
-  2. `mapping/materials.py:1151`
+  Neither the reflectance map nor `reflection_amount` is on this list any more;
+  both are rendered, and what is left of the gap between the preview and the
+  engine is below.
 - **Material flags.**  Eleven of the fourteen bits have a checkbox, in Material
   Properties → DTS Material.  Four of them —`MAT_MIP_MAP_ZERO_BORDER` (8),
   `MAT_IFL_FRAME` (28), `MAT_DETAIL_MAP_ONLY` (29) and `MAT_BUMP_MAP_ONLY`
   (30) — used to survive only inside a packed `dts_flags` word, so setting one
   meant computing an integer by hand.  None of the four occurs anywhere in the
   630-file corpus.  Nothing previews what any of them does.
-  `mapping/materials.py:73`  `MAT_IFL_MATERIAL` (27) is not among them either:
+  `mapping/materials.py:74`  `MAT_IFL_MATERIAL` (27) is not among them either:
   it is derived from the material's IFL checkbox, the one that also owns its
   frame list.  `MAT_REFLECTANCE_MAP_ONLY` (31) is no longer only
   a checkbox: export sets it on the material-list entries it invents to hold a
   separate reflectance texture.
-- **The reflectance map previews as `Metallic`, which is not what the engine
-  does.**  A DTS reflectance map is a per-texel mask on a spherical environment
-  map, scaled by `reflection_amount`; Blender's Metallic input is a PBR
-  parameter that turns the surface into metal.  The mapping was chosen so that
-  the shader is the source of truth for *which image is the reflectance* — the
-  same reason the blend bits live in the graph rather than in a property — and
-  so a bright mask looks reflective in the viewport.  It is a handle, not a
-  render. `mapping/materials.py:523`
+- **Which detail levels reflect.**  The engine env-maps only details 0 and 1
+  (`mMaxEnvironmentMapDL`, `tsShapeInstance.cc:151`) and cross-fades the
+  reflection out across the transition into detail 2.  A Blender material is
+  one datablock shared by every detail level that uses it, so the preview
+  reflects at all of them.  Nothing is lost from the file — the gate is the
+  renderer's, not the shape's — but a distant LOD looks shinier here than in
+  the game.  See also §7 on why this is not simply a missing feature.
+- **Fade and fog scale the reflection in the engine and not here.**  The mask
+  rides the same vertex alpha that visibility fades and fog multiply
+  (`vertexAlpha.current = vis * emap * fog * always`,
+  `tsShapeInstance.h:539`), so a shape fading out loses its reflection at the
+  same rate.  Visibility already drives alpha through the object-state curves;
+  the reflection term ignores it.
 
 
 All three object-state channels — `vis`, `frame` and `matframe` — plus decal
@@ -251,8 +249,21 @@ it past that cap and rendered the body as broken-material magenta.  The object
 half of the mask has the same constraint and the same answer — an Object Info
 comparison rather than an attribute, because a material is shared and 5999 of
 the corpus's 6053 decals sit on one another DTS object also uses, so the box
-alone drew a hull's burn on the turret as well.  `mapping/decals.py:740`  Both
+alone drew a hull's burn on the turret as well.  `mapping/decals.py:817`  Both
 still lose something: see §4.
+
+The branch is **lit**, because the engine lights decals.  `TSDecalMesh::render`
+hands the decal its *target mesh's* normals and `initDecalMaterials` sets
+`GL_MODULATE` without ever disabling `GL_LIGHTING`
+(`engine/ts/tsDecal.cc`), so a decal falls into shadow with the surface it sits
+on; only `MAT_SELF_ILLUMINATING` takes lighting off, which `TSMesh::setMaterial`
+does. This was an unlit `Emission` for every decal until it was measured against
+that, which meant every decal previewed as though it were self-illuminating —
+the flag round-tripped perfectly and the viewport contradicted it.
+`mapping/decals.py:579`  A branch is built once and never revisited, so
+scenes saved before that keep the Emission until **Rebuild Decal Preview**
+(Object Properties → DTS Decal) rebuilds it; the same button is what picks up a
+decal whose *material* has been changed since it was wired.
 
 A gate hides a branch but never stops the GPU running it, so sharing was also
 what made this expensive: every mesh on a material paid for every decal on it.
@@ -266,7 +277,7 @@ shape whose meshes hold 20 Blender materials still writes the 15 the file had.
 carried by the shader the importer builds — `surface_render_method` for
 translucency, `Transparent BSDF + Emission -> Add Shader` for additive — and
 export reads the flags back out of it, so editing the material in the node
-editor changes the file. `mapping/materials.py:374`
+editor changes the file. `mapping/materials.py:375`
 
 One caveat specific to decals, which does not occur in the Tribes 2 corpus:
 
@@ -283,14 +294,14 @@ Two more, both consequences of the object gate above:
   one object, so switching to a coarser detail collection shows no decal even
   though the file has one there.  Nothing is lost — this is the preview being
   narrower than the file, not the file being narrower than the scene.
-  `mapping/decals.py:740`
+  `mapping/decals.py:817`
 - **`pass_index` on a decal's target belongs to the add-on.**  The gate needs a
   per-object number a shader can read, and Object Index is the only one that
   costs no attribute slot, so targeting a mesh with a decal overwrites whatever
   pass index it had.  The value assigned is recorded on the object as
   `dts_decal_host`, and a pass index edited by hand afterwards is treated as
   the user reclaiming the field: the next refresh takes a fresh number rather
-  than trusting the old one.  `mapping/decals.py:363`
+  than trusting the old one.  `mapping/decals.py:364`
 
 The larger decal caveat -- that the covered faces themselves are not preserved
 -- is a *dropped* item and is in §4.
@@ -313,7 +324,7 @@ you export.
   levels with triangles at one of them.  Collision and LOS details (negative
   sizes) are never treated as LODs and are always imported — dropping one would
   turn a re-exported shape into one the engine cannot collide with.  Warned at
-  import.  `mapping/shape_to_blender.py:668`
+  import.  `mapping/shape_to_blender.py:684`
 - **Decals imported by `Import Decals as Meshes`, which is off by default.**
   On, each decal arrives as a copy of the faces the file says it covers, one
   mesh per detail level, and no projector is built.  That is the one thing the
@@ -324,7 +335,7 @@ you export.
   the sequences' `decal_matters` tracks are dropped with them.  The meshes are
   kept out of the object list rather than emitted as phantom objects.  Warned
   at import and again at export, which names `Migrate DTS Scene` as the way to
-  turn them into projectors.  `mapping/shape_to_blender.py:191`
+  turn them into projectors.  `mapping/shape_to_blender.py:193`
 - **Ground frames, when the export version is v23 or v22.**  The third *asked
   for* loss, and the one asked for least directly: the ask is the version, not
   the drop.  Those two versions have nowhere to put ground frames — the engine
@@ -375,7 +386,7 @@ you export.
   **Combine Diffuse and Reflectance** for the whole shape is what makes this
   reachable for a material the author never thought about; setting that
   material to *Separate* avoids it entirely, since separate textures have no
-  size relationship.  `mapping/materials.py:1067,1075`
+  size relationship.  `mapping/materials.py:1089,1097`
 - **The decals of a shape exported with `Export Decals as Meshes`.**  Baking
   writes each decal as ordinary geometry and leaves `shape.decals` empty, so
   the projection, the coverage rule and the decal's identity are all gone from
@@ -385,12 +396,12 @@ you export.
   the option doing what it says rather than a defect, and it is off by default;
   it is here because the loss is invisible in the exported file, which is a
   perfectly ordinary shape.  Warned at export, naming the count.
-  `mapping/decals.py:1071`
+  `mapping/decals.py:1145`
 - **A decal that covers no faces at any detail level, when baking.**  The
   projected form writes a decal entry whose mesh slots are all null, which a
   later import can still show as a projector; the baked form has nothing to
   write and the decal disappears from the file entirely.  Warned, naming the
-  decal.  `mapping/decals.py:1154`
+  decal.  `mapping/decals.py:1228`
 - **Sequences re-export larger than they were read.**  `gman`'s node rotations
   go from 13,556 to 18,588 entries, which is most of that shape's growth.  This
   predates the geometry work and is not caused by it: the exporter writes a key
@@ -472,7 +483,7 @@ you export.
   armature; its channels are dropped` — expected when applying a sequence to a
   different skeleton. `mapping/dsq.py:60`
 - **Bone channels with no DTS node.**  A bone you add in Blender animates
-  nothing on export. `mapping/sequences.py:396`, `mapping/dsq.py:179`
+  nothing on export. `mapping/sequences.py:415`, `mapping/dsq.py:179`
 - **Duplicate detail sizes for one object.**  `duplicate detail 'X' for object
   'Y'; 'Z' skipped`. `mapping/blender_to_shape.py:161`
 - **`dts_bump_map` and `dts_detail_map` on a material created in Blender.**
@@ -483,9 +494,9 @@ you export.
   exports as `bump=NO_MAP, detail=NO_MAP`, with no warning.  Adding
   `dts_reflectance_map` as well makes all three take effect; imported materials
   always carry all three, so they are unaffected.
-  `mapping/materials.py:1174`  Reflectance is the exception now that the shader
-  owns it: an image feeding `Metallic` sets that slot whether or not any of the
-  props are there.
+  `mapping/materials.py:1196`  Reflectance is the exception now that the shader
+  owns it: an image reaching the environment-map group's **Mask** sets that slot
+  whether or not any of the props are there.
 - **Whatever texture was already sitting where an export lands.**  Export
   writes a `.png` for every texture the shape names — made in Blender or loaded
   from disk, painted on or untouched — and overwrites without warning.
@@ -533,26 +544,26 @@ you export.
   already writes zeros and 11 shipped entries already are zero, so this is a
   shape the engine demonstrably accepts; it is still a byte change on
   re-export.  `numFrames` is the one of the three that is real, and it becomes
-  the length of the frame list.  `mapping/materials.py:910`
+  the length of the frame list.  `mapping/materials.py:932`
 - **An IFL material whose `.ifl` cannot be found imports with no frames.**  The
   material keeps its checkbox and still gets its table entry, so the shape is
   not silently un-animated, but there is nothing to preview and export writes
   no `.ifl`.  All 35 the corpus names do resolve — but only from a tree where
   `shapes/` and `textures/` are siblings, which is not how every game lays them
-  out. `mapping/materials.py:656`
+  out. `mapping/materials.py:678`
 - **The identity of a map target whose name is not unique.**  Map slots are
   stored as material *names* so they survive reordering, and resolved back
   through `index_by_name = {m.name.lower(): i ...}`, where a later entry
   overwrites an earlier one.  Material names are not unique in real shapes —
   the importer says so itself, and keys material identity on
-  `dts_material_index` for that reason (`mapping/materials.py:830`) — so a slot
+  `dts_material_index` for that reason (`mapping/materials.py:852`) — so a slot
   pointing at the *first* of two materials named `glass` comes back pointing at
   the last, silently.  104 of the 630 corpus shapes have duplicate material
   names, but none of them has a map slot targeting a duplicated name, so no
-  real file is currently mistranslated. `mapping/materials.py:1155,1164`
+  real file is currently mistranslated. `mapping/materials.py:1177,1186`
   Reflectance slots resolved from the shader do not join this hazard: they are
   matched on the image *datablock*, whose name Blender does keep unique.
-  `mapping/materials.py:1092`
+  `mapping/materials.py:1114`
 
 ---
 
@@ -578,33 +589,33 @@ exist, so adding a bone channel marks its node instead of being ignored.
   export, which is why the panel shows the blend mode as a computed label
   rather than three checkboxes.  They are not stored on the material at all:
   a prop beside the graph would be a second source for one value, and older
-  scenes have theirs deleted on load (`props/migrate.py:375`).
-  `mapping/materials.py:973`  `MAT_NEVER_ENV_MAP` is a fourth exception, but in
-  one direction only: a material with an image feeding `Metallic` exports with
+  scenes have theirs deleted on load (`props/migrate.py:402`).
+  `mapping/materials.py:995`  `MAT_NEVER_ENV_MAP` is a fourth exception, but in
+  one direction only: a material showing a reflectance map exports with
   env-mapping *on* however the box is set, because a reflectance map the engine
-  is told never to read is not a feature.  With no such image the checkbox
-  still wins. `mapping/materials.py:1195`
+  is told never to read is not a feature.  With no such map the checkbox
+  still wins. `mapping/materials.py:1217`
 - **The blend state of a material that fades.**  The visibility and decal
   wiring force `surface_render_method = BLENDED` so a fade renders at all,
   which on an opaque material would otherwise read back as `MAT_TRANSLUCENT`.
   The state from before the fade is recorded once in `dts_blend_before_fade`,
   and *that* is what export reads — so on a faded material, switching the
   render method by hand does not reach the file.  Delete the property to make
-  the current setting count.  `mapping/materials.py:351`,
-  `mapping/visibility.py:185`.  Decals no longer force a blend state at all:
+  the current setting count.  `mapping/materials.py:352`,
+  `mapping/visibility.py:227`.  Decals no longer force a blend state at all:
   the decal branch mixes two opaque shaders, so it never had to.
 
 ---
 
 ## 6. Not a DTS feature, but missing
 
-- **No warning when a material ignores an unticked Combine box.**  One image on
-  both Base Color and Metallic *is* the combined packing — that is how an
+- **No warning when a material ignores an unticked Combine box.**  One image
+  feeding both Base Color and the reflectance mask *is* the combined packing — that is how an
   env-mapped translucent material imports, since its alpha is transparency and
   splitting it would change what the engine draws — so export keeps it combined
   however the box is set, and says nothing.  The box is honoured for every
-  material whose two sockets hold different images, which is all of them once a
-  reflectance has been split out.  `mapping/materials.py:1059`
+  material whose diffuse and mask are different images, which is all of them
+  once a reflectance has been split out.  `mapping/materials.py:1081`
 - **No warning when a sequence's object-state tracks are lost to a `.dsq`.**
   The loss itself is the format's and is in §7; saying nothing about it is not.
   `mapping/dsq.py`
@@ -616,7 +627,7 @@ exist, so adding a bone channel marks its node instead of being ignored.
   states) are still raw entries in the N-panel's Custom Properties: a real
   place to edit them, but not a designed one.  The DTS Material panel now draws
   for any material rather than only an imported one, because **Reflectance
-  Packing** has to be reachable in a fresh scene. `ui/panels.py:345`
+  Packing** has to be reachable in a fresh scene. `ui/panels.py:354`
 - Sub-shapes have no authoring path: they can be preserved but not created
   without hand-setting `dts_subshape`.
 - A scene saved by v1.2 or earlier converts on load (`props/migrate.py`), but
@@ -695,7 +706,27 @@ the same answer either way, and because someone will otherwise try to fix them.
   bit is what this add-on reads it by.  270 of the 3185 corpus materials are
   env-mapped and 6 of those are also translucent; on those 6 transparency wins,
   the texture is not taken apart, and a warning says so.
-  `mapping/materials.py:599`
+  `mapping/materials.py:621`
+- **The environment map itself is not in the shape.**  A `.dts` says which
+  texels reflect and by how much; *what* they reflect comes from the mission —
+  entry 6 of the sky's `.dml` (`EnvMapMaterialOffset`, `sky.h:227`), which the
+  scene graph hands to every shape it draws (`sceneGraph.cc:149`).  The same
+  shape reflects a different sky in a different mission, so there is no answer
+  for the add-on to import and none to export.  It is a scene-level preview
+  setting instead — Scene Properties → DTS Environment Map — and with none
+  chosen, nothing reflects.  So does the shape-level strength the engine
+  multiplies by, which is 1.0 for everything the game renders
+  (`shapeBase.cc:2484`) and a slider in the SDK's own shape viewer
+  (`showTSShape.cc:520`).  `mapping/envmap.py`
+- **Two engine artefacts are deliberately not reproduced.**  In the single-pass
+  `MULTI_1` path a `MAT_NEVER_ENV_MAP` material still runs through the
+  interpolate unit with the env alpha forced to 1 (`tsMesh.cc:1110`), so an
+  opaque one reads as fully reflective; and the `MULTI_3` path binds a separate
+  reflectance texture (`tsMesh.cc:921`) that its combine chain then never
+  samples (`tsMesh.cc:496-511`). Both are bugs in a renderer, not statements
+  about the format — the two-pass path skips flagged materials outright and the
+  separate texture is plainly meant to be the mask — so the preview matches what
+  the code means rather than what it does.
 
 ### Blender
 
@@ -703,14 +734,28 @@ the same answer either way, and because someone will otherwise try to fix them.
   factors *plus* an orientation quaternion naming the axes to measure along; a
   pose bone's scale is three numbers in its own space and cannot express the
   second half.  Refused on export rather than half-written.  No sequence in the
-  630-shape corpus uses it, so nothing real is blocked. `mapping/sequences.py:569`
+  630-shape corpus uses it, so nothing real is blocked. `mapping/sequences.py:581`
 - **EEVEE has no subtractive blend mode.**  `MAT_SUBTRACTIVE` is encoded as the
   additive graph with the emission colour inverted — this add-on's own
   convention, chosen so the flag has somewhere to live that export can read
   back.  It round-trips exactly; it does not render the way the engine draws
   it, and no viewport setting would make it.  No shape in the 630-file corpus
   is subtractive, so the encoding has never been checked against real art.
-  `mapping/materials.py:293`
+  `mapping/materials.py:294`
+- **A Principled BSDF's shading parameters have no DTS field.**  Roughness,
+  Specular, IOR, Coat and the rest describe a lighting model the engine does
+  not have: a DTS material is a texture plus fourteen flag bits, and the
+  renderer is fixed-function OpenGL with no gloss term at all.  They are not
+  dropped so much as never expressible, so a shape exported and re-imported
+  comes back with the importer's own defaults — Roughness 1.0
+  (`mapping/materials.py:863`) — however the material was set before.  Only the
+  Base Color texture, the reflectance mask, the blend mode and the flags make
+  the trip.  Measured, the cost is small: a panel exported and re-imported
+  differs from its source by at most 0.0185 in linear output with the
+  environment map off, and forcing the roughness back to what the source had
+  does not improve it.  The reason is that the engine has no gloss term either,
+  so 1.0 is close to what it draws; what a *round trip* loses is the ability to
+  light the shape differently in Blender than the game will.
 - **`Mesh.uv_layers` caps at 8**, silently — `uv_layers.new()` returns without
   adding — while real shapes reach 62 material frames.  That cap is why frames
   1..n-1 are `FLOAT2` point attributes rather than UV layers, which is in turn
@@ -723,19 +768,19 @@ the same answer either way, and because someone will otherwise try to fix them.
   texture lookup is extension-agnostic.  What is not exact is the data:
   splitting a compressed texture into diffuse and reflectance and recombining
   it cannot reproduce bits the compressor already discarded.
-  `mapping/materials.py:429`
+  `mapping/materials.py:430`
 
 ---
 
 ## Coverage
 
-Two Blender suites, and the difference between them is the point.
+Three Blender suites, and the difference between the first two is the point.
 
-`tests/blender/test_operators.py` (95 tests) imports real fixtures, edits them
+`tests/blender/test_operators.py` (99 tests) imports real fixtures, edits them
 and exports.  That covers reading files the add-on did not write, and it is the
 only way to check a feature no fixture-free scene can produce.
 
-`tests/blender/test_authoring.py` (94 tests) never imports anything.  Every test
+`tests/blender/test_authoring.py` (99 tests) never imports anything.  Every test
 builds a shape from nothing — armature, meshes, materials, actions — exports it,
 and reads the feature back out of the file.  This is the suite that answers
 "can a user *make* one of these", which a round-trip cannot: the exporter may be
@@ -744,12 +789,24 @@ written, and the feature looks supported while being unauthorable.  Billboards
 were exactly that, and the flags being conditionally-present ID properties was
 invisible until a fresh scene tried to set one.
 
+`tests/blender/test_envmap.py` (3 tests) is neither: it *renders*.  The
+environment map is a shader, and no amount of reading a file back says whether
+a shader computes the right thing — the exported bytes are identical whether
+the sphere-map coordinates are the engine's or half a map away from them.  So
+it renders a sphere in Cycles against an environment image whose texels are
+their own coordinates, and compares every pixel to a Python transcription of
+`platformGLES.cc:1099-1135`.  That check is what caught Blender's camera space
+being +Z forward where GL's eye space is -Z, and `scripts/mutate.py` keeps two
+mutations (`envmap-camera-space`, `envmap-normal-space`) that put the error
+back.
+
 Between them they cover detail levels and LOD vertex sharing, collision
 details, node hierarchies, materials and all fourteen flag bits (eleven
 stored, three derived), the three
 blend modes through the shader, map slots, reflectance maps in both packings
 and both directions plus the shape-wide export box and the per-material
-overrides to it, billboards including the Z-axis
+overrides to it, the environment-map preview those masks drive and
+`reflection_amount` scaling it, billboards including the Z-axis
 variant no shipped shape uses, sorted meshes in both modes and the promotion of translucent ones, skins, vertex
 animation, material frames, sequences, triggers, ground frames, object-state
 tracks, node scale, DSQ export, IFL flipbooks in both directions including

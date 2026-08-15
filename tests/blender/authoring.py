@@ -189,29 +189,54 @@ def generated_image(name, *, size=4, colour=(0.25, 0.5, 0.75), ramp=False):
     return image
 
 
-def image_material(name, *, diffuse=None, reflectance=None, packing=None):
-    """A Principled material with images on Base Color and Metallic.
+def image_material(
+    name, *, diffuse=None, reflectance=None, packing=None, on_metallic=False
+):
+    """A Principled material with a diffuse and a reflectance map.
 
-    Metallic is where the add-on reads a reflectance map from, so this is how a
-    user gives a material one -- there is no property to set, and that is the
-    point: the shader is the only place it can live.
+    The reflectance is a node, not a property -- the shader is the only place it
+    can live, so that export and the viewport cannot disagree about it -- and it
+    reaches the environment-map group that previews what the engine draws.
+    That is what ``io_scene_dts.add_reflectance`` builds and what the importer
+    builds, so it is what a user ends up with either way.
+
+    ``on_metallic`` puts it where it used to go instead, which is what a .blend
+    saved before ``mapping/envmap.py`` holds.  Those still have to export.
 
     ``packing`` is the per-material override; left None the material follows the
     export dialog, which is what a material a user made looks like.
     """
+    from io_scene_dts.mapping import envmap
+
     mat = principled_material(name)
     nt = mat.node_tree
     bsdf = nt.nodes.get("Principled BSDF")
-    for image, socket, y in ((diffuse, "Base Color", 300), (reflectance, "Metallic", -80)):
-        if image is None:
-            continue
+    if diffuse is not None:
         node = nt.nodes.new("ShaderNodeTexImage")
-        node.image = image
-        node.location = (-350, y)
-        nt.links.new(node.outputs["Color"], bsdf.inputs[socket])
+        node.image = diffuse
+        node.location = (-350, 300)
+        nt.links.new(node.outputs["Color"], bsdf.inputs["Base Color"])
+    if reflectance is not None:
+        node = nt.nodes.new("ShaderNodeTexImage")
+        node.image = reflectance
+        node.location = (-350, -80)
+        if on_metallic:
+            nt.links.new(node.outputs["Color"], bsdf.inputs["Metallic"])
+        else:
+            envmap.wire(mat, node.outputs["Color"])
     if packing is not None:
         mat.dts_material.reflectance_packing = packing
     return mat
+
+
+def material_context(mat):
+    """Stand where the Material Properties tab stands.
+
+    The material operators poll on ``context.material``, which the Properties
+    editor supplies and a headless run does not.  Overriding it is how a test
+    presses the button rather than calling the function behind it.
+    """
+    return bpy.context.temp_override(material=mat)
 
 
 def export_dts(path=None, **kwargs):

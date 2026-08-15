@@ -27,7 +27,7 @@ from .legacy import (
     parse_triggers,
 )
 from .decal import SCHEMA_VERSION as DECAL_SCHEMA_VERSION
-from .material import LEGACY_COMBINE_KEY
+from .material import LEGACY_COMBINE_KEY, LEGACY_REFLECTION_AMOUNT_KEY
 from .material import SCHEMA_VERSION as MATERIAL_SCHEMA_VERSION
 from .mesh import SCHEMA_VERSION as MESH_SCHEMA_VERSION
 from .shape import SCHEMA_VERSION
@@ -354,20 +354,47 @@ def _migrate_reflectance_packing(props) -> None:
     del props[LEGACY_COMBINE_KEY]
 
 
+def _migrate_reflection_amount(mat) -> None:
+    """``mat["dts_reflection_amount"]`` -> ``dts_material.reflection_amount``.
+
+    The value is unchanged and so is every exported byte; what changes is that
+    it is now a slider that exists on materials the importer never touched, and
+    that it drives the environment-map preview.  Deleted afterwards so the two
+    cannot disagree -- an ID property left beside a real one is exactly the
+    second source of truth CLAUDE.md is about.
+    """
+    value = mat.get(LEGACY_REFLECTION_AMOUNT_KEY)
+    if value is None:
+        return
+    try:
+        mat.dts_material.reflection_amount = max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        pass
+    del mat[LEGACY_REFLECTION_AMOUNT_KEY]
+
+
 def migrate_materials() -> None:
     """Stamp imported materials, and drop the props that became derived.
 
     Nothing is lost.  The three blend keys were already ignored on export --
     ``_flags_from_blender`` masked them off and recomputed them from the shader
     -- so deleting them changes no exported file, and the reflectance packing
-    converts to the value that exports the same bytes.  Reports nothing and does
-    not count as a change for that reason.
+    converts to the value that exports the same bytes.  So does the reflection
+    amount, which changes storage and not value.  Reports nothing and does not
+    count as a change for that reason.
 
-    Neither conversion is gated on the schema version: the old keys are the
-    thing being looked for, so their absence is the only idempotence needed.
-    That matters for the packing, which a material with no ``dts_name`` can
-    carry too -- it is authorable in a fresh scene, and the ``dts_name`` gate
-    below is about imported materials only.
+    None of the three conversions is gated on the schema version: the old keys
+    are the thing being looked for, so their absence is the only idempotence
+    needed.  That matters for the packing and the amount both, which a material
+    with no ``dts_name`` can carry too -- they are authorable in a fresh scene,
+    and the ``dts_name`` gate below is about imported materials only.
+
+    What is *not* converted is the shader graph.  A material imported before
+    ``mapping/envmap.py`` has its reflectance on Metallic, which still exports
+    correctly (:func:`mapping.materials.reflectance_image_node` falls back to
+    it) and still previews the way it always did.  Rewiring it is a visible
+    change to the user's node tree and an operator they can ask for, not
+    something to do to every .blend that happens to be opened.
     """
     for mat in bpy.data.materials:
         for key in DERIVED_MATERIAL_KEYS:
@@ -375,6 +402,7 @@ def migrate_materials() -> None:
                 del mat[key]
         props = mat.dts_material
         _migrate_reflectance_packing(props)
+        _migrate_reflection_amount(mat)
         if "dts_name" not in mat or props.schema_version >= MATERIAL_SCHEMA_VERSION:
             continue
         props.is_dts = True

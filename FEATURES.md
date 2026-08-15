@@ -94,7 +94,7 @@ listed in `UNSUPPORTED.md` §3.
 | Sorted mesh (translucency draw order) | ● | ● | ● | ● | The cluster tree is regenerated from the geometry, so the mesh is ordinary editable geometry.  `NONE`/`FLAT`/`BSP` plus depth in Object Properties → DTS Mesh.  A standard mesh on a translucent material is **promoted** to BSP on export, which changes the mesh type of an imported shape on re-export.  *Blind* — nothing previews draw order.  `mapping/blender_to_shape.py:854` |
 | Null mesh | ● | ● | ● | ● | A detail slot an object has no geometry for; trailing null slots the source declared are kept. |
 | Decal mesh | ● | ● | ● | ● | Not a mesh in Blender at all — see §6. |
-| Vertex animation (multi-frame meshes) | ● | ● | ● | ● | Frames arrive as shape keys `frame_001…`.  *Blind*: nothing drives them from the sequence's `frame` track. |
+| Vertex animation (multi-frame meshes) | ● | ● | ● | ● | Frames arrive as shape keys `frame_001…`, driven by the sequence's `frame` track, so scrubbing plays the animation.  `mapping/framepreview.py` |
 | Material frames (UV flipbooks) | ● | ● | ● | ● | Frame 0 is the active UV map; frames 1..n−1 are `FLOAT2` point attributes (`Mesh.uv_layers` caps at 8 while real shapes reach 62).  *Blind*: only frame 0 renders.  `mapping/matframes.py` |
 | 65535 vertices per mesh | – | – | – | ● | The index buffer is u16; a larger mesh is refused rather than written short.  `mapping/blender_to_shape.py:730` |
 
@@ -107,12 +107,13 @@ listed in `UNSUPPORTED.md` §3.
 | Material list and its order | ● | ● | ● | ● | A UIList of real datablock pointers on the armature — map slots and IFL entries index into it, so unused materials survive.  Pointers rather than names, because names are not unique: 104 of 630 corpus shapes reuse one. |
 | Material name | ● | ● | ● | ● | `dts_name` keeps the stored name (which may carry a legacy path prefix) apart from the Blender datablock name. |
 | Diffuse texture | ● | ● | ● | ● | Found next to the `.dts` by material name.  Export writes a `.png` beside the shape for every texture it names, so an exported shape carries its art — and **overwrites** what was there.  Untick **Export Textures** to write the `.dts` alone.  Two more boxes decide the size it is written at, both on by default: **Scale Textures to Power of Two** and **Limit Textures to 512x512** — see §8 and `UNSUPPORTED.md` §4.  `mapping/texture_io.py:80` |
-| Reflectance (environment) map | ● | ● | ● | ● | The second image in the material, feeding **Metallic**.  A DTS packs one in the diffuse's alpha channel, so an env-mapped material imports as two images, and the export dialog's **Combine Diffuse and Reflectance** (on by default) says which packing to write back for the whole shape.  A single material overrules it with **Reflectance Packing** — *Follow Export Setting* / *Combine* / *Separate*.  The Metallic mapping is a handle, not a render of what the engine does. |
-| `reflection_amount` | ● | ◐ | ◐ | ● | Raw custom property, no preview.  1.0 in 265 of the 270 env-mapped corpus materials. |
-| Bump map, detail map, `detail_scale` | ● | ◐ | ◐ | ◐ | Raw custom properties; the Principled BSDF ignores both maps.  A material given only `dts_bump_map`/`dts_detail_map` and no `dts_reflectance_map` exports them as `NO_MAP` with no warning.  Neither slot is used anywhere in the corpus.  `mapping/materials.py:1174` |
+| Reflectance (environment) map | ● | ● | ● | ● | The second image in the material, masking the environment map it drives.  A DTS packs one in the diffuse's alpha channel, so an env-mapped material imports as two images, and the export dialog's **Combine Diffuse and Reflectance** (on by default) says which packing to write back for the whole shape.  A single material overrules it with **Reflectance Packing** — *Follow Export Setting* / *Combine* / *Separate*.  **Add Reflectance Map** in Material Properties gives a fresh material one. |
+| Environment-map preview | – | ● | ● | – | Not in the file, and rendered anyway: the mask drives a sphere-mapped environment texture mixed over the Principled the way the engine mixes it — `env*k + lit*(1-k)`, unlit, with `k` the mask times `reflection_amount` times a scene-level strength.  Which image is *not* a shape property — the engine takes it from the mission sky — so it is set in Scene Properties → **DTS Environment Map** and never exported.  `mapping/envmap.py` |
+| `reflection_amount` | ● | ● | ● | ● | A slider in Material Properties → DTS Material, scaling the reflection in the viewport as the engine scales it.  1.0 in 265 of the 270 env-mapped corpus materials. |
+| Bump map, detail map, `detail_scale` | ● | ◐ | ◐ | ◐ | Raw custom properties; the Principled BSDF ignores both maps.  A material given only `dts_bump_map`/`dts_detail_map` and no `dts_reflectance_map` exports them as `NO_MAP` with no warning.  Neither slot is used anywhere in the corpus.  `mapping/materials.py:1196` |
 | IFL flipbook (`.ifl` sidecar) | ● | ● | ● | ● | The `.ifl` list imports as a frame collection on the material, previews as a keyframed image switch, and is written back beside the exported `.dts`.  Ticking **IFL Material** is what puts an entry in the shape's IFL table — the table is derived from the materials that flip. |
-| IFL `firstFrame` / `firstFrameOffTime` | ◐ | – | – | ◐ | Written as zeros rather than round-tripped: they are engine load-time scratch, and 53 of the corpus's 64 entries carry uninitialised memory there.  `numFrames` is real and becomes the frame-list length.  `mapping/materials.py:910` |
-| A missing `.ifl` | ◐ | – | – | ◐ | The material keeps its checkbox and its table entry, so the shape is not silently un-animated, but there are no frames to preview and none to write.  `mapping/materials.py:656` |
+| IFL `firstFrame` / `firstFrameOffTime` | ◐ | – | – | ◐ | Written as zeros rather than round-tripped: they are engine load-time scratch, and 53 of the corpus's 64 entries carry uninitialised memory there.  `numFrames` is real and becomes the frame-list length.  `mapping/materials.py:932` |
+| A missing `.ifl` | ◐ | – | – | ◐ | The material keeps its checkbox and its table entry, so the shape is not silently un-animated, but there are no frames to preview and none to write.  `mapping/materials.py:678` |
 
 ### The fourteen material flag bits
 
@@ -124,7 +125,7 @@ listed in `UNSUPPORTED.md` §3.
 | 3 | `MAT_ADDITIVE` | the shader | `Transparent BSDF + Emission -> Add Shader`. |
 | 4 | `MAT_SUBTRACTIVE` | the shader | The additive graph with the emission colour inverted — this add-on's own convention, since EEVEE has no subtractive blend.  Round-trips exactly; does not render the way the engine draws it. |
 | 5 | `MAT_SELF_ILLUMINATING` | checkbox | *Frozen*: a material that looks unlit still exports as self-illuminating if the box is ticked. |
-| 6 | `MAT_NEVER_ENV_MAP` | checkbox | One-way exception: an image feeding Metallic exports with env-mapping on however the box is set. |
+| 6 | `MAT_NEVER_ENV_MAP` | checkbox | One-way exception: a material showing a reflectance map exports with env-mapping on however the box is set. |
 | 7 | `MAT_NO_MIP_MAP` | checkbox | |
 | 8 | `MAT_MIP_MAP_ZERO_BORDER` | checkbox | Does not occur in the corpus. |
 | 27 | `MAT_IFL_MATERIAL` | derived | From the IFL checkbox, which also owns the frame list. |
@@ -161,11 +162,11 @@ happen to match.
 | Blend sequences | ● | ● | ● | ● | Raw blend offsets are stored in the pose, which is correct for export but does not look like the additive result the engine produces.  *Blind.* |
 | Uniform node scale | ● | ● | ● | ● | Rides the pose bones' own `scale` channels; `Scale Mode` on the sequence panel says which DTS form to write.  *Blind*: nothing shows that a scale channel means *node* scale.  Arrived in v22 — exporting as v21 or older drops it with a warning.  `dtslib/fit.py:222` |
 | Aligned node scale | ● | ● | ● | ● | Same. |
-| Arbitrary node scale | ● | ○ | ○ | ○ | Per-axis factors *plus* an orientation naming the axes to measure along.  A pose bone's scale cannot express the second half, so it is refused on export rather than half-written.  No corpus sequence uses it.  `mapping/sequences.py:562` |
+| Arbitrary node scale | ● | ○ | ○ | ○ | Per-axis factors *plus* an orientation naming the axes to measure along.  A pose bone's scale cannot express the second half, so it is refused on export rather than half-written.  No corpus sequence uses it.  `mapping/sequences.py:581` |
 | Ground frames (root motion) | ● | ● | ● | ● | A collection on the action, in the Dope Sheet / NLA DTS tab, holding raw `Quat16` int16s so a frame round-trips bit-exactly.  *Blind*: nothing shows them as motion.  v23 and v22 have nowhere to store them, so exporting as either drops them with a warning; v24 has arrays of its own and v21 and older keep them at the end of the node-transform array.  `dtslib/fit.py:419` |
 | Triggers | ● | ● | ● | ● | A collection on the action: a state 1..30 and two flags rather than the packed U32 the file holds.  Pose markers show where they fire; nothing plays a sound.  *Blind.* |
 | Object visibility (`vis`) track | ● | ● | ● | ● | Keyframed as a custom property on the armature, in the same slot as the bones; each mesh built from that object reads it through a driver into alpha and the hide flags.  **Export samples the curves**, so editing a key changes the file. |
-| Vertex-frame (`frame`) track | ● | ● | ● | ● | Keyframed the same way.  *Blind*: nothing drives the shape keys from it. |
+| Vertex-frame (`frame`) track | ● | ● | ● | ● | Keyframed the same way; each mesh built from that object reads it through drivers on its `frame_NNN` shape keys, so the animation plays.  **Export samples the curves.** |
 | Material-frame (`matframe`) track | ● | ● | ● | ● | Keyframed the same way.  No preview at all. |
 | Default object states | ● | ◐ | ◐ | ● | Raw custom properties on the mesh object (`dts_default_vis`, `dts_default_frame`, `dts_default_matframe`). |
 | IFL membership (`ifl_matters`) | ● | ● | ● | ● | A collection of material *pointers* on the action; the file's positional bits are resolved against the derived IFL table on export. |
@@ -190,7 +191,7 @@ the projector and export recomputes the rest.
 | Something translucent to draw against | ● | ● | ● | ● | The engine needs a blended mesh in a shape that carries decals, so export **refuses** one that has none — see `UNSUPPORTED.md` §1.  Either the decal's own material or the mesh it sits on: every one of the 153 decal-bearing corpus shapes does one (94) or the other (59).  `mapping/blender_to_shape.py:433`  Not reached when decals are baked as meshes: the check is about the decal table, and a baked shape has none. |
 | Viewport preview | ● | ● | ● | – | A branch in the *target's* material: a Texture Coordinate reading the projector's object space, masked to its box and to the one object the decal targets.  Per-pixel where export decides per-face, so it is close to the exported coverage rather than identical. |
 | Authoring from a selection | – | ● | ● | ● | **Add DTS Decal** (Object Properties → DTS Mesh) makes one from the faces you have selected, across every detail level of the object. |
-| Decals as meshes (import option) | ◐ | ○ | – | ○ | Off by default.  On, each decal arrives as a copy of the faces the file says it covers and no projector is built — the only way to see the file's own face list, and a way to *look at* a shape rather than author one: export reads projectors and nothing else, so these reach no file.  Warned at import and again at export.  `mapping/shape_to_blender.py:191` |
+| Decals as meshes (import option) | ◐ | ○ | – | ○ | Off by default.  On, each decal arrives as a copy of the faces the file says it covers and no projector is built — the only way to see the file's own face list, and a way to *look at* a shape rather than author one: export reads projectors and nothing else, so these reach no file.  Warned at import and again at export.  `mapping/shape_to_blender.py:193` |
 | Decals as meshes (export option) | – | – | – | ● | Off by default.  On, each decal is written as an ordinary mesh object — the faces it covers, copied, lifted a fixed 0.002 shape units along their normals so they do not z-fight, with the projection evaluated into its UVs — and the file carries no decal table.  Anything that reads a `.dts` then draws it, and the translucency refusal above does not apply.  One-way: re-importing gives meshes and no projectors, so it is an output format rather than a round trip.  `mapping/decals.py:1071` |
 | Multi-frame decals | ◐ | ○ | ○ | ○ | Only the first frame imports; the rest are lost on export, warned.  A frame is a whole alternative projection *and* face subset, and a decal is one empty.  All 10,584 decal meshes in the 240-shape corpus are single-frame. |
 | `pass_index` on a decal's target | – | – | – | – | The preview's object gate needs a per-object number a shader can read, so targeting a mesh with a decal overwrites its Object Index.  Recorded as `dts_decal_host`; editing the pass index by hand is treated as reclaiming the field.  `mapping/decals.py:363` |
@@ -222,7 +223,7 @@ None of these corrupt a file; all stop with an error.
 | Exporting without an armature | The armature *is* the shape. | `mapping/blender_to_shape.py:102` |
 | More than 192 nodes or objects | `TSIntegerSet` is 6 dwords wide, so there is no bit for a 193rd in a matters set.  A format limit, not a gap. | `mapping/blender_to_shape.py:144`, `mapping/blender_to_shape.py:357` |
 | More than 65535 vertices in one mesh | The index buffer is u16.  Split the mesh. | `mapping/blender_to_shape.py:730` |
-| Arbitrary node scale on export | A bone's scale cannot express the orientation half. | `mapping/sequences.py:562` |
+| Arbitrary node scale on export | A bone's scale cannot express the orientation half. | `mapping/sequences.py:581` |
 | Exporting a scene saved by v1.2 or earlier | Its legacy keys are unread until **Convert DTS Data From an Older Version** runs; exporting first would write a shape missing its name table, details and IFL entries without saying so. | `props/migrate.py` |
 
 ---
@@ -234,10 +235,11 @@ None of these corrupt a file; all stop with an error.
 | Object Properties → **DTS Shape** (armature) | Name table, detail levels, material order, migration note. |
 | Bone Properties → **DTS Node** | The stored rest transform and whether to keep it. |
 | Object Properties → **DTS Mesh** | Mesh flags, sorted mode and depth, **Add DTS Decal**. |
-| Object Properties → **DTS Decal** (empty) | Target, material, coverage rule, depth, max angle. |
-| Material Properties → **DTS Material** | Eleven flag checkboxes, the computed blend-mode label, map slots, reflectance packing, IFL frames. |
+| Object Properties → **DTS Decal** (empty) | Target, material, **Rebuild Decal Preview**, coverage rule, depth, max angle. |
+| Material Properties → **DTS Material** | Eleven flag checkboxes, the computed blend-mode label, the reflectance map and its amount, map slots, reflectance packing, IFL frames. |
+| Scene Properties → **DTS Environment Map** | The sphere map reflective materials show, and its strength.  Preview only; never exported. |
 | Dope Sheet / NLA sidebar → **DTS** tab | Sequence timing, priority, flags, scale mode, ground frames, triggers, IFL membership. |
-| N-panel → Custom Properties | Everything marked ◐ above: sub-shape indices, object detail numbers, default object states, merge indices, `reflection_amount`, the bump/detail slots.  A real place to edit them, but not a designed one. |
+| N-panel → Custom Properties | Everything marked ◐ above: sub-shape indices, object detail numbers, default object states, merge indices, the bump/detail slots.  A real place to edit them, but not a designed one. |
 
 ---
 

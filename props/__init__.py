@@ -23,7 +23,7 @@ from __future__ import annotations
 def _classes():
     """Leaf groups first: an item type must be registered before the group
     holding a CollectionProperty of it."""
-    from . import decal, material, mesh, node, sequence, shape
+    from . import decal, material, mesh, node, scene, sequence, shape
 
     return (
         shape.DtsNameItem,
@@ -35,6 +35,7 @@ def _classes():
         material.DtsMaterialProps,
         decal.DtsDecalProps,
         node.DtsNodeProps,
+        scene.DtsSceneProps,
         sequence.DtsGroundItem,
         sequence.DtsTriggerItem,
         sequence.DtsIflMatterItem,
@@ -45,11 +46,12 @@ def _classes():
 def register() -> None:
     import bpy
 
-    from . import decal, material, mesh, migrate, node, sequence, shape
+    from . import decal, material, mesh, migrate, node, scene, sequence, shape
 
     for cls in _classes():
         bpy.utils.register_class(cls)
     # pointers last: the groups they name have to exist first
+    bpy.types.Scene.dts_scene = bpy.props.PointerProperty(type=scene.DtsSceneProps)
     bpy.types.Object.dts_shape = bpy.props.PointerProperty(type=shape.DtsShapeProps)
     bpy.types.Object.dts_mesh = bpy.props.PointerProperty(type=mesh.DtsMeshProps)
     bpy.types.Object.dts_decal = bpy.props.PointerProperty(type=decal.DtsDecalProps)
@@ -78,6 +80,7 @@ def unregister() -> None:
         (bpy.types.Object, "dts_decal"),
         (bpy.types.Object, "dts_mesh"),
         (bpy.types.Object, "dts_shape"),
+        (bpy.types.Scene, "dts_scene"),
     ):
         if hasattr(owner, name):
             delattr(owner, name)

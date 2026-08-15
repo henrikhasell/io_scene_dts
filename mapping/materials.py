@@ -27,6 +27,7 @@ from pathlib import Path
 
 import bpy
 
+from . import envmap
 from .texture_split import (
     TEXTURE_EXTENSIONS,
     alpha_is_uniform,
@@ -485,13 +486,30 @@ def merged_reflectance_image(diffuse_img, reflectance_img):
     )
 
 
+def _image_node_upstream(socket):
+    """Walk back from a socket to the Image Texture that reaches it, or None.
+
+    Follows a chain of single-input nodes, so a hand-built graph that runs the
+    map through an Invert or a Math node still reads back as that map.
+    """
+    seen = set()
+    while socket is not None and socket.is_linked:
+        node = socket.links[0].from_node
+        if node.type == "TEX_IMAGE":
+            return node if node.image is not None else None
+        if node.name in seen:
+            return None
+        seen.add(node.name)
+        socket = next((i for i in node.inputs if i.is_linked), None)
+    return None
+
+
 def _image_node_feeding(bmat, socket_name: str):
     """The Image Texture node reaching a Principled input, or None.
 
-    Follows a chain of single-input nodes, so a hand-built graph that runs the
-    map through an Invert or a Math node still reads back as that map.  There
-    is no Principled node on an additive material (:func:`_build_add_shader`
-    removes it), which is why those have no reflectance.
+    There is no Principled node on an additive material
+    (:func:`_build_add_shader` removes it), which is why those have no
+    reflectance.
     """
     nt = getattr(bmat, "node_tree", None)
     if nt is None:
@@ -499,20 +517,7 @@ def _image_node_feeding(bmat, socket_name: str):
     bsdf = next((n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"), None)
     if bsdf is None or socket_name not in bsdf.inputs:
         return None
-    socket = bsdf.inputs[socket_name]
-    seen = set()
-    while socket.is_linked:
-        node = socket.links[0].from_node
-        if node.type == "TEX_IMAGE":
-            return node if node.image is not None else None
-        if node.name in seen:
-            return None
-        seen.add(node.name)
-        upstream = next((i for i in node.inputs if i.is_linked), None)
-        if upstream is None:
-            return None
-        socket = upstream
-    return None
+    return _image_node_upstream(bsdf.inputs[socket_name])
 
 
 def diffuse_image_node(bmat):
@@ -521,11 +526,24 @@ def diffuse_image_node(bmat):
 
 
 def reflectance_image_node(bmat):
-    """The node feeding Metallic -- the material's reflectance map.
+    """The node feeding the environment map's mask -- the reflectance map.
 
     The *node*, not the image, because export has to tell "one node feeds both
     sockets" (already combined) from "a second node" (separable).
+
+    Metallic is the fallback, and only the fallback.  It is where this used to
+    live, so a .blend saved before ``mapping/envmap.py`` existed still exports
+    the reflectance it was built with; nothing writes it any more.  The two
+    cannot both be authoritative -- a material wired both ways would export one
+    map and preview the other -- so the env-map group wins whenever it is
+    present, and :func:`ui.operators.DTS_OT_rebuild_env_map` is how a material
+    moves from one to the other.
     """
+    from . import envmap
+
+    group = envmap.group_node(bmat)
+    if group is not None:
+        return _image_node_upstream(group.inputs["Mask"])
     return _image_node_feeding(bmat, "Metallic")
 
 
@@ -571,6 +589,10 @@ def _texture_node(bmat, name: str, search_dir: Path | None, location):
 def _wire_textures(bmat, bsdf, mat, index, all_mats, search_dir, warnings):
     """Build the diffuse and reflectance image nodes; return the diffuse one.
 
+    A reflectance map does not reach the Principled BSDF at all: it masks a
+    sphere-mapped environment texture mixed over the top, which is what the
+    engine draws and what ``mapping/envmap.py`` builds.
+
     The alpha channel of a DTS texture means two different things and the file
     says which only by implication.  When the material is env-mapped it is the
     reflectance mask; otherwise it is transparency.  That is not a guess: the
@@ -606,7 +628,7 @@ def _wire_textures(bmat, bsdf, mat, index, all_mats, search_dir, warnings):
             # on this one -- but the mask is still previewed off the same node,
             # and export sees one node feeding both sockets and keeps the
             # combined packing.
-            links.new(diffuse.outputs["Alpha"], bsdf.inputs["Metallic"])
+            envmap.wire(bmat, diffuse.outputs["Alpha"])
             warnings.append(
                 f"material {mat.name!r} is both env-mapped and translucent: its "
                 f"alpha is read as transparency, and as the reflectance mask only "
@@ -620,7 +642,7 @@ def _wire_textures(bmat, bsdf, mat, index, all_mats, search_dir, warnings):
         reflectance = bmat.node_tree.nodes.new("ShaderNodeTexImage")
         reflectance.image = reflectance_img
         reflectance.location = (-350, -80)
-        links.new(reflectance.outputs["Color"], bsdf.inputs["Metallic"])
+        envmap.wire(bmat, reflectance.outputs["Color"])
         # left on DEFAULT deliberately.  That one file held both maps is a
         # packing, not a decision about *this* material, and recording it would
         # pin every material of every imported shape and leave the export box
@@ -633,7 +655,7 @@ def _wire_textures(bmat, bsdf, mat, index, all_mats, search_dir, warnings):
             bmat, all_mats[mat.reflectance_map].name, search_dir, (-350, -80)
         )
         if reflectance is not None:
-            links.new(reflectance.outputs["Color"], bsdf.inputs["Metallic"])
+            envmap.wire(bmat, reflectance.outputs["Color"])
             # SEPARATE, not DEFAULT, and this is the asymmetry with the branch
             # above: the mask is not a packing here, it is an entry of its own
             # in the material list, usually one several materials point at.
@@ -831,7 +853,7 @@ def material_to_blender(
     for prop, bit in _FLAG_PROPS.items():
         bmat[prop] = bool(mat.flags & bit)
     bmat["dts_detail_scale"] = mat.detail_scale
-    bmat["dts_reflection_amount"] = mat.reflection_amount
+    bmat.dts_material.reflection_amount = mat.reflection_amount
     bmat["dts_reflectance_map"] = _map_ref(mat.reflectance_map, index, all_mats)
     bmat["dts_bump_map"] = _map_ref(mat.bump_map, index, all_mats)
     bmat["dts_detail_map"] = _map_ref(mat.detail_map, index, all_mats)
@@ -1148,7 +1170,7 @@ def materials_from_blender(
                 name=name,
                 flags=flags,
                 detail_scale=float(bmat.get("dts_detail_scale", 1.0)),
-                reflection_amount=float(bmat.get("dts_reflection_amount", 1.0)),
+                reflection_amount=float(bmat.dts_material.reflection_amount),
             )
         )
 

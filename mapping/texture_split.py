@@ -81,12 +81,32 @@ def split_rgba(rgba: array) -> tuple[array, array]:
     return diffuse, reflectance
 
 
+# Rec.709, which is what Blender uses to convert a Color output into a Float
+# input -- measured, not assumed: RGB(1,0,0) into a Float socket renders 0.2126,
+# not 0.3333 and not 1.0.
+_LUMA_R, _LUMA_G, _LUMA_B = 0.2126, 0.7152, 0.0722
+
+
 def merge_rgba(diffuse: array, reflectance: array) -> array:
     """The inverse of :func:`split_rgba`: reflectance grey back into alpha.
 
-    Reads the reflectance's red channel, since :func:`split_rgba` writes the
-    same value to all three and a user editing the mask in Blender edits a
-    greyscale image.
+    The value written is the one *the viewport used as the mask*, and that is
+    the whole point.  The mask node's ``Color`` output feeds a ``Float`` input
+    on the environment-map group, so Blender reduces it by Rec.709 luminance;
+    export has to reduce it the same way or the shape renders differently after
+    a round trip than it did before one.
+
+    This used to read the red channel, on the reasoning that
+    :func:`split_rgba` writes the same value to all three.  True of a mask this
+    add-on produced -- and false of one a user painted.  A hand-authored mask
+    that is off-grey by 10/255 exported 10/255 wrong, which is invisible on the
+    mask and very visible on the shape: the error lands hardest where the mask
+    is near zero, and a dark texel that should not reflect at all picking up a
+    few percent of a bright sky is a change of a quarter of the output range.
+
+    An imported mask is still exact, and still costs nothing: R, G and B are
+    equal, so their luminance is that same value and the strided fast path
+    below takes it without touching a pixel in Python.
     """
     _check_rgba(diffuse)
     _check_rgba(reflectance)
@@ -96,7 +116,17 @@ def merge_rgba(diffuse: array, reflectance: array) -> array:
             f"{len(reflectance) // 4}; they must be the same size"
         )
     merged = array("f", diffuse)
-    merged[3::4] = reflectance[0::4]
+    red, green, blue = reflectance[0::4], reflectance[1::4], reflectance[2::4]
+    if red == green == blue:
+        merged[3::4] = red
+    else:
+        merged[3::4] = array(
+            "f",
+            [
+                _LUMA_R * r + _LUMA_G * g + _LUMA_B * b
+                for r, g, b in zip(red, green, blue)
+            ],
+        )
     return merged
 
 

@@ -394,6 +394,18 @@ def _node_feeding(mat, socket):
     return _image_node_feeding(mat, socket)
 
 
+def _reflectance_of(mat):
+    """Whichever node the add-on considers this material's reflectance map.
+
+    Asked through the public function rather than by naming a socket: the map
+    reaches the environment-map group now and reached Metallic before it, and
+    which socket holds it is exactly the thing these tests should not pin.
+    """
+    from io_scene_dts.mapping.materials import reflectance_image_node
+
+    return reflectance_image_node(mat)
+
+
 def test_a_self_reflectance_imports_as_two_images():
     """One RGBA file arrives as an RGB diffuse and a greyscale mask."""
     dts, texture = _env_mapped_fixture()
@@ -402,7 +414,7 @@ def test_a_self_reflectance_imports_as_two_images():
 
     mat = _material_of("shrub")
     diffuse = _node_feeding(mat, "Base Color")
-    reflectance = _node_feeding(mat, "Metallic")
+    reflectance = _reflectance_of(mat)
     assert diffuse is not None and reflectance is not None, "both maps must arrive"
     assert diffuse.image is not reflectance.image
     assert diffuse.image.packed_file and reflectance.image.packed_file, (
@@ -493,8 +505,8 @@ def test_an_env_mapped_translucent_material_keeps_its_transparency():
     mat = _material_of("shrub")
     links = [(l.from_socket.name, l.to_socket.name) for l in mat.node_tree.links]
     assert ("Alpha", "Alpha") in links, links
-    assert ("Alpha", "Metallic") in links, links
-    assert _node_feeding(mat, "Base Color") == _node_feeding(mat, "Metallic"), (
+    assert ("Alpha", "Mask") in links, links
+    assert _node_feeding(mat, "Base Color") == _reflectance_of(mat), (
         "one node feeds both, so export keeps the combined packing"
     )
     assert len(read_shape_file(dts).materials) == 1
@@ -531,7 +543,7 @@ def test_a_cross_referenced_reflectance_imports_as_the_other_materials_texture()
     _reset()
     assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
     base, other = _material_of("shrub"), _material_of("wall")
-    reflectance = _node_feeding(base, "Metallic")
+    reflectance = _reflectance_of(base)
     assert reflectance is not None, "the referenced texture must be loaded"
     assert reflectance.image == _node_feeding(other, "Base Color").image, (
         "it is the other material's own texture, not a copy"
@@ -585,7 +597,7 @@ def test_export_overwrites_a_source_texture():
     # paint on the mask, so the bytes that come back are provably ours and not
     # a byte-identical re-encode of the file already there
     mat = _material_of("shrub")
-    reflectance = _node_feeding(mat, "Metallic")
+    reflectance = _reflectance_of(mat)
     reflectance.image.pixels = [0.5] * len(reflectance.image.pixels)
     reflectance.image.update()
 
@@ -602,7 +614,7 @@ def test_export_textures_unticked_leaves_a_source_texture_alone():
     _reset()
     assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
     mat = _material_of("shrub")
-    reflectance = _node_feeding(mat, "Metallic")
+    reflectance = _reflectance_of(mat)
     reflectance.image.pixels = [0.5] * len(reflectance.image.pixels)
     reflectance.image.update()
 
@@ -663,9 +675,17 @@ def test_uv_and_alpha():
     )
     links = [(l.from_node.type, l.to_socket.name) for l in m.node_tree.links]
     assert ("TEX_IMAGE", "Alpha") in links, links
-    # ...and only as transparency.  This material sets MAT_NEVER_ENV_MAP, so
-    # its alpha is not a reflectance mask and nothing should reach Metallic
-    assert ("TEX_IMAGE", "Metallic") not in links, links
+    # ...and only as transparency.  This material sets MAT_NEVER_ENV_MAP, so its
+    # alpha is not a reflectance mask and the material must read as having no
+    # reflectance at all.  Asked of the add-on rather than of a socket name:
+    # when the map moved off Metallic, "nothing reaches Metallic" became true
+    # for a reason unrelated to the gate, and the mutation that removes the gate
+    # stopped being caught.  This is the fact the gate is about.
+    from io_scene_dts.mapping.materials import reflectance_image_node
+
+    assert reflectance_image_node(m) is None, (
+        "a NEVER_ENV_MAP material's alpha was read as a reflectance mask"
+    )
 
 
 def test_reflectance_map_only_survives_the_int_prop_limit():
@@ -929,6 +949,69 @@ def test_migration_converts_the_old_combine_checkbox():
     split.dts_material.reflectance_packing = "COMBINE"
     migrate.migrate_all()
     assert split.dts_material.reflectance_packing == "COMBINE"
+
+
+def test_migration_converts_the_old_reflection_amount():
+    """``mat["dts_reflection_amount"]`` becomes a slider on ``dts_material``.
+
+    Same reasoning as the combine checkbox above: the ID property is what a
+    .blend saved by the older version holds, and it has to leave, or the
+    property and the key are two answers to one question.  Not gated on
+    dts_name either -- the key was writable on any material.
+    """
+    from io_scene_dts.props import migrate
+
+    _reset()
+    _import_dts("v24_shrub.dts")
+    imported = _mat_by_index(0)
+    fresh = bpy.data.materials.new("fresh")
+    imported["dts_reflection_amount"] = 0.5
+    fresh["dts_reflection_amount"] = 0.1
+
+    migrate.migrate_all()
+    assert abs(imported.dts_material.reflection_amount - 0.5) < 1e-6
+    assert abs(fresh.dts_material.reflection_amount - 0.1) < 1e-6
+    for bmat in (imported, fresh):
+        assert "dts_reflection_amount" not in bmat.keys(), (
+            "the old key has to go, or it is a second source of truth"
+        )
+
+    # idempotent, and it does not undo a value set after the conversion
+    fresh.dts_material.reflection_amount = 0.75
+    migrate.migrate_all()
+    assert abs(fresh.dts_material.reflection_amount - 0.75) < 1e-6
+
+
+def test_migration_leaves_a_metallic_reflectance_where_it_is():
+    """Converting properties is one thing; rewriting a node tree is another.
+
+    An older .blend has its reflectance on Metallic.  That still exports, so
+    there is nothing migration has to do, and doing it anyway would edit the
+    user's shader graph on load.  The operator is the way to ask for it.
+    """
+    from io_scene_dts.mapping import envmap
+    from io_scene_dts.props import migrate
+
+    dts, _ = _env_mapped_fixture()
+    _reset()
+    assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
+    mat = _material_of("shrub")
+
+    # put the material back the way the older add-on left it
+    source = _reflectance_of(mat)
+    envmap.unwire(mat)
+    bsdf = next(n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+    mat.node_tree.links.new(source.outputs["Color"], bsdf.inputs["Metallic"])
+
+    migrate.migrate_all()
+    assert envmap.group_node(mat) is None, "migration must not re-wire the graph"
+    assert _reflectance_of(mat) == source, "and the fallback must still find it"
+
+    with bpy.context.temp_override(material=mat):
+        assert bpy.ops.io_scene_dts.rebuild_env_map(all_materials=False) == {"FINISHED"}
+    assert envmap.group_node(mat) is not None
+    assert _reflectance_of(mat) == source, "the same image, now on the preview"
+    assert not bsdf.inputs["Metallic"].is_linked
 
 
 def test_a_translucent_sorted_mesh_records_no_mode():
@@ -1549,6 +1632,127 @@ def test_multiframe_shape_keys():
             assert all(close(p, src_frame) for p in dst_frame), f"frame {f}: dst point extra"
 
 
+def _displayed_points(obj):
+    """The mesh as the viewport shows it, in object-local (== DTS) space."""
+    deps = bpy.context.evaluated_depsgraph_get()
+    evaluated = obj.evaluated_get(deps)
+    shown = evaluated.to_mesh()
+    try:
+        return [tuple(v.co) for v in shown.vertices]
+    finally:
+        evaluated.to_mesh_clear()
+
+
+def test_frame_track_previews_the_vertex_animation():
+    """The sequence's frame track drives the shape keys, so the animation
+    shows in the viewport and not only in the exported file."""
+    _reset()
+    _import_dts("v22_disc.dts")
+    src = read_shape_file(FIXTURES / "v22_disc.dts")
+    # Activate's frame track names object 3, trailAct; slot 0 of that object is
+    # the largest detail level
+    obj = src.objects[3]
+    base_name = src.name(obj.name_index)
+    assert base_name == "trailAct", base_name
+    dts_mesh = src.meshes[obj.start_mesh_index]
+    vpf = dts_mesh.verts_per_frame
+
+    arm = _armature()
+    prop = f"dts_frame_{base_name}"
+    assert prop in arm.keys(), sorted(arm.keys())
+    bobj = max(
+        (o for o in bpy.context.scene.objects
+         if o.type == "MESH" and o.get("dts_object_name") == base_name),
+        key=lambda o: o.get("dts_detail_size", 0),
+    )
+
+    def close_to_frame(points, f, tol=1e-3):
+        frame = dts_mesh.verts[f * vpf : (f + 1) * vpf]
+        return all(
+            any(sum((a - b) ** 2 for a, b in zip(p, q)) < tol * tol for q in frame)
+            for p in points
+        )
+
+    def spread(a, b):
+        return max(sum((p - q) ** 2 for p, q in zip(x, y)) ** 0.5 for x, y in zip(a, b))
+
+    # the sequences arrive as an NLA library with one track playing; the frame
+    # track under test is Activate's
+    anim = arm.animation_data
+    for track in anim.nla_tracks:
+        track.mute = track.name != "Activate"
+    strip = next(s for t in anim.nla_tracks if t.name == "Activate" for s in t.strips)
+
+    # the rest pose is the mesh's own vertices -- frame 0, what the Basis holds
+    rest = [tuple(v.co) for v in bobj.data.vertices]
+    assert close_to_frame(rest, 0), "the imported mesh is not the file's frame 0"
+    seen = {}
+    # the strip's end is exclusive: at frame_end the track has stopped driving
+    # and the property is back at its stored default, which is a rest pose and
+    # not the last keyframe
+    for scene_frame in range(int(strip.frame_start), int(strip.frame_end)):
+        bpy.context.scene.frame_set(scene_frame)
+        deps = bpy.context.evaluated_depsgraph_get()
+        # what the timeline says, not what the test poked in: a manual write to
+        # the property is overwritten by the strip on the next evaluation
+        value = int(round(arm.evaluated_get(deps)[prop]))
+        shown = _displayed_points(bobj)
+        assert close_to_frame(shown, value), (
+            f"scene frame {scene_frame}: track says DTS frame {value}, "
+            f"viewport shows something else"
+        )
+        seen.setdefault(value, shown)
+
+    assert len(seen) > 3, f"the track never moved off one frame: {sorted(seen)}"
+    # and the travel matches the file's, so a driver that fired on the wrong
+    # key -- landing on *a* frame, just not this one -- still fails
+    for value, shown in sorted(seen.items()):
+        expected = spread(
+            dts_mesh.verts[value * vpf : (value + 1) * vpf], dts_mesh.verts[:vpf]
+        )
+        moved = spread(shown, rest)
+        assert abs(moved - expected) < 1e-3, (
+            f"DTS frame {value}: viewport moved {moved:.4f}, file says {expected:.4f}"
+        )
+
+
+def test_imported_frames_rest_at_the_first_frame():
+    """A shape key added from Python arrives at value 1.0, so an import that
+    leaves it there displays the sum of every frame instead of frame 0 -- the
+    mesh looks wildly deformed while the file it came from is fine.
+
+    Imported without sequences on purpose: with them, the frame track's drivers
+    write the key values on the first evaluation and would hide a bad default.
+    A shape whose frames nothing animates has only the default.
+    """
+    _reset()
+    res = bpy.ops.io_scene_dts.import_dts(
+        filepath=str(FIXTURES / "v22_disc.dts"),
+        import_details=True,
+        import_sequences=False,
+    )
+    assert res == {"FINISHED"}, res
+    keyed = [
+        o for o in bpy.context.scene.objects
+        if o.type == "MESH" and o.data.shape_keys is not None
+    ]
+    assert keyed, "no shape keys created for the multi-frame meshes"
+    deps = bpy.context.evaluated_depsgraph_get()
+    for o in keyed:
+        frames = [kb for kb in o.data.shape_keys.key_blocks if kb.name.startswith("frame_")]
+        assert frames, f"{o.name}: no frame_NNN keys"
+        assert all(kb.value == 0.0 for kb in frames), [(kb.name, kb.value) for kb in frames]
+        evaluated = o.evaluated_get(deps)
+        shown = evaluated.to_mesh()
+        try:
+            worst = max(
+                (a.co - b.co).length for a, b in zip(shown.vertices, o.data.vertices)
+            )
+        finally:
+            evaluated.to_mesh_clear()
+        assert worst < 1e-5, f"{o.name}: displayed mesh is {worst:.4f} off the rest pose"
+
+
 def _uv_range(shape):
     """(min, max) texture u across every non-decal mesh of a shape."""
     us = [t[0] for m in shape.meshes if m is not None and m.mesh_type != 2 for t in m.tverts]
@@ -2088,6 +2292,7 @@ def test_every_panel_polls_and_draws():
             self.object = obj
             self.bone = bone
             self.material = material
+            self.scene = bpy.context.scene
             self.active_nla_strip = None
 
     _reset()
