@@ -17,7 +17,9 @@ animation.
   (File → Import → Torque Sequence), or by selecting `.dsq` files alongside
   the `.dts` in the shape importer, which loads them onto the armature it
   just created.  Sequences always arrive as NLA strips (see below), one track
-  each, all muted but one — pick which plays in the NLA editor.
+  each.  A shape's own sequences arrive **all muted** — pick which plays in the
+  NLA editor.  A `.dsq` imported onto an armature you selected yourself plays
+  straight away, because pointing at it was already the choice.
 
 The format core (`dtslib/`) is bpy-free and reads and writes the formats
 directly, exercised against a corpus of 407 Tribes 2 / TGE shapes and 1709

@@ -486,11 +486,27 @@ def merged_reflectance_image(diffuse_img, reflectance_img):
     )
 
 
+PASSTHROUGH_INPUT = "dts_passthrough"
+"""Node property naming the input that carries the host's own signal.
+
+A preview that *splices* itself into an existing chain — a decal mixing its
+colour into Base Color, a Math node damping the reflection mask under it —
+leaves the graph with two upstreams where there was one, and both this walk and
+:func:`~.decals.remove_decal_branch` have to know which one was there first.
+The index is the answer to both questions: follow it to read the material, and
+reconnect it to close the chain when the branch is torn out.
+"""
+
+
 def _image_node_upstream(socket):
     """Walk back from a socket to the Image Texture that reaches it, or None.
 
     Follows a chain of single-input nodes, so a hand-built graph that runs the
-    map through an Invert or a Math node still reads back as that map.
+    map through an Invert or a Math node still reads back as that map.  Where a
+    node carries :data:`PASSTHROUGH_INPUT` the walk follows that input instead
+    of the first linked one: a decal's colour mix has its *factor* linked too,
+    and factor is wired to the decal's own texture, so first-linked would read
+    the decal's image back as the material's and export the wrong name.
     """
     seen = set()
     while socket is not None and socket.is_linked:
@@ -500,7 +516,11 @@ def _image_node_upstream(socket):
         if node.name in seen:
             return None
         seen.add(node.name)
-        socket = next((i for i in node.inputs if i.is_linked), None)
+        carry = node.get(PASSTHROUGH_INPUT)
+        if carry is not None:
+            socket = node.inputs[int(carry)]
+        else:
+            socket = next((i for i in node.inputs if i.is_linked), None)
     return None
 
 

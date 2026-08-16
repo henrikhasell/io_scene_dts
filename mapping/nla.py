@@ -53,7 +53,15 @@ def scene_fps(context) -> float:
     return render.fps / render.fps_base
 
 
-def stack_actions(arm_obj, actions, fps: float, keep_playing: str | None = None):
+NOTHING_PLAYING = False
+"""*keep_playing* value meaning "leave every track muted".
+
+Distinct from ``None``, which means "no preference, keep the first" — a shape
+arrives inert, and a ``.dsq`` loaded onto an existing rig arrives playing.
+"""
+
+
+def stack_actions(arm_obj, actions, fps: float, keep_playing=NOTHING_PLAYING):
     """Give each action its own NLA track, timed to its stored duration.
 
     Returns ``(tracks, skipped)``.  *skipped* holds actions this armature can
@@ -86,13 +94,24 @@ def stack_actions(arm_obj, actions, fps: float, keep_playing: str | None = None)
     return tracks, skipped
 
 
-def _solo(anim, keep_playing: str | None) -> None:
-    """Leave exactly one track playing.
+def _solo(anim, keep_playing) -> None:
+    """Leave at most one track playing.
 
     The NLA evaluates every unmuted track at once.  That is what you want for a
     flare over a walk cycle, and meaningless for forty alternative body
-    animations, so a shape's sequences arrive as a library with one on.
+    animations, so a shape's sequences arrive as a library.
+
+    With :data:`NOTHING_PLAYING` the library arrives closed.  Sequence 0 is not
+    a choice — light_male's is an eleven-frame jet-flare visibility ramp that
+    holds its last value forever, so importing it "playing" leaves a flare lit
+    over every animation the user goes on to pick, with nothing on screen
+    saying why.  Whichever sequence a shape happens to list first is the wrong
+    one to start; the user picks.
     """
+    if keep_playing is NOTHING_PLAYING:
+        for track in anim.nla_tracks:
+            track.mute = True
+        return
     names = [t.name for t in anim.nla_tracks]
     if not names:
         return

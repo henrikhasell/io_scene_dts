@@ -263,8 +263,17 @@ def test_dsq_active_action_only():
     _import_dts("v24_w_sqknest.dts")
     arm = _armature()
     bpy.context.view_layer.objects.active = arm
-    # "active" is now the single unmuted NLA track, not an assigned action
+    # "active" is the single unmuted NLA track, not an assigned action -- and
+    # import leaves none of them unmuted, so there is a sequence to pick first
     assert arm.animation_data.action is None
+    try:
+        bpy.ops.io_scene_dts.export_dsq(filepath=_tmp(".dsq"), active_action_only=True)
+    except RuntimeError as e:
+        assert "no single active sequence" in str(e), str(e)
+    else:
+        raise AssertionError("nothing is playing yet; export must not guess one")
+
+    arm.animation_data.nla_tracks[0].mute = False
     assert sum(0 if t.mute else 1 for t in arm.animation_data.nla_tracks) == 1
     out = _tmp(".dsq")
     res = bpy.ops.io_scene_dts.export_dsq(filepath=out, active_action_only=True)
@@ -1440,7 +1449,10 @@ def test_decals_import_as_projector_empties():
         mat = props.target.active_material
         label = f"DTS Decal {props.index:03d}"
         nodes = {n.type for n in mat.node_tree.nodes if n.label == label}
-        assert {"TEX_COORD", "MAPPING", "SEPXYZ", "MIX_SHADER", "OBJECT_INFO"} <= nodes, nodes
+        # MIX, not MIX_SHADER: a lit decal composites its colour into the
+        # host's Base Color and is shaded by the host's one Principled
+        assert {"TEX_COORD", "MAPPING", "SEPXYZ", "MIX", "OBJECT_INFO"} <= nodes, nodes
+        assert "BSDF_PRINCIPLED" not in nodes, nodes
         coord = next(
             n for n in mat.node_tree.nodes
             if n.label == label and n.type == "TEX_COORD"
@@ -2814,6 +2826,10 @@ def test_import_dts_with_dsq_companions():
     _reset()
     arm = _import_dts("v24_w_sqknest.dts")
     node, bone = _offset_bone(arm)
+    # the name, not the Bone: the reset below frees it, and reading a freed
+    # StructRNA gives whatever is in that memory now -- which surfaced as a
+    # UnicodeDecodeError only once an unrelated test changed the allocation
+    bone_name = bone.name
     probes = ["ProbeA", "ProbeB", "ProbeC", "ProbeD", "ProbeE"]
 
     tmp = Path(tempfile.mkdtemp())
@@ -2835,11 +2851,34 @@ def test_import_dts_with_dsq_companions():
         action = bpy.data.actions.get(seq)
         assert action is not None, f"{seq} missing from {list(bpy.data.actions.keys())}"
         # bound to this armature's bones, not merely created
-        assert any(bone.name in fc.data_path for fc in _fcurves(action))
+        assert any(bone_name in fc.data_path for fc in _fcurves(action))
         # nothing assigns DSQ actions, so they need a fake user to survive a save
         assert action.use_fake_user
     # every companion landed, and none clobbered the shape's own sequences
     assert len(bpy.data.actions) == len(read_shape_file(tmp / "shape.dts").sequences) + len(probes)
+    # loading companions runs the solo pass a second time; it must not take the
+    # chance to start the shape's sequence 0, which is what put a permanently
+    # lit jet flare under every animation a user picked afterwards
+    assert [t.name for t in arm.animation_data.nla_tracks if not t.mute] == []
+    assert arm.animation_data.action is None
+
+
+def test_dsq_onto_an_existing_rig_plays_what_you_just_loaded():
+    """The other side of the same rule: a shape arrives inert because nothing
+    chose its sequence 0, but a .dsq you pointed at an armature yourself is a
+    choice, and it plays.  Muting that too would make the importer look broken.
+    """
+    _reset()
+    arm = _import_dts("v24_w_sqknest.dts")
+    assert [t.name for t in arm.animation_data.nla_tracks if not t.mute] == []
+
+    node, bone = _offset_bone(arm)
+    out = _tmp(".dsq")
+    Path(out).write_bytes(_probe_dsq(arm, node, rotate=True, translate=None, name="Probe"))
+    bpy.context.view_layer.objects.active = arm
+    assert bpy.ops.io_scene_dts.import_dsq(filepath=out) == {"FINISHED"}
+
+    assert [t.name for t in arm.animation_data.nla_tracks if not t.mute] == ["Probe"]
 
 
 def test_import_dts_rejects_more_than_one_shape():
@@ -2890,8 +2929,11 @@ def test_dts_import_stacks_sequences_as_nla_strips():
             checked += 1
     assert checked, "fixture carries no timed sequences"
 
-    # a library of clips, not seventeen animations blended at once
-    assert sum(0 if t.mute else 1 for t in tracks) == 1
+    # a library of clips, not seventeen animations blended at once -- and the
+    # library arrives closed.  Sequence 0 is not a choice, it is just whichever
+    # the file lists first, and playing it silently layers under every sequence
+    # the user picks afterwards.
+    assert [t.name for t in tracks if not t.mute] == []
     # an assigned action would evaluate on top of the stack, at scene fps
     assert arm.animation_data.action is None
     # deleting a track must not take the sequence with it

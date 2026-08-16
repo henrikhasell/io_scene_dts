@@ -110,7 +110,7 @@ listed in `UNSUPPORTED.md` §3.
 | Reflectance (environment) map | ● | ● | ● | ● | The second image in the material, masking the environment map it drives.  A DTS packs one in the diffuse's alpha channel, so an env-mapped material imports as two images, and the export dialog's **Combine Diffuse and Reflectance** (on by default) says which packing to write back for the whole shape.  A single material overrules it with **Reflectance Packing** — *Follow Export Setting* / *Combine* / *Separate*.  **Add Reflectance Map** in Material Properties gives a fresh material one. |
 | Environment-map preview | – | ● | ● | – | Not in the file, and rendered anyway: the mask drives a sphere-mapped environment texture mixed over the Principled the way the engine mixes it — `env*k + lit*(1-k)`, unlit, with `k` the mask times `reflection_amount` times a scene-level strength.  Which image is *not* a shape property — the engine takes it from the mission sky — so it is set in Scene Properties → **DTS Environment Map** and never exported.  `mapping/envmap.py` |
 | `reflection_amount` | ● | ● | ● | ● | A slider in Material Properties → DTS Material, scaling the reflection in the viewport as the engine scales it.  1.0 in 265 of the 270 env-mapped corpus materials. |
-| Bump map, detail map, `detail_scale` | ● | ◐ | ◐ | ◐ | Raw custom properties; the Principled BSDF ignores both maps.  A material given only `dts_bump_map`/`dts_detail_map` and no `dts_reflectance_map` exports them as `NO_MAP` with no warning.  Neither slot is used anywhere in the corpus.  `mapping/materials.py:1196` |
+| Bump map, detail map, `detail_scale` | ● | ◐ | ◐ | ◐ | Raw custom properties; the Principled BSDF ignores both maps.  A material given only `dts_bump_map`/`dts_detail_map` and no `dts_reflectance_map` exports them as `NO_MAP` with no warning.  Neither slot is used anywhere in the corpus.  `mapping/materials.py:1216` |
 | IFL flipbook (`.ifl` sidecar) | ● | ● | ● | ● | The `.ifl` list imports as a frame collection on the material, previews as a keyframed image switch, and is written back beside the exported `.dts`.  Ticking **IFL Material** is what puts an entry in the shape's IFL table — the table is derived from the materials that flip. |
 | IFL `firstFrame` / `firstFrameOffTime` | ◐ | – | – | ◐ | Written as zeros rather than round-tripped: they are engine load-time scratch, and 53 of the corpus's 64 entries carry uninitialised memory there.  `numFrames` is real and becomes the frame-list length.  `mapping/materials.py:932` |
 | A missing `.ifl` | ◐ | – | – | ◐ | The material keeps its checkbox and its table entry, so the shape is not silently un-animated, but there are no frames to preview and none to write.  `mapping/materials.py:678` |
@@ -143,10 +143,16 @@ previews what any of the rest do.
 ## 5. Animation
 
 Sequences are Actions, and always arrive as NLA strips — one track each, all
-muted but one.  A sequence stores its own `dts_duration` while keyframes are
-laid one per Blender frame, so an Action assigned straight to the armature
-would play at `scene.render.fps` and be wrong for all but the sequences that
-happen to match.
+muted.  Nothing plays until you unmute a track: the order sequences happen to
+sit in a file is not a recommendation, and a sequence started on the user's
+behalf goes on evaluating *underneath* every one they pick afterwards, since
+the NLA sums its unmuted tracks.  A `.dsq` imported onto an armature by hand is
+the exception and plays, because selecting it was the choice.
+
+A sequence stores its own `dts_duration` while keyframes are laid one per
+Blender frame, so an Action assigned straight to the armature would play at
+`scene.render.fps` and be wrong for all but the sequences that happen to match
+— which is why the NLA editor, not the Action editor, is where you pick.
 
 | Feature | Import | Edit | Create | Export | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -189,7 +195,7 @@ the projector and export recomputes the rest.
 | Per-detail-level decal meshes | ● | ● | ● | ● | A decal owns a mesh run parallel to its owner's slots, so export writes one `TSDecalMesh` per LOD.  The preview draws on the target only. |
 | Decal material | ● | ● | ● | ● | A pointer on the empty — it had nowhere to live once a decal stopped being a mesh with a material slot. |
 | Something translucent to draw against | ● | ● | ● | ● | The engine needs a blended mesh in a shape that carries decals, so export **refuses** one that has none — see `UNSUPPORTED.md` §1.  Either the decal's own material or the mesh it sits on: every one of the 153 decal-bearing corpus shapes does one (94) or the other (59).  `mapping/blender_to_shape.py:433`  Not reached when decals are baked as meshes: the check is about the decal table, and a baked shape has none. |
-| Viewport preview | ● | ● | ● | – | A branch in the *target's* material: a Texture Coordinate reading the projector's object space, masked to its box and to the one object the decal targets.  Per-pixel where export decides per-face, so it is close to the exported coverage rather than identical. |
+| Viewport preview | ● | ● | ● | – | A branch in the *target's* material: a Texture Coordinate reading the projector's object space, masked to its box and to the one object the decal targets.  Per-pixel where export decides per-face, so it is close to the exported coverage rather than identical.  A lit decal composites its colour into the host's **Base Color** and is shaded by the host's one Principled — the engine lights a decal with the target mesh's normals and DTS stores no gloss term, so there is nothing for a second BSDF to do except cost a full shader evaluation per pixel per decal, on or off.  Only unlit decals get a surface of their own.  `mapping/decals.py:940` |
 | Authoring from a selection | – | ● | ● | ● | **Add DTS Decal** (Object Properties → DTS Mesh) makes one from the faces you have selected, across every detail level of the object. |
 | Decals as meshes (import option) | ◐ | ○ | – | ○ | Off by default.  On, each decal arrives as a copy of the faces the file says it covers and no projector is built — the only way to see the file's own face list, and a way to *look at* a shape rather than author one: export reads projectors and nothing else, so these reach no file.  Warned at import and again at export.  `mapping/shape_to_blender.py:193` |
 | Decals as meshes (export option) | – | – | – | ● | Off by default.  On, each decal is written as an ordinary mesh object — the faces it covers, copied, lifted a fixed 0.002 shape units along their normals so they do not z-fight, with the projection evaluated into its UVs — and the file carries no decal table.  Anything that reads a `.dts` then draws it, and the translucency refusal above does not apply.  One-way: re-importing gives meshes and no projectors, so it is an output format rather than a round trip.  `mapping/decals.py:1071` |

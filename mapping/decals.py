@@ -62,7 +62,7 @@ from ..dtslib import (
 )
 from ..dtslib.types import MAT_ADDITIVE, MAT_SUBTRACTIVE
 from ..props.decal import SCHEMA_VERSION as DECAL_SCHEMA_VERSION
-from .materials import diffuse_image_node
+from .materials import PASSTHROUGH_INPUT, diffuse_image_node
 
 PROJECTOR_PREFIX = "decal_"
 # A decal is off when its state is negative (tsShapeInstance.cc: `if (decalMesh
@@ -410,21 +410,40 @@ def _host_gate_nodes(index: int):
 
 
 def remove_decal_branch(nt, label: str) -> bool:
-    """Unpick one decal branch, closing the surface chain behind it.
+    """Unpick one decal branch, closing every chain it was spliced into.
 
-    The branches are chained -- each Mix Shader takes the previous surface as
-    its first input -- so a branch cannot merely be deleted: whatever its output
-    fed has to be reconnected to what fed it, or the chain ends at a dangling
-    socket and the material draws black.
+    A branch is not a subtree hanging off the graph, it is spliced into it --
+    into Base Color, or the surface via a Mix Shader, or the environment map's
+    mask -- and branches chain, each taking the last one's output as its input.
+    So a branch cannot merely be deleted: whatever its output fed has to be
+    reconnected to what fed it, or the chain ends at a dangling socket and the
+    material draws black.
+
+    Every splice carries :data:`~.materials.PASSTHROUGH_INPUT` naming the input
+    the host's own signal arrived on, so closing the chain is one operation
+    wherever it happened.
     """
     nodes = [n for n in nt.nodes if n.label == label]
     if not nodes:
         return False
-    mix = next((n for n in nodes if n.type == "MIX_SHADER"), None)
-    if mix is not None:
-        upstream = mix.inputs[1].links[0].from_socket if mix.inputs[1].is_linked else None
-        downstream = [l.to_socket for l in mix.outputs[0].links]
-        for link in list(mix.outputs[0].links):
+    for node in nodes:
+        carry = node.get(PASSTHROUGH_INPUT)
+        if carry is None and node.type == "MIX_SHADER":
+            # a branch built before the tag existed: every .blend saved while
+            # decals were a Mix Shader per decal has these, and they are exactly
+            # the graphs Rebuild Decal Preview is for.  Untagged and unclosed,
+            # the removal would leave the material output dangling and the
+            # rewire would decline, which is a decal that silently disappears.
+            carry = 1
+        if carry is None:
+            continue
+        source = node.inputs[int(carry)]
+        upstream = source.links[0].from_socket if source.is_linked else None
+        out = next((o for o in node.outputs if o.enabled), None)
+        if out is None:
+            continue
+        downstream = [l.to_socket for l in out.links]
+        for link in list(out.links):
             nt.links.remove(link)
         if upstream is not None:
             for socket in downstream:
@@ -563,9 +582,12 @@ def _decal_shader(nt, mat, colour_out, label, location):
     it ``glNormalPointer`` from the *target mesh's* normals and
     ``initDecalMaterials`` sets ``GL_MODULATE`` without ever touching
     ``GL_LIGHTING`` (``engine/ts/tsDecal.cc``), so a decal is shaded exactly
-    like the surface it sits on -- with that surface's normals, which is why a
-    Principled here and not the host's own shader re-used: same lights, same
-    normals, the decal's colour.
+    like the surface it sits on -- with that surface's normals.
+
+    Which is why a *lit* decal never gets here any more: it is the host's own
+    shading with a different colour, so :func:`_composite_colour` gives it the
+    host's colour input rather than a Principled of its own.  Only the unlit
+    case is left, and it needs a surface because an Emission is not a colour.
 
     Lighting comes off only where ``TSMesh::setMaterial`` turns it off:
     ``MAT_SELF_ILLUMINATING``, or a material with no lighting to modulate at
@@ -592,6 +614,89 @@ def _decal_shader(nt, mat, colour_out, label, location):
     bsdf.inputs["Roughness"].default_value = 1.0
     nt.links.new(colour_out, bsdf.inputs["Base Color"])
     return bsdf.outputs["BSDF"]
+
+
+def _composite_colour(nt, factor, colour_out, label, location) -> bool:
+    """Mix the decal's colour into the host's Base Color and shade both once.
+
+    Same picture as a Mix Shader between the host's surface and a Principled of
+    the decal's own, and a seventh of the cost.  Two facts make them equal.  A
+    lit decal is shaded *by the host's lighting and normals* (see
+    :func:`_decal_shader`), so the only thing its own Principled contributed was
+    a base colour.  And roughness -- the one input that could have differed --
+    is 1.0 on both, because DTS stores no gloss term at all and
+    ``material_to_blender`` gives every imported material the same flat
+    response; there is nothing in the file for the two to disagree about.
+
+    The cost is not marginal.  EEVEE evaluates *both* sides of a Mix Shader
+    whatever the factor, so N decals on a material meant N+1 full BSDFs per
+    pixel for a shape that has none of that geometry: light_male's torso shaded
+    seven, its body seventy-six, at 1632 triangles.  Decals switched off by
+    their state track cost exactly as much as decals on screen.
+
+    Returns False when the material has no Principled to composite into, which
+    leaves the caller to build the old Mix Shader branch.
+    """
+    bsdf = next((n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"), None)
+    if bsdf is None:
+        return False
+    base = bsdf.inputs["Base Color"]
+
+    blend = nt.nodes.new("ShaderNodeMix")
+    blend.data_type = "RGBA"
+    blend.label = label
+    blend.location = location
+    sockets = [i for i in blend.inputs if i.enabled]  # Factor, A, B
+    blend[PASSTHROUGH_INPUT] = list(blend.inputs).index(sockets[1])
+
+    nt.links.new(factor.outputs[0], sockets[0])
+    if base.is_linked:
+        nt.links.new(base.links[0].from_socket, sockets[1])
+    else:
+        sockets[1].default_value = tuple(base.default_value)
+    nt.links.new(colour_out, sockets[2])
+    nt.links.new(next(o for o in blend.outputs if o.enabled), base)
+    return True
+
+
+def _damp_reflection(nt, target_mat, factor, label, location) -> None:
+    """Take the environment map off the pixels a decal covers.
+
+    A decal is geometry drawn over the host, so what it covers is gone --
+    reflection included, since ``TSDecalMesh::render`` sets up no texgen of its
+    own.  The Mix Shader form got that for free by replacing the whole shaded
+    surface; compositing into Base Color puts the decal *under* the reflection
+    instead, and scorch marks on light_male's armour would come back shiny.
+
+    So the mask the environment map is gated by loses the decal's coverage:
+    ``mask * (1 - factor)``.  Two scalar Math nodes against a Principled saved
+    -- the trade is not close.  Materials with no environment map get nothing.
+    """
+    from . import envmap
+
+    group = envmap.group_node(target_mat)
+    if group is None:
+        return
+    mask = group.inputs["Mask"]
+
+    keep = nt.nodes.new("ShaderNodeMath")
+    keep.operation = "SUBTRACT"
+    keep.label = label
+    keep.location = location
+    keep.inputs[0].default_value = 1.0
+    nt.links.new(factor.outputs[0], keep.inputs[1])
+
+    damp = nt.nodes.new("ShaderNodeMath")
+    damp.operation = "MULTIPLY"
+    damp.label = label
+    damp.location = (location[0] + 200, location[1])
+    damp[PASSTHROUGH_INPUT] = 0
+    if mask.is_linked:
+        nt.links.new(mask.links[0].from_socket, damp.inputs[0])
+    else:
+        damp.inputs[0].default_value = mask.default_value
+    nt.links.new(keep.outputs[0], damp.inputs[1])
+    nt.links.new(damp.outputs[0], mask)
 
 
 def _decal_is_unlit(mat) -> bool:
@@ -829,10 +934,19 @@ def wire_decal_branch(target_mat, decal_obj, arm_obj=None) -> bool:
         nt.links.new(same.outputs[0], mine.inputs[1])
         factor = mine
 
+    # A lit decal is the host's own shading with a different colour, so it can
+    # be a colour, and one Principled can shade the pair.  Only a decal the
+    # engine draws *without* lighting needs a surface of its own.
+    if not _decal_is_unlit(props.material):
+        if _composite_colour(nt, factor, colour_out, label, (x - 200, y)):
+            _damp_reflection(nt, target_mat, factor, label, (x - 200, y - 700))
+            return True
+
     shader = _decal_shader(nt, props.material, colour_out, label, (x - 400, y + 150))
 
     mix = nt.nodes.new("ShaderNodeMixShader")
     mix.label = label
+    mix[PASSTHROUGH_INPUT] = 1
     mix.location = (x - 200, y)
     nt.links.new(factor.outputs[0], mix.inputs["Fac"])
     nt.links.new(surface, mix.inputs[1])

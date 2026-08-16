@@ -55,6 +55,49 @@ MUTATIONS = {
         "            warnings, pool=None,",
         ["test_lod_vertex_sharing_is_rederived"],
     ),
+    # Back to a Principled per decal.  Renders identically -- which is the
+    # point: nothing about the picture says the material now costs N+1 BSDFs
+    # per pixel instead of one.
+    "decal-shader-per-decal": (
+        "mapping/decals.py",
+        "    if not _decal_is_unlit(props.material):",
+        "    if False:",
+        ["test_a_decal_previews_lit_the_way_the_engine_lights_it"],
+    ),
+    # The splice tag that says which input carried the host's own signal.
+    # Without it the upstream walk follows the decal's *factor* into the decal's
+    # own texture, and the material exports pointing at the decal's image.
+    "decal-passthrough-tag": (
+        "mapping/decals.py",
+        "    blend[PASSTHROUGH_INPUT] = list(blend.inputs).index(sockets[1])",
+        "",
+        ["test_a_decal_does_not_rename_its_hosts_texture"],
+    ),
+    # Letting the environment map keep reflecting through a decal.
+    "decal-reflection-not-damped": (
+        "mapping/decals.py",
+        "            _damp_reflection(nt, target_mat, factor, label, (x - 200, y - 700))",
+        "            pass",
+        ["test_a_decal_takes_the_reflection_off_what_it_covers"],
+    ),
+    # Going back to starting sequence 0 on import.  Silent when it regresses --
+    # the shape animates, it just animates something nobody asked for, and the
+    # NLA sums it under whatever the user unmutes next.
+    "import-plays-sequence-zero": (
+        "mapping/nla.py",
+        "def stack_actions(arm_obj, actions, fps: float, keep_playing=NOTHING_PLAYING):",
+        "def stack_actions(arm_obj, actions, fps: float, keep_playing=None):",
+        ["test_dts_import_stacks_sequences_as_nla_strips",
+         "test_import_dts_with_dsq_companions"],
+    ),
+    # ...and the other half: muting so eagerly that a .dsq aimed at an armature
+    # by hand arrives silent too, which reads as the import having failed.
+    "dsq-import-plays-nothing": (
+        "ops/import_dsq.py",
+        "            keep_playing=actions[0].name if actions else None,",
+        "",
+        ["test_dsq_onto_an_existing_rig_plays_what_you_just_loaded"],
+    ),
     # A decal is an empty now, so the "dts_decal_name" guard in
     # _gather_mesh_objects is dead for any migrated scene -- mutating it caught
     # nothing, which the harness reported.  What still protects against phantom
@@ -262,11 +305,16 @@ MUTATIONS = {
     # a decal is lit by the engine unless its material says otherwise; the
     # unconditional Emission this replaced made every decal preview as though
     # it were self-illuminating
+    # Swap which decals get a surface of their own.  Catches both directions at
+    # once: a lit decal previewing as an emitter, and an unlit one previewing as
+    # a colour the host's Principled shades -- the second is the failure the
+    # collapse could newly introduce.
     "decal-preview-unlit": (
         "mapping/decals.py",
-        "    if _decal_is_unlit(mat):",
-        "    if True:",
-        ["test_a_decal_previews_lit_the_way_the_engine_lights_it"],
+        "    if not _decal_is_unlit(props.material):",
+        "    if _decal_is_unlit(props.material):",
+        ["test_a_decal_previews_lit_the_way_the_engine_lights_it",
+         "test_a_self_illuminating_decal_previews_unlit"],
     ),
     "decal-preview-ignores-self-illumination": (
         "mapping/decals.py",

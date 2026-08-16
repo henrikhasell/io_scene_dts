@@ -1586,7 +1586,11 @@ def test_a_decal_branch_projects_the_decals_own_image():
 
 
 def _decal_branch_shader(host_mat, index=0):
-    """The node the decal branch mixes over the host surface."""
+    """The surface an *unlit* decal branch mixes over the host.
+
+    Only unlit decals have one.  A lit decal is a colour now, shaded by the
+    host's own Principled -- see :func:`_decal_colour_reaches_the_host_shader`.
+    """
     from io_scene_dts.mapping.decals import _branch_label
 
     mix = next(
@@ -1594,6 +1598,24 @@ def _decal_branch_shader(host_mat, index=0):
         if n.label == _branch_label(index) and n.type == "MIX_SHADER"
     )
     return mix.inputs[2].links[0].from_node
+
+
+def _decal_colour_reaches_the_host_shader(host_mat, index=0):
+    """Does the branch's colour arrive at the host Principled's Base Color?"""
+    from io_scene_dts.mapping.decals import _branch_label
+
+    label = _branch_label(index)
+    bsdf = next(n for n in host_mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+    socket, seen = bsdf.inputs["Base Color"], set()
+    while socket is not None and socket.is_linked:
+        node = socket.links[0].from_node
+        if node.label == label:
+            return True
+        if node.name in seen:
+            return False
+        seen.add(node.name)
+        socket = next((i for i in node.inputs if i.is_linked), None)
+    return False
 
 
 def _wall_with_decal(*, self_illuminating=False):
@@ -1634,13 +1656,117 @@ def test_a_decal_previews_lit_the_way_the_engine_lights_it():
     sits on.  This previewed as an unlit Emission for a long time, which made
     every decal look self-illuminating -- the flags round-tripped perfectly and
     the viewport lied about all of them.
+
+    It is shaded by the *host's* Principled, not one of its own.  That is both
+    the closest reading of the engine -- the decal is drawn with the target
+    mesh's normals and no material state of its own beyond the texture -- and
+    the difference between a material costing one BSDF per pixel and N+1.  A
+    Mix Shader evaluates both sides whatever the factor, so the old form billed
+    for every decal on the material whether or not any of them were on screen.
     """
+    from io_scene_dts.mapping.decals import _branch_label
+
     host_mat = _wall_with_decal()
-    shader = _decal_branch_shader(host_mat)
-    assert shader.type == "BSDF_PRINCIPLED", shader.type
-    assert shader.inputs["Roughness"].default_value == 1.0, (
-        "the engine's fixed-function lighting has no gloss term"
+    nt = host_mat.node_tree
+    branch = [n for n in nt.nodes if n.label == _branch_label(0)]
+    assert branch, "no branch was wired"
+
+    assert not [n for n in branch if n.type == "EMISSION"], "a lit decal must not emit"
+    assert not [n for n in branch if n.type == "BSDF_PRINCIPLED"], (
+        "the decal must borrow the host's shader, not carry its own"
     )
+    assert len([n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"]) == 1, (
+        "one decal must not double what the material costs to shade"
+    )
+    assert _decal_colour_reaches_the_host_shader(host_mat), (
+        "the decal's colour never reaches the shader that lights it"
+    )
+
+
+def test_a_decal_does_not_rename_its_hosts_texture():
+    """Compositing into Base Color puts a node between the host and its image.
+
+    Export finds a material's texture by walking back from Base Color, and that
+    walk used to take the first linked input it saw.  The colour mix has its
+    *factor* linked too, and the factor is wired to the decal's own image, so
+    the walk went down the factor and came back with the decal's texture --
+    exporting the host material pointing at the wrong file.  Both images are
+    real here, and distinct, so a confusion has somewhere to show.
+    """
+    A.reset()
+    arm = A.armature("Wall")
+    verts, faces = A.quad_geometry()
+    host = A.image_material("wall_skin", diffuse=A.generated_image("wall_diffuse"))
+    host.surface_render_method = "BLENDED"  # a shape with decals needs one
+    target = A.mesh_object("wall2", arm, bone="root", verts=verts, faces=faces,
+                           material=host)
+    decal_mat = A.image_material("mark_skin", diffuse=A.generated_image("mark_diffuse"))
+
+    for polygon in target.data.polygons:
+        polygon.select = True
+    bpy.context.view_layer.objects.active = target
+    from io_scene_dts.mapping.decals import create_decal
+
+    create_decal(arm, target, name="mark", material=decal_mat)
+
+    host_mat = target.material_slots[0].material
+    from io_scene_dts.mapping.materials import diffuse_image_node
+
+    node = diffuse_image_node(host_mat)
+    assert node is not None, "the host material lost its texture behind the mix"
+    assert node.image.name == "wall_diffuse", node.image.name
+
+    # and at the file level, which is what actually ships
+    path = A.export_dts()
+    beside = Path(path).parent
+    assert (beside / "wall_skin.png").is_file(), sorted(p.name for p in beside.iterdir())
+
+
+def test_a_decal_takes_the_reflection_off_what_it_covers():
+    """A decal is geometry over the host, so it hides the host's reflection.
+
+    The Mix Shader form got that for nothing: it replaced the whole shaded
+    surface, environment map included.  Compositing into Base Color puts the
+    decal *under* the reflection instead, so the mask the environment map is
+    gated by has to lose the decal's coverage or scorch marks come back shiny.
+    """
+    from io_scene_dts.mapping import envmap
+    from io_scene_dts.mapping.decals import _branch_label, create_decal
+    from io_scene_dts.mapping.materials import reflectance_image_node
+
+    A.reset()
+    arm = A.armature("Shiny")
+    verts, faces = A.quad_geometry()
+    host = A.image_material(
+        "hull",
+        diffuse=A.generated_image("hull_diffuse"),
+        reflectance=A.generated_image("hull_refl", ramp=True),
+        packing="SEPARATE",
+    )
+    host.surface_render_method = "BLENDED"
+    target = A.mesh_object("hull2", arm, bone="root", verts=verts, faces=faces,
+                           material=host)
+    for polygon in target.data.polygons:
+        polygon.select = True
+    bpy.context.view_layer.objects.active = target
+    create_decal(arm, target, name="scorch",
+                 material=A.blended_material("scorch_skin"))
+
+    host_mat = target.material_slots[0].material
+    group = envmap.group_node(host_mat)
+    assert group is not None, "the reflectance never reached the environment group"
+
+    label = _branch_label(0)
+    damp = group.inputs["Mask"].links[0].from_node
+    assert damp.label == label, (
+        f"the mask is fed by {damp.label!r}, not by the decal's damping"
+    )
+    assert damp.operation == "MULTIPLY"
+
+    # and the mask still reads back as the reflectance map, or export invents a
+    # second material entry for a texture the shape already has
+    node = reflectance_image_node(host_mat)
+    assert node is not None and node.image.name == "hull_refl", node
 
 
 def test_a_self_illuminating_decal_previews_unlit():
@@ -1664,19 +1790,35 @@ def test_rebuilding_a_decal_preview_relights_an_old_branch():
     from io_scene_dts.mapping.decals import _branch_label
 
     host_mat = _wall_with_decal()
-    assert _decal_branch_shader(host_mat).type == "BSDF_PRINCIPLED"
-
-    # put the branch back the way the older add-on built it: unlit Emission
     nt = host_mat.node_tree
-    mix = next(n for n in nt.nodes
-               if n.label == _branch_label(0) and n.type == "MIX_SHADER")
-    old = mix.inputs[2].links[0].from_node
-    colour = old.inputs["Base Color"].links[0].from_socket
-    nt.nodes.remove(old)
+    label = _branch_label(0)
+    assert _decal_colour_reaches_the_host_shader(host_mat)
+
+    # Put the branch back the way an older add-on built it: the decal's colour
+    # through an Emission of its own, mixed over the host surface.  This is the
+    # graph in every .blend saved before either change, and it is what the
+    # rebuild has to be able to recognise and replace.
+    blend = next(n for n in nt.nodes if n.label == label and n.type == "MIX")
+    sockets = [i for i in blend.inputs if i.enabled]  # Factor, A, B
+    factor = sockets[0].links[0].from_socket
+    base = sockets[1].links[0].from_socket if sockets[1].is_linked else None
+    colour = sockets[2].links[0].from_socket
+    bsdf = next(n for n in nt.nodes if n.type == "BSDF_PRINCIPLED")
+    nt.nodes.remove(blend)
+    if base is not None:
+        nt.links.new(base, bsdf.inputs["Base Color"])
+
+    output = next(n for n in nt.nodes if n.type == "OUTPUT_MATERIAL")
+    surface = output.inputs["Surface"].links[0].from_socket
     emit = nt.nodes.new("ShaderNodeEmission")
-    emit.label = _branch_label(0)
+    emit.label = label
     nt.links.new(colour, emit.inputs["Color"])
+    mix = nt.nodes.new("ShaderNodeMixShader")
+    mix.label = label
+    nt.links.new(factor, mix.inputs["Fac"])
+    nt.links.new(surface, mix.inputs[1])
     nt.links.new(emit.outputs["Emission"], mix.inputs[2])
+    nt.links.new(mix.outputs[0], output.inputs["Surface"])
     assert _decal_branch_shader(host_mat).type == "EMISSION"
 
     projector = next(o for o in bpy.data.objects if o.dts_decal.is_dts)
@@ -1684,13 +1826,17 @@ def test_rebuilding_a_decal_preview_relights_an_old_branch():
         assert bpy.ops.io_scene_dts.rebuild_decal_preview(all_decals=False) == {"FINISHED"}
 
     host_mat = projector.dts_decal.target.material_slots[0].material
-    assert _decal_branch_shader(host_mat).type == "BSDF_PRINCIPLED", (
+    nt = host_mat.node_tree
+    assert _decal_colour_reaches_the_host_shader(host_mat), (
         "the rebuild has to relight a branch an older version left emissive"
     )
-    # and it must not stack: exactly one branch, still reaching the output
-    labelled = [n for n in host_mat.node_tree.nodes if n.label == _branch_label(0)]
-    assert sum(1 for n in labelled if n.type == "MIX_SHADER") == 1, len(labelled)
-    output = next(n for n in host_mat.node_tree.nodes if n.type == "OUTPUT_MATERIAL")
+    # and it must not stack, nor leave the legacy nodes behind
+    labelled = [n for n in nt.nodes if n.label == _branch_label(0)]
+    assert not [n for n in labelled if n.type in {"MIX_SHADER", "EMISSION"}], (
+        [n.type for n in labelled]
+    )
+    assert sum(1 for n in labelled if n.type == "MIX") == 1, [n.type for n in labelled]
+    output = next(n for n in nt.nodes if n.type == "OUTPUT_MATERIAL")
     assert output.inputs["Surface"].is_linked
 
 
@@ -2041,8 +2187,8 @@ def test_a_decal_previews_only_on_its_target():
     # integers either side, so the window must not reach the next one
     assert same.inputs[2].default_value < 1.0
 
-    mix = next(n for n in branch if n.type == "MIX_SHADER")
-    assert _feeds(mix.inputs["Fac"], same), "the gate does not reach the mix factor"
+    blend = next(n for n in branch if n.type == "MIX")
+    assert _feeds(blend.inputs[0], same), "the gate does not reach the mix factor"
 
     # the gate is preview only: the file is what it was without one
     shape = A.read(A.export_dts())
@@ -2074,8 +2220,11 @@ def test_a_decal_previews_only_on_its_target():
     assert abs(same.inputs[1].default_value - decoy.pass_index) < 1e-6, (
         same.inputs[1].default_value, decoy.pass_index
     )
-    mix = next(n for n in moved if n.type == "MIX_SHADER")
-    assert _feeds(mix.inputs["Fac"], same), "the moved gate does not reach the mix"
+    blend = next(n for n in moved if n.type == "MIX")
+    assert _feeds(blend.inputs[0], same), "the moved gate does not reach the mix"
+    assert _decal_colour_reaches_the_host_shader(moved_mat), (
+        "the moved branch never reaches the new host's shader"
+    )
 
 
 def test_a_decal_is_authorable_by_hand():

@@ -37,6 +37,7 @@ result rather than because this add-on will not — they are in §7.
 | DTS version 25+ | Same error.  Torque 3D–era shapes are not read. | `dtslib/reader.py:71` |
 | Writing a shape an older version has no room for | `write_shape` refuses rather than drop ground frames, node-scale animation, merge indices, LOD error metrics, decal projection planes or per-material reflection amounts without saying so.  Each message names `fit_to_version` as the way to say "lose it, but tell me", which is what the export dialog does — so this is a library guard, not something an export meets.  What each loss costs is in §4. | `dtslib/fit.py:469` |
 | Exporting without an armature | `select an armature (the DTS shape root)` — the armature *is* the shape. | `mapping/blender_to_shape.py:102` |
+| Exporting a DSQ with **Active Action Only** and no sequence playing | `no single active sequence — leave exactly one NLA track unmuted`.  "Active" means the one unmuted NLA track, because that is where sequences live; an assigned Action counts too, though nothing assigns one.  Import now leaves *every* track muted (`mapping/nla.py:113`), so a shape hits this until a sequence is picked.  Refused rather than defaulting to the first track: which sequence a file lists first is an accident of the file, and writing the wrong animation into a `.dsq` is silent. | `ops/export_dsq.py:43` |
 | Exporting decals with nothing translucent | `this shape has N decal(s) and nothing translucent to draw them against`.  The engine needs a blended mesh in a shape that carries decals; without one the file is valid and the decals draw wrong, which nothing downstream can diagnose.  Refused rather than warned because it is one click to fix — Render Method → Blended on the decal's own material or on the mesh it sits on — and because every one of the corpus's 153 decal-bearing shapes does one or the other.  Not reached when **Export Decals as Meshes** is ticked: the check is about the decal table, and a baked shape has none. | `mapping/blender_to_shape.py:433` |
 
 ---
@@ -198,7 +199,7 @@ way to check your work short of re-reading the exported file.
   Neither is used anywhere in the 852-file corpus — 0 materials of 3185 set
   either slot, and `detail_scale` is 1.0 in all of them.  A map referencing a
   material that was not exported is dropped with a warning.
-  `mapping/materials.py:1172`
+  `mapping/materials.py:1192`
   Two further ways a map slot can be lost or silently retargeted are in §4.
   Neither the reflectance map nor `reflection_amount` is on this list any more;
   both are rendered, and what is left of the gap between the preview and the
@@ -249,7 +250,7 @@ it past that cap and rendered the body as broken-material magenta.  The object
 half of the mask has the same constraint and the same answer — an Object Info
 comparison rather than an attribute, because a material is shared and 5999 of
 the corpus's 6053 decals sit on one another DTS object also uses, so the box
-alone drew a hull's burn on the turret as well.  `mapping/decals.py:817`  Both
+alone drew a hull's burn on the turret as well.  `mapping/decals.py:922`  Both
 still lose something: see §4.
 
 The branch is **lit**, because the engine lights decals.  `TSDecalMesh::render`
@@ -260,10 +261,28 @@ on; only `MAT_SELF_ILLUMINATING` takes lighting off, which `TSMesh::setMaterial`
 does. This was an unlit `Emission` for every decal until it was measured against
 that, which meant every decal previewed as though it were self-illuminating —
 the flag round-tripped perfectly and the viewport contradicted it.
-`mapping/decals.py:579`  A branch is built once and never revisited, so
+`mapping/decals.py:601`  A branch is built once and never revisited, so
 scenes saved before that keep the Emission until **Rebuild Decal Preview**
 (Object Properties → DTS Decal) rebuilds it; the same button is what picks up a
 decal whose *material* has been changed since it was wired.
+
+Being lit by the host is now literal: a lit decal's colour is mixed into the
+host's own **Base Color** and shaded by the host's one Principled, rather than
+mixed over the host's surface as a Principled of its own.  The picture is the
+same — DTS stores no gloss term, so both were roughness 1.0 and had nothing to
+disagree about — and the cost is not.  EEVEE evaluates *both* sides of a Mix
+Shader whatever the factor, so N decals meant N+1 full BSDFs per pixel whether
+or not any of them were switched on: `light_male`'s torso shaded seven and its
+body seventy-six, for 1632 triangles.  Measured in Material Preview at
+1351×757, playback went from 118 ms to 83 ms a frame.  What is left is the
+branches' own sampling, which the collapse does not touch.  Only a decal the
+engine draws *unlit* still gets a surface of its own.  `mapping/decals.py:940`
+
+The decal also takes the environment map off what it covers
+(`mapping/decals.py:662`), which the Mix Shader form got for free by replacing
+the whole shaded surface.  Compositing into Base Color puts the decal *under*
+the reflection instead, so the mask is multiplied by `1 - coverage`; without it
+scorch marks on reflective armour come back shiny.
 
 A gate hides a branch but never stops the GPU running it, so sharing was also
 what made this expensive: every mesh on a material paid for every decal on it.
@@ -294,7 +313,7 @@ Two more, both consequences of the object gate above:
   one object, so switching to a coarser detail collection shows no decal even
   though the file has one there.  Nothing is lost — this is the preview being
   narrower than the file, not the file being narrower than the scene.
-  `mapping/decals.py:817`
+  `mapping/decals.py:922`
 - **`pass_index` on a decal's target belongs to the add-on.**  The gate needs a
   per-object number a shader can read, and Object Index is the only one that
   costs no attribute slot, so targeting a mesh with a decal overwrites whatever
@@ -386,7 +405,7 @@ you export.
   **Combine Diffuse and Reflectance** for the whole shape is what makes this
   reachable for a material the author never thought about; setting that
   material to *Separate* avoids it entirely, since separate textures have no
-  size relationship.  `mapping/materials.py:1089,1097`
+  size relationship.  `mapping/materials.py:1109,1117`
 - **The decals of a shape exported with `Export Decals as Meshes`.**  Baking
   writes each decal as ordinary geometry and leaves `shape.decals` empty, so
   the projection, the coverage rule and the decal's identity are all gone from
@@ -396,7 +415,7 @@ you export.
   the option doing what it says rather than a defect, and it is off by default;
   it is here because the loss is invisible in the exported file, which is a
   perfectly ordinary shape.  Warned at export, naming the count.
-  `mapping/decals.py:1145`
+  `mapping/decals.py:1256`
 - **A decal that covers no faces at any detail level, when baking.**  The
   projected form writes a decal entry whose mesh slots are all null, which a
   later import can still show as a projector; the baked form has nothing to
@@ -494,7 +513,7 @@ you export.
   exports as `bump=NO_MAP, detail=NO_MAP`, with no warning.  Adding
   `dts_reflectance_map` as well makes all three take effect; imported materials
   always carry all three, so they are unaffected.
-  `mapping/materials.py:1196`  Reflectance is the exception now that the shader
+  `mapping/materials.py:1216`  Reflectance is the exception now that the shader
   owns it: an image reaching the environment-map group's **Mask** sets that slot
   whether or not any of the props are there.
 - **Whatever texture was already sitting where an export lands.**  Export
@@ -556,14 +575,14 @@ you export.
   through `index_by_name = {m.name.lower(): i ...}`, where a later entry
   overwrites an earlier one.  Material names are not unique in real shapes —
   the importer says so itself, and keys material identity on
-  `dts_material_index` for that reason (`mapping/materials.py:852`) — so a slot
+  `dts_material_index` for that reason (`mapping/materials.py:872`) — so a slot
   pointing at the *first* of two materials named `glass` comes back pointing at
   the last, silently.  104 of the 630 corpus shapes have duplicate material
   names, but none of them has a map slot targeting a duplicated name, so no
-  real file is currently mistranslated. `mapping/materials.py:1177,1186`
+  real file is currently mistranslated. `mapping/materials.py:1197,1206`
   Reflectance slots resolved from the shader do not join this hazard: they are
   matched on the image *datablock*, whose name Blender does keep unique.
-  `mapping/materials.py:1114`
+  `mapping/materials.py:1134`
 
 ---
 
@@ -776,11 +795,11 @@ the same answer either way, and because someone will otherwise try to fix them.
 
 Three Blender suites, and the difference between the first two is the point.
 
-`tests/blender/test_operators.py` (99 tests) imports real fixtures, edits them
+`tests/blender/test_operators.py` (100 tests) imports real fixtures, edits them
 and exports.  That covers reading files the add-on did not write, and it is the
 only way to check a feature no fixture-free scene can produce.
 
-`tests/blender/test_authoring.py` (99 tests) never imports anything.  Every test
+`tests/blender/test_authoring.py` (104 tests) never imports anything.  Every test
 builds a shape from nothing — armature, meshes, materials, actions — exports it,
 and reads the feature back out of the file.  This is the suite that answers
 "can a user *make* one of these", which a round-trip cannot: the exporter may be
