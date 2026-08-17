@@ -1012,6 +1012,31 @@ def test_a_translation_only_channel_marks_only_translation():
     assert seq.rotation_matters.count() == 0, "a location channel claimed rotation"
 
 
+def test_another_shapes_sequences_do_not_follow_this_one_out():
+    """`dts_sequence` says an action is a DTS sequence, not whose.
+
+    Exporting a weapon from a scene that also holds an imported player used to
+    write the player's sequences into the weapon's file -- every channel
+    dropped with a warning, since none of its bones exist on the weapon.  Both
+    rigs here have a bone called "root", so the bone-name fallback would reach
+    the stray action too if ownership did not veto it.
+    """
+    A.reset()
+    player = A.armature("Player", bones=(("root", None), ("spine", "root")))
+    A.mesh_object("player2", player, bone="root")
+    stray = A.action_for(player, "Celrocky", frames=4)
+    stray["dts_sequence"] = True
+
+    weapon = A.armature("Weapon", bones=(("root", None),))
+    A.mesh_object("weapon2", weapon, bone="root")
+    mine = A.action_for(weapon, "Fire", frames=4)
+    mine["dts_sequence"] = True
+
+    shape = A.read(A.export_dts())
+    names = [shape.names[s.name_index] for s in shape.sequences]
+    assert names == ["Fire"], names
+
+
 def test_triggers_are_authorable():
     A.reset()
     arm = A.armature("Walker", bones=(("root", None), ("leg", "root")))

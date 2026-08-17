@@ -98,6 +98,16 @@ MUTATIONS = {
         "",
         ["test_dsq_onto_an_existing_rig_plays_what_you_just_loaded"],
     ),
+    # Ownership is the only thing keeping one shape's sequences out of
+    # another's file: drop the veto and the bone-name fallback reaches every
+    # action in the scene that happens to share a bone name.
+    "sequences-leak-between-shapes": (
+        "mapping/blender_to_shape.py",
+        "        if action in owned\n"
+        "        or (action not in claimed_elsewhere and _action_targets_armature(action, arm_obj))",
+        "        if action in owned or _action_targets_armature(action, arm_obj)",
+        ["test_another_shapes_sequences_do_not_follow_this_one_out"],
+    ),
     # A decal is an empty now, so the "dts_decal_name" guard in
     # _gather_mesh_objects is dead for any migrated scene -- mutating it caught
     # nothing, which the harness reported.  What still protects against phantom

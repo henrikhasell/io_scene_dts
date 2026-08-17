@@ -465,7 +465,7 @@ def _blender_to_shape(
 
     # -- sequences ----------------------------------------------------
     if do_export_sequences:
-        actions = [a for a in bpy.data.actions if a.get("dts_sequence") or _action_targets_armature(a, arm_obj)]
+        actions = _actions_for_armature(arm_obj)
         warnings += export_sequences(
             shape, arm_obj, actions, node_index_by_bone, object_index_by_name, decal_index_map,
             baked_decal_objects={i: obj for i, (obj, _vis) in baked_decals.items()},
@@ -557,6 +557,54 @@ def _action_targets_armature(action, arm_obj) -> bool:
         if fc.data_path.startswith('pose.bones["') and fc.data_path.split('"')[1] in bone_names:
             return True
     return False
+
+
+def _actions_owned_by(arm_obj) -> set:
+    """The actions this armature's own animation data claims.
+
+    Its assigned action plus every NLA strip's -- which is where the importer
+    puts a shape's sequences (mapping/nla.py) and how a user says in Blender
+    that an animation belongs to this rig.
+    """
+    owned = set()
+    anim = arm_obj.animation_data
+    if anim is None:
+        return owned
+    if anim.action is not None:
+        owned.add(anim.action)
+    for track in anim.nla_tracks:
+        for strip in track.strips:
+            if strip.action is not None:
+                owned.add(strip.action)
+    return owned
+
+
+def _actions_for_armature(arm_obj) -> list:
+    """The actions that are *this* shape's sequences.
+
+    ``dts_sequence`` marks an action as a DTS sequence; it does not say whose,
+    and testing it alone was a leak.  Exporting a weapon from a scene that also
+    held an imported player wrote the *player's* 45 sequences into the weapon's
+    file -- every channel dropped with a warning, because none of its bones
+    exist on the weapon, leaving 45 empty sequences nobody asked for.
+
+    Ownership decides instead.  The bone-name test stays as a fallback for an
+    action that has not been stacked yet, but it cannot reach across to one
+    another armature already claims: two shapes rigged to the same skeleton
+    share bone names, so the fallback alone would leak between *them*.
+    """
+    owned = _actions_owned_by(arm_obj)
+    claimed_elsewhere = set()
+    for other in bpy.data.objects:
+        if other is arm_obj or other.type != "ARMATURE":
+            continue
+        claimed_elsewhere |= _actions_owned_by(other)
+    return [
+        action
+        for action in bpy.data.actions
+        if action in owned
+        or (action not in claimed_elsewhere and _action_targets_armature(action, arm_obj))
+    ]
 
 
 def _dts_material_key(bmat) -> str:
