@@ -937,16 +937,26 @@ def ifl_materials_from_blender(shape, bmats):
         if props is None or not props.is_ifl:
             continue
         dts_name = str(bmat.get("dts_name") or bmat.name)
-        # Bare, not prefixed.  The two engine loaders disagree about what a
-        # material name's path prefix means: MaterialList strips it and opens
-        # the texture beside the .dts ("Material paths are a legacy of Tribes
-        # tools, strip them off" -- dgl/materialList.cc:231), while
-        # readIflMaterials converts the backslashes and opens
-        # shapePath/<name> verbatim (ts/tsShape.cc:1387).  A prefixed .ifl name
-        # therefore sends the engine into a subdirectory the textures are not
-        # in, and cannot be in.  The bare name is the one spelling both loaders
-        # resolve to the same directory.
-        ifl_name = ifl_name_for(Material(name=dts_name).basename)
+        # Prefixed, exactly like the material.  This used to be written bare,
+        # on the reasoning that MaterialList strips a path ("Material paths are
+        # a legacy of Tribes tools, strip them off" -- dgl/materialList.cc:231)
+        # while readIflMaterials opens shapePath/<name> verbatim
+        # (ts/tsShape.cc:1387), so a prefix would point somewhere the textures
+        # are not.  Tribes 2 says otherwise, and it was tested against a
+        # running one: a bare name does not resolve and the engine dies on an
+        # access violation, while the same shape with the prefix restored
+        # stands up and draws.  130 of the corpus's 132 Tribes IFL entries are
+        # prefixed and equal their material's name plus ".ifl" byte for byte;
+        # the 2 that are bare only work because their files happen to sit in
+        # textures/skins, which the engine searches anyway.  Writing it bare
+        # also made the round trip lossy -- re-exporting a stock shape renamed
+        # its flipbooks.
+        ifl_name = ifl_name_for(dts_name)
+        # ...and the sidecar goes in a directory mirroring that prefix, because
+        # the name is what the engine opens: TGE resolves shapePath/<name>, so
+        # "skins\flame.ifl" has to be at <dts dir>/skins/flame.ifl, and a
+        # Tribes install wants the same shape of tree under textures/.
+        ifl_dir = _prefix_dir(ifl_name)
         frames = list(props.ifl_frames)
         entries.append(
             IflMaterial((shape.add_name(ifl_name), slot, 0, 0, len(frames)))
@@ -966,6 +976,8 @@ def ifl_materials_from_blender(shape, bmats):
                     f"material {dts_name!r}: an IFL frame has no image and was skipped"
                 )
                 continue
+            # the line stays bare -- every one of the 2290 frame lines in the
+            # corpus's 73 .ifl files is, and they resolve beside the .ifl
             lines.append((_ifl_frame_filename(frame.image), frame.duration))
             # once per *distinct* image: a flipbook repeats its frames -- 210
             # lines over 6 textures in the corpus's largest -- and registering
@@ -973,20 +985,36 @@ def ifl_materials_from_blender(shape, bmats):
             if frame.image.name not in seen_images:
                 seen_images.add(frame.image.name)
                 writes.append(
-                    TextureWrite(frame.image, _ifl_frame_filename(frame.image), dts_name)
+                    TextureWrite(
+                        frame.image, ifl_dir + _ifl_frame_filename(frame.image), dts_name
+                    )
                 )
         writes.append(
-            TextureWrite(format_ifl(lines), Material(name=ifl_name).basename, dts_name)
+            TextureWrite(
+                format_ifl(lines), ifl_dir + Material(name=ifl_name).basename, dts_name
+            )
         )
     return entries, writes, warnings
 
 
+def _prefix_dir(dts_name: str) -> str:
+    r"""``"skins\flame.ifl"`` -> ``"skins/"``; a bare name -> ``""``.
+
+    Forward slashes, because this is half of a path on the way to disk rather
+    than a name in the file.  Empty for an unprefixed material, which keeps a
+    shape that names its textures bare writing everything in one directory.
+    """
+    stem = dts_name.replace("\\", "/")
+    return stem.rsplit("/", 1)[0] + "/" if "/" in stem else ""
+
+
 def ifl_filename(bmat) -> str:
-    """The .ifl this material's frames are written to, bare filename."""
+    """Where this material's .ifl is written, relative to the .dts."""
     from .ifl import ifl_name_for
 
     dts_name = str(bmat.get("dts_name") or bmat.name)
-    return Material(name=ifl_name_for(dts_name)).basename
+    ifl_name = ifl_name_for(dts_name)
+    return _prefix_dir(ifl_name) + Material(name=ifl_name).basename
 
 
 def _ifl_frame_filename(image) -> str:

@@ -1232,6 +1232,42 @@ def test_an_ifl_material_is_authorable():
     assert (beside / "flame0.png").is_file(), sorted(p.name for p in beside.iterdir())
 
 
+def test_a_prefixed_ifl_material_keeps_its_directory():
+    """A Tribes material carries a directory, and its flipbook has to carry the
+    same one: the entry name *is* the path the engine opens.
+
+    Written bare, Tribes 2 cannot resolve the sidecar and dies on an access
+    violation before drawing the shape -- tested against a running one.  130
+    of the corpus's 132 Tribes entries are prefixed and equal their material's
+    name plus ".ifl" exactly.
+    """
+    A.reset()
+    arm = A.armature("Screen")
+    mat = A.principled_material("crtscr")
+    mat["dts_name"] = "skins\\crtscr"
+    mat.dts_material.is_ifl = True
+    for index in range(3):
+        frame = mat.dts_material.ifl_frames.add()
+        frame.image = A.generated_image(f"crtscr{index}")
+        frame.duration = 2
+    A.mesh_object("body2", arm, bone="root", material=mat)
+
+    import tempfile
+
+    path = A.export_dts(str(Path(tempfile.mkdtemp()) / "crt.dts"))
+    shape = A.read(path)
+    assert shape.name(shape.ifl_materials[0].raw[0]) == "skins\\crtscr.ifl"
+    assert shape.materials[0].name == "skins\\crtscr"
+
+    # the sidecar goes where its name points, and the frames go with it --
+    # the lines inside stay bare, so they only resolve from the same directory
+    beside = Path(path).parent / "skins"
+    lines = (beside / "crtscr.ifl").read_text().splitlines()
+    assert lines == ["crtscr0.png 2", "crtscr1.png 2", "crtscr2.png 2"], lines
+    assert {line.split()[0] for line in lines} <= {p.name for p in beside.glob("*.png")}
+    assert not (Path(path).parent / "crtscr.ifl").exists(), "must not also land bare"
+
+
 def test_export_textures_gates_images_but_not_the_ifl():
     """The checkbox is about art.  A .ifl is the shape's own animation data and
     the .dts names it by filename, so suppressing it would leave the material

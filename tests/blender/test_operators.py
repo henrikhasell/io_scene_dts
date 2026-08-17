@@ -2436,16 +2436,16 @@ def test_an_ifl_round_trips_through_its_material():
     assert bpy.ops.io_scene_dts.export_dts(filepath=str(out), version="24") == {"FINISHED"}
     dst = read_shape_file(out)
 
-    # the slot is preserved; the name is deliberately *not* -- it is written
-    # bare so the engine opens the .ifl beside the textures it lists, rather
-    # than in a skins/ subdirectory MaterialList would never look in
+    # slot and name both survive.  The name used to be written bare, which
+    # made this round trip lossy and the shape unloadable: Tribes 2 dies on an
+    # access violation opening a flipbook whose entry carries no directory.
     assert [e.raw[1] for e in dst.ifl_materials] == [e.raw[1] for e in src.ifl_materials]
     assert [dst.name(e.raw[0]) for e in dst.ifl_materials] == [
-        "jetflare00.ifl", "screenstatic1.ifl"
-    ]
-    assert [src.name(e.raw[0]) for e in src.ifl_materials] == [
         "skins\\jetflare00.ifl", "skins\\screenstatic1.ifl"
     ]
+    assert [dst.name(e.raw[0]) for e in dst.ifl_materials] == [
+        src.name(e.raw[0]) for e in src.ifl_materials
+    ], "the entry is the material's name plus .ifl, prefix included"
     # the source's num_frames is uninitialised memory; ours is the real count
     assert [e.raw[4] for e in dst.ifl_materials] == [210, 120]
     assert all(e.raw[2] == e.raw[3] == 0 for e in dst.ifl_materials)
@@ -2453,15 +2453,18 @@ def test_an_ifl_round_trips_through_its_material():
         sorted(q.ifl_matters.indices()) for q in src.sequences
     ]
 
-    written = sorted(p.name for p in out.parent.glob("*.ifl"))
+    # the sidecar lands under the directory its name carries, because that
+    # name is the path the engine opens
+    written = sorted(p.name for p in (out.parent / "skins").glob("*.ifl"))
     assert written == ["jetflare00.ifl", "screenstatic1.ifl"], written
-    lines = (out.parent / "jetflare00.ifl").read_text().splitlines()
+    lines = (out.parent / "skins" / "jetflare00.ifl").read_text().splitlines()
     assert len(lines) == 210 and lines[:3] == [
         "jetflare00.png 1", "jetflare03.png 1", "jetflare01.png 1"
     ], lines[:3]
     # the frame textures came off disk, and go with the .ifl that lists them:
-    # a flipbook whose frames are somewhere else is a flipbook of nothing
-    beside = {p.name for p in out.parent.glob("*.png")}
+    # a flipbook whose frames are somewhere else is a flipbook of nothing.
+    # The lines stay bare, so "beside" has to mean the same directory.
+    beside = {p.name for p in (out.parent / "skins").glob("*.png")}
     assert {line.split()[0] for line in lines} <= beside, sorted(beside)
 
 
@@ -2476,14 +2479,13 @@ def test_ifl_preserved():
     assert res == {"FINISHED"}, res
     dst = read_shape_file(out)
     assert len(dst.ifl_materials) == len(src.ifl_materials) == 1
-    # the name is written bare, not with the source's skins\ prefix: the engine
-    # opens a .ifl at shapePath/<name> but strips the prefix off a *material*
-    # name, so only a bare name puts the .ifl beside the textures it lists
+    # the name keeps the source's skins\ prefix, because that name is the path
+    # the engine opens; written bare, Tribes 2 cannot resolve it and crashes
     from io_scene_dts.mapping.ifl import material_name_for
 
+    assert dst.name(dst.ifl_materials[0].raw[0]) == src.name(src.ifl_materials[0].raw[0])
     assert material_name_for(dst.name(dst.ifl_materials[0].raw[0])) == \
-        material_name_for(src.name(src.ifl_materials[0].raw[0])).rpartition("\\")[2]
-    assert "\\" not in dst.name(dst.ifl_materials[0].raw[0])
+        dst.materials[dst.ifl_materials[0].raw[1]].name, "entry must name its material"
     assert dst.ifl_materials[0].raw[1] == src.ifl_materials[0].raw[1], "material slot moved"
     # ...and the three the engine fills from the .ifl are written as zeros
     # rather than the uninitialised memory the shipped files carry

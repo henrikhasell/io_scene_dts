@@ -532,11 +532,10 @@ def export_sequences(
         # a material pointer resolves to its position in it.
         iset = TSIntegerSet()
         for item in action.dts_sequence_props.ifl_matters:
-            # the entry name is bare, so compare bare: a material called
-            # skins\flare has an entry called flare.ifl
+            # the entry name is the material's own name plus .ifl, prefix and
+            # all, so compare whole: skins\flare <-> skins\flare.ifl
             dts_name = (
                 str(item.material.get("dts_name") or item.material.name)
-                .replace("\\", "/").rpartition("/")[2]
                 if item.material else None
             )
             index = ifl_index_of.get(dts_name) if dts_name else None

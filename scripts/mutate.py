@@ -116,6 +116,14 @@ MUTATIONS = {
         "        base_name = obj.get(\"dts_object_name\")\n        if base_name in names:",
         ["test_object_visibility_previews_on_a_shape_built_from_nothing"],
     ),
+    # The entry name is the path the engine opens.  Stripped to a basename it
+    # resolves nowhere and Tribes 2 dies on an access violation.
+    "ifl-name-loses-its-prefix": (
+        "mapping/materials.py",
+        "        ifl_name = ifl_name_for(dts_name)",
+        "        ifl_name = ifl_name_for(Material(name=dts_name).basename)",
+        ["test_a_prefixed_ifl_material_keeps_its_directory"],
+    ),
     # A decal is an empty now, so the "dts_decal_name" guard in
     # _gather_mesh_objects is dead for any migrated scene -- mutating it caught
     # nothing, which the harness reported.  What still protects against phantom

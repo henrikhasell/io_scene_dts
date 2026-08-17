@@ -131,7 +131,11 @@ def write_textures(writes, texture_dir: Path | None, warnings: list[str],
             continue
         claimed[write.filename.lower()] = write.owner
 
+        # a prefixed material writes into a directory mirroring its prefix --
+        # "skins\flame" -> skins/flame.ifl -- which the engine needs because
+        # the name in the file is the path it opens
         target = texture_dir / write.filename
+        target.parent.mkdir(parents=True, exist_ok=True)
         scaled = None
         try:
             if isinstance(write.image, str):

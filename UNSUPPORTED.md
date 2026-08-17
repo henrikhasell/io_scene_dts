@@ -199,7 +199,7 @@ way to check your work short of re-reading the exported file.
   Neither is used anywhere in the 852-file corpus — 0 materials of 3185 set
   either slot, and `detail_scale` is 1.0 in all of them.  A map referencing a
   material that was not exported is dropped with a warning.
-  `mapping/materials.py:1192`
+  `mapping/materials.py:1220`
   Two further ways a map slot can be lost or silently retargeted are in §4.
   Neither the reflectance map nor `reflection_amount` is on this list any more;
   both are rendered, and what is left of the gap between the preview and the
@@ -405,7 +405,7 @@ you export.
   **Combine Diffuse and Reflectance** for the whole shape is what makes this
   reachable for a material the author never thought about; setting that
   material to *Separate* avoids it entirely, since separate textures have no
-  size relationship.  `mapping/materials.py:1109,1117`
+  size relationship.  `mapping/materials.py:1137,1117`
 - **The decals of a shape exported with `Export Decals as Meshes`.**  Baking
   writes each decal as ordinary geometry and leaves `shape.decals` empty, so
   the projection, the coverage rule and the decal's identity are all gone from
@@ -513,7 +513,7 @@ you export.
   exports as `bump=NO_MAP, detail=NO_MAP`, with no warning.  Adding
   `dts_reflectance_map` as well makes all three take effect; imported materials
   always carry all three, so they are unaffected.
-  `mapping/materials.py:1216`  Reflectance is the exception now that the shader
+  `mapping/materials.py:1244`  Reflectance is the exception now that the shader
   owns it: an image reaching the environment-map group's **Mask** sets that slot
   whether or not any of the props are there.
 - **Whatever texture was already sitting where an export lands.**  Export
@@ -579,10 +579,10 @@ you export.
   pointing at the *first* of two materials named `glass` comes back pointing at
   the last, silently.  104 of the 630 corpus shapes have duplicate material
   names, but none of them has a map slot targeting a duplicated name, so no
-  real file is currently mistranslated. `mapping/materials.py:1197,1206`
+  real file is currently mistranslated. `mapping/materials.py:1225,1206`
   Reflectance slots resolved from the shader do not join this hazard: they are
   matched on the image *datablock*, whose name Blender does keep unique.
-  `mapping/materials.py:1134`
+  `mapping/materials.py:1162`
 
 ---
 
@@ -609,11 +609,11 @@ exist, so adding a bone channel marks its node instead of being ignored.
   rather than three checkboxes.  They are not stored on the material at all:
   a prop beside the graph would be a second source for one value, and older
   scenes have theirs deleted on load (`props/migrate.py:402`).
-  `mapping/materials.py:995`  `MAT_NEVER_ENV_MAP` is a fourth exception, but in
+  `mapping/materials.py:1023`  `MAT_NEVER_ENV_MAP` is a fourth exception, but in
   one direction only: a material showing a reflectance map exports with
   env-mapping *on* however the box is set, because a reflectance map the engine
   is told never to read is not a feature.  With no such map the checkbox
-  still wins. `mapping/materials.py:1217`
+  still wins. `mapping/materials.py:1245`
 - **The blend state of a material that fades.**  The visibility and decal
   wiring force `surface_render_method = BLENDED` so a fade renders at all,
   which on an opaque material would otherwise read back as `MAT_TRANSLUCENT`.
@@ -634,7 +634,7 @@ exist, so adding a bone channel marks its node instead of being ignored.
   splitting it would change what the engine draws — so export keeps it combined
   however the box is set, and says nothing.  The box is honoured for every
   material whose diffuse and mask are different images, which is all of them
-  once a reflectance has been split out.  `mapping/materials.py:1081`
+  once a reflectance has been split out.  `mapping/materials.py:1109`
 - **No warning when a sequence's object-state tracks are lost to a `.dsq`.**
   The loss itself is the format's and is in §7; saying nothing about it is not.
   `mapping/dsq.py`
@@ -799,7 +799,7 @@ Three Blender suites, and the difference between the first two is the point.
 and exports.  That covers reading files the add-on did not write, and it is the
 only way to check a feature no fixture-free scene can produce.
 
-`tests/blender/test_authoring.py` (106 tests) never imports anything.  Every test
+`tests/blender/test_authoring.py` (107 tests) never imports anything.  Every test
 builds a shape from nothing — armature, meshes, materials, actions — exports it,
 and reads the feature back out of the file.  This is the suite that answers
 "can a user *make* one of these", which a round-trip cannot: the exporter may be
