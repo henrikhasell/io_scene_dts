@@ -281,10 +281,22 @@ def wire_drivers(arm_obj, names, warnings=None) -> int:
     property.  Returns the number of Blender objects wired."""
     if not names:
         return 0
+    # Resolved through naming.dts_object_and_size, not the ``dts_object_name``
+    # property, for the reason mapping/framepreview.py gives about the frame
+    # channel: only the importer writes that property, so a mesh built in
+    # Blender says which object it belongs to by its name ("ScreenON_128"),
+    # which is the rule the exporter groups by.  Reading the property alone
+    # drove imports and left an authored shape's visibility previewing nothing
+    # -- exported correctly, invisible in the viewport.
+    from .naming import dts_object_and_size
+
     by_name = {}
     for obj in bpy.data.objects:
-        if obj.type == "MESH" and obj.get("dts_object_name") in names:
-            by_name.setdefault(obj["dts_object_name"], []).append(obj)
+        if obj.type != "MESH":
+            continue
+        base_name, _size = dts_object_and_size(obj)
+        if base_name in names:
+            by_name.setdefault(base_name, []).append(obj)
 
     wired = 0
     for base_name in sorted(names):

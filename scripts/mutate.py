@@ -108,6 +108,14 @@ MUTATIONS = {
         "        if action in owned or _action_targets_armature(action, arm_obj)",
         ["test_another_shapes_sequences_do_not_follow_this_one_out"],
     ),
+    # Only the importer writes dts_object_name, so matching on it drove
+    # imports and left an authored shape's visibility previewing nothing.
+    "vis-drivers-need-the-import-property": (
+        "mapping/visibility.py",
+        "        base_name, _size = dts_object_and_size(obj)\n        if base_name in names:",
+        "        base_name = obj.get(\"dts_object_name\")\n        if base_name in names:",
+        ["test_object_visibility_previews_on_a_shape_built_from_nothing"],
+    ),
     # A decal is an empty now, so the "dts_decal_name" guard in
     # _gather_mesh_objects is dead for any migrated scene -- mutating it caught
     # nothing, which the harness reported.  What still protects against phantom

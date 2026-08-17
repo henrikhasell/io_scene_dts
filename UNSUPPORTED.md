@@ -799,7 +799,7 @@ Three Blender suites, and the difference between the first two is the point.
 and exports.  That covers reading files the add-on did not write, and it is the
 only way to check a feature no fixture-free scene can produce.
 
-`tests/blender/test_authoring.py` (105 tests) never imports anything.  Every test
+`tests/blender/test_authoring.py` (106 tests) never imports anything.  Every test
 builds a shape from nothing — armature, meshes, materials, actions — exports it,
 and reads the feature back out of the file.  This is the suite that answers
 "can a user *make* one of these", which a round-trip cannot: the exporter may be

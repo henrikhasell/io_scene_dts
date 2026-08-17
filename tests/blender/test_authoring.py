@@ -1073,6 +1073,37 @@ def test_ground_frames_are_authorable():
     assert abs(shape.ground_translations[1][1] - 0.5) < 1e-5
 
 
+def test_object_visibility_previews_on_a_shape_built_from_nothing():
+    """The export half of this is `test_object_visibility_is_authorable`; this
+    is the preview half, which used to be missing.
+
+    `wire_drivers` matched meshes on the `dts_object_name` property, and only
+    the importer writes one.  An authored shape therefore exported its vis
+    track perfectly and drove nothing in the viewport -- the exact shape of
+    bug the naming module exists to prevent.
+    """
+    from io_scene_dts.mapping.objectstate import ensure_props
+    from io_scene_dts.mapping.visibility import vis_prop, wire_drivers
+
+    A.reset()
+    arm = A.armature("Blinker", bones=(("root", None),))
+    lamp = A.mesh_object("lamp2", arm, bone="root")
+    assert lamp.get("dts_object_name") is None, "the point is that it has no property"
+
+    ensure_props(arm, "vis", ["lamp"])
+    assert wire_drivers(arm, ["lamp"]) == 1, "no mesh was found for the vis track"
+
+    arm[vis_prop("lamp")] = 0.0
+    arm.update_tag()
+    bpy.context.view_layer.update()
+    assert lamp.evaluated_get(bpy.context.evaluated_depsgraph_get()).hide_render
+
+    arm[vis_prop("lamp")] = 1.0
+    arm.update_tag()
+    bpy.context.view_layer.update()
+    assert not lamp.evaluated_get(bpy.context.evaluated_depsgraph_get()).hide_render
+
+
 def test_object_visibility_is_authorable():
     """A vis track is a keyframed property on the armature, which is also
     where a user would put it -- one animated ID, one strip."""
