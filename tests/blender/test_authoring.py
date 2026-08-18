@@ -231,9 +231,13 @@ def test_translucent_is_authored_in_the_shader():
     assert flags & MAT_TRANSLUCENT, hex(flags)
 
 
-def _additive_graph(mat, *, subtractive=False):
+def _additive_graph(mat, *, subtractive=False, image=None):
     """Transparent BSDF + Emission -> Add Shader, which is what the importer
-    builds for MAT_ADDITIVE and what the exporter reads back."""
+    builds for MAT_ADDITIVE and what the exporter reads back.
+
+    ``image`` drives the emission from a texture instead of a flat colour,
+    which is what a real muzzle flash is.
+    """
     mat.use_nodes = True
     tree = mat.node_tree
     tree.nodes.clear()
@@ -242,12 +246,21 @@ def _additive_graph(mat, *, subtractive=False):
     transparent = tree.nodes.new("ShaderNodeBsdfTransparent")
     emission = tree.nodes.new("ShaderNodeEmission")
     colour = (0.2, 0.4, 0.9, 1.0)
+    source = None
+    if image is not None:
+        tex = tree.nodes.new("ShaderNodeTexImage")
+        tex.image = image
+        source = tex.outputs["Color"]
     if subtractive:
         # the add-on's own convention: EEVEE has no subtractive blend, so the
         # flag is stored as the additive graph with the emission inverted
         invert = tree.nodes.new("ShaderNodeInvert")
         invert.inputs["Color"].default_value = colour
+        if source is not None:
+            tree.links.new(source, invert.inputs["Color"])
         tree.links.new(invert.outputs["Color"], emission.inputs["Color"])
+    elif source is not None:
+        tree.links.new(source, emission.inputs["Color"])
     else:
         emission.inputs["Color"].default_value = colour
     tree.links.new(transparent.outputs[0], add.inputs[0])
@@ -265,6 +278,45 @@ def test_additive_is_authored_in_the_shader():
 
     flags = A.read(A.export_dts()).materials[0].flags
     assert flags & MAT_ADDITIVE, hex(flags)
+
+
+def test_an_additive_materials_texture_is_exported():
+    """A muzzle flash is a textured additive material, and its picture has to
+    come out with it.
+
+    The additive graph has no Principled node -- ``_build_add_shader`` removes
+    it -- so the texture hangs off the Emission instead.  Looking only at Base
+    Color found nothing, and the material exported its *name* with no .png
+    beside it: in the engine, a missing texture where the flash should be.
+    Both of weapon_chaingun.dts's flash materials are this shape.
+    """
+    import tempfile
+
+    A.reset()
+    arm = A.armature("Flash")
+    mat = _additive_graph(A.principled_material("flash"),
+                          image=A.generated_image("flash", ramp=True))
+    A.mesh_object("body2", arm, bone="root", material=mat)
+
+    beside = Path(tempfile.mkdtemp())
+    shape = A.read(A.export_dts(str(beside / "flash.dts")))
+    assert shape.materials[0].flags & MAT_ADDITIVE, hex(shape.materials[0].flags)
+    assert (beside / "flash.png").is_file(), sorted(p.name for p in beside.iterdir())
+
+
+def test_a_subtractive_materials_texture_is_exported():
+    """The same, through the Invert the subtractive convention inserts."""
+    import tempfile
+
+    A.reset()
+    arm = A.armature("Shade")
+    mat = _additive_graph(A.principled_material("shade"), subtractive=True,
+                          image=A.generated_image("shade", ramp=True))
+    A.mesh_object("body2", arm, bone="root", material=mat)
+
+    beside = Path(tempfile.mkdtemp())
+    A.export_dts(str(beside / "shade.dts"))
+    assert (beside / "shade.png").is_file(), sorted(p.name for p in beside.iterdir())
 
 
 def test_subtractive_is_authored_in_the_shader():

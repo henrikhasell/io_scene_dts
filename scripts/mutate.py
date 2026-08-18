@@ -350,6 +350,17 @@ MUTATIONS = {
         ["test_a_decal_previews_lit_the_way_the_engine_lights_it",
          "test_a_self_illuminating_decal_previews_unlit"],
     ),
+    # An additive material has no Principled node to hang a texture off, so
+    # looking only at Base Color found nothing and the muzzle flash exported
+    # its name with no picture beside it.
+    "additive-texture-not-found": (
+        "mapping/materials.py",
+        '    emission = emission_of_add_shader(getattr(bmat, "node_tree", None))\n'
+        "    if emission is None:\n        return None",
+        "    emission = None\n    if emission is None:\n        return None",
+        ["test_an_additive_materials_texture_is_exported",
+         "test_a_subtractive_materials_texture_is_exported"],
+    ),
     "decal-preview-ignores-self-illumination": (
         "mapping/decals.py",
         '    if mat.get("dts_self_illuminating"):\n        return True',
@@ -1016,6 +1027,14 @@ def run_mutation(name: str, blender: str) -> bool:
         if find not in source:
             print(f"  SKIP {name}: anchor no longer present in {path}")
             print("       (the code moved -- update the mutation, do not ignore it)")
+            return False
+        # Only the first match is replaced, so an anchor that appears twice
+        # mutates whichever copy happens to come first -- quietly measuring a
+        # line the mutation was never about.  That is the harness lying to
+        # itself, so it is an error rather than a warning.
+        if source.count(find) > 1:
+            print(f"  SKIP {name}: anchor appears {source.count(find)} times in {path}")
+            print("       (add surrounding context until it is unique)")
             return False
         target.write_text(source.replace(find, replace, 1))
 

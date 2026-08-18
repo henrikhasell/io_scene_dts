@@ -541,8 +541,23 @@ def _image_node_feeding(bmat, socket_name: str):
 
 
 def diffuse_image_node(bmat):
-    """The node feeding Base Color -- the material's own texture."""
-    return _image_node_feeding(bmat, "Base Color")
+    """The node feeding Base Color -- the material's own texture.
+
+    An additive or subtractive material has no Principled node to ask, because
+    :func:`_build_add_shader` removes it and drives an Emission instead; its
+    texture is whatever reaches that Emission's Color.  Without this fallback
+    such a material exports its *name* but never its picture, so a muzzle
+    flash arrives in the engine as a missing texture -- and a textured
+    additive material is not a corner case, it is what both of
+    weapon_chaingun.dts's flash materials are.
+    """
+    node = _image_node_feeding(bmat, "Base Color")
+    if node is not None:
+        return node
+    emission = emission_of_add_shader(getattr(bmat, "node_tree", None))
+    if emission is None:
+        return None
+    return _image_node_upstream(emission.inputs["Color"])
 
 
 def reflectance_image_node(bmat):

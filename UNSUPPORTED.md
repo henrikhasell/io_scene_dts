@@ -199,7 +199,7 @@ way to check your work short of re-reading the exported file.
   Neither is used anywhere in the 852-file corpus — 0 materials of 3185 set
   either slot, and `detail_scale` is 1.0 in all of them.  A map referencing a
   material that was not exported is dropped with a warning.
-  `mapping/materials.py:1220`
+  `mapping/materials.py:1235`
   Two further ways a map slot can be lost or silently retargeted are in §4.
   Neither the reflectance map nor `reflection_amount` is on this list any more;
   both are rendered, and what is left of the gap between the preview and the
@@ -405,7 +405,7 @@ you export.
   **Combine Diffuse and Reflectance** for the whole shape is what makes this
   reachable for a material the author never thought about; setting that
   material to *Separate* avoids it entirely, since separate textures have no
-  size relationship.  `mapping/materials.py:1137,1117`
+  size relationship.  `mapping/materials.py:1152,1132`
 - **The decals of a shape exported with `Export Decals as Meshes`.**  Baking
   writes each decal as ordinary geometry and leaves `shape.decals` empty, so
   the projection, the coverage rule and the decal's identity are all gone from
@@ -513,7 +513,7 @@ you export.
   exports as `bump=NO_MAP, detail=NO_MAP`, with no warning.  Adding
   `dts_reflectance_map` as well makes all three take effect; imported materials
   always carry all three, so they are unaffected.
-  `mapping/materials.py:1244`  Reflectance is the exception now that the shader
+  `mapping/materials.py:1259`  Reflectance is the exception now that the shader
   owns it: an image reaching the environment-map group's **Mask** sets that slot
   whether or not any of the props are there.
 - **Whatever texture was already sitting where an export lands.**  Export
@@ -563,26 +563,26 @@ you export.
   already writes zeros and 11 shipped entries already are zero, so this is a
   shape the engine demonstrably accepts; it is still a byte change on
   re-export.  `numFrames` is the one of the three that is real, and it becomes
-  the length of the frame list.  `mapping/materials.py:932`
+  the length of the frame list.  `mapping/materials.py:947`
 - **An IFL material whose `.ifl` cannot be found imports with no frames.**  The
   material keeps its checkbox and still gets its table entry, so the shape is
   not silently un-animated, but there is nothing to preview and export writes
   no `.ifl`.  All 35 the corpus names do resolve — but only from a tree where
   `shapes/` and `textures/` are siblings, which is not how every game lays them
-  out. `mapping/materials.py:678`
+  out. `mapping/materials.py:693`
 - **The identity of a map target whose name is not unique.**  Map slots are
   stored as material *names* so they survive reordering, and resolved back
   through `index_by_name = {m.name.lower(): i ...}`, where a later entry
   overwrites an earlier one.  Material names are not unique in real shapes —
   the importer says so itself, and keys material identity on
-  `dts_material_index` for that reason (`mapping/materials.py:872`) — so a slot
+  `dts_material_index` for that reason (`mapping/materials.py:887`) — so a slot
   pointing at the *first* of two materials named `glass` comes back pointing at
   the last, silently.  104 of the 630 corpus shapes have duplicate material
   names, but none of them has a map slot targeting a duplicated name, so no
-  real file is currently mistranslated. `mapping/materials.py:1225,1206`
+  real file is currently mistranslated. `mapping/materials.py:1240,1221`
   Reflectance slots resolved from the shader do not join this hazard: they are
   matched on the image *datablock*, whose name Blender does keep unique.
-  `mapping/materials.py:1162`
+  `mapping/materials.py:1177`
 
 ---
 
@@ -609,11 +609,11 @@ exist, so adding a bone channel marks its node instead of being ignored.
   rather than three checkboxes.  They are not stored on the material at all:
   a prop beside the graph would be a second source for one value, and older
   scenes have theirs deleted on load (`props/migrate.py:402`).
-  `mapping/materials.py:1023`  `MAT_NEVER_ENV_MAP` is a fourth exception, but in
+  `mapping/materials.py:1038`  `MAT_NEVER_ENV_MAP` is a fourth exception, but in
   one direction only: a material showing a reflectance map exports with
   env-mapping *on* however the box is set, because a reflectance map the engine
   is told never to read is not a feature.  With no such map the checkbox
-  still wins. `mapping/materials.py:1245`
+  still wins. `mapping/materials.py:1260`
 - **The blend state of a material that fades.**  The visibility and decal
   wiring force `surface_render_method = BLENDED` so a fade renders at all,
   which on an opaque material would otherwise read back as `MAT_TRANSLUCENT`.
@@ -634,7 +634,7 @@ exist, so adding a bone channel marks its node instead of being ignored.
   splitting it would change what the engine draws — so export keeps it combined
   however the box is set, and says nothing.  The box is honoured for every
   material whose diffuse and mask are different images, which is all of them
-  once a reflectance has been split out.  `mapping/materials.py:1109`
+  once a reflectance has been split out.  `mapping/materials.py:1124`
 - **No warning when a sequence's object-state tracks are lost to a `.dsq`.**
   The loss itself is the format's and is in §7; saying nothing about it is not.
   `mapping/dsq.py`
@@ -725,7 +725,7 @@ the same answer either way, and because someone will otherwise try to fix them.
   bit is what this add-on reads it by.  270 of the 3185 corpus materials are
   env-mapped and 6 of those are also translucent; on those 6 transparency wins,
   the texture is not taken apart, and a warning says so.
-  `mapping/materials.py:621`
+  `mapping/materials.py:636`
 - **The environment map itself is not in the shape.**  A `.dts` says which
   texels reflect and by how much; *what* they reflect comes from the mission —
   entry 6 of the sky's `.dml` (`EnvMapMaterialOffset`, `sky.h:227`), which the
@@ -767,7 +767,7 @@ the same answer either way, and because someone will otherwise try to fix them.
   renderer is fixed-function OpenGL with no gloss term at all.  They are not
   dropped so much as never expressible, so a shape exported and re-imported
   comes back with the importer's own defaults — Roughness 1.0
-  (`mapping/materials.py:863`) — however the material was set before.  Only the
+  (`mapping/materials.py:878`) — however the material was set before.  Only the
   Base Color texture, the reflectance mask, the blend mode and the flags make
   the trip.  Measured, the cost is small: a panel exported and re-imported
   differs from its source by at most 0.0185 in linear output with the
@@ -799,7 +799,7 @@ Three Blender suites, and the difference between the first two is the point.
 and exports.  That covers reading files the add-on did not write, and it is the
 only way to check a feature no fixture-free scene can produce.
 
-`tests/blender/test_authoring.py` (108 tests) never imports anything.  Every test
+`tests/blender/test_authoring.py` (110 tests) never imports anything.  Every test
 builds a shape from nothing — armature, meshes, materials, actions — exports it,
 and reads the feature back out of the file.  This is the suite that answers
 "can a user *make* one of these", which a round-trip cannot: the exporter may be
