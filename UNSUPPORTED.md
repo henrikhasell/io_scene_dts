@@ -124,7 +124,7 @@ way to check your work short of re-reading the exported file.
   wins — `NONE` is the value being promoted from, so it is not a way to opt
   out.  Skins and vertex-animation meshes cannot be sorted at all (§7) and keep
   their type, silently, since nobody asked.  What this costs is in §4.
-  `mapping/blender_to_shape.py:902`
+  `mapping/blender_to_shape.py:924`
 
   Triangles are never split, since that would change the vertex count
   and break the detail-level sharing above, so a large face crossing a splitting
@@ -395,7 +395,7 @@ you export.
   and a multi-frame mesh's array runs past the shared prefix into its frame
   blocks.  A multi-frame mesh can still be a *parent*.  14 meshes in the whole
   corpus share a skin, so this costs almost nothing.
-  `mapping/blender_to_shape.py:657`
+  `mapping/blender_to_shape.py:679`
 - **A reflectance map that cannot be combined with its diffuse.**  Combining
   writes the mask into the diffuse's alpha, so the two images have to be the
   same size and there has to be a diffuse at all.  Neither holds by
@@ -435,7 +435,7 @@ you export.
   different file.  The geometry is unchanged and the engine draws it in a
   better order; what is lost is the original's own answer to the question.
   Set the mode to `FLAT` to keep the type without partitioning anything, or
-  make the material opaque.  `mapping/blender_to_shape.py:902`
+  make the material opaque.  `mapping/blender_to_shape.py:924`
 - **The source file's object order, when something translucent is not last.**
   Objects are drawn in list order and a blended surface only composites
   correctly over what is already in the frame buffer, so export moves every
@@ -453,7 +453,7 @@ you export.
   so a merge entry pointing at one has nothing left to name and is dropped with
   a warning — 15 of 61 entries on `weapon_energy_vehicle`'s first mesh.  The
   entries that survive are remapped exactly.  An unedited mesh still round-trips
-  the whole table through the payload. `mapping/blender_to_shape.py:758`
+  the whole table through the payload. `mapping/blender_to_shape.py:780`
 - **Which faces a decal covers.**  This is the big one.  A `TSDecalMesh`
   stores an authored list of target triangles (`dtslib/mesh_io.py:198`), and a
   decal is a projector empty, which cannot hold one.  Export therefore
@@ -706,7 +706,7 @@ the same answer either way, and because someone will otherwise try to fix them.
   Refused rather than written short.
   `mapping/blender_to_shape.py:144,357`, `dtslib/primitives.py:14`
 - **65535 unique vertices is the ceiling for one mesh.**  The index buffer is
-  u16.  Split the mesh.  `mapping/blender_to_shape.py:778`
+  u16.  Split the mesh.  `mapping/blender_to_shape.py:800`
 - **A `.dsq` cannot carry object state.**  `DsqFile` has no `object_states`,
   `decal_states` or IFL tables at all, so a sequence's visibility, frame,
   matframe and decal tracks have nowhere to go.  They round-trip through
@@ -715,7 +715,7 @@ the same answer either way, and because someone will otherwise try to fix them.
 - **A mesh cannot be both skinned and vertex-animated.**  `mesh_type` is one
   field, so `frame_*` shape keys on a skinned mesh are ignored with a warning.
   The same field is why a skin cannot also be sorted.
-  `mapping/blender_to_shape.py:858`
+  `mapping/blender_to_shape.py:880`
 - **One alpha channel carries two meanings and the file does not say which.**
   On an env-mapped material it is the reflectance mask; otherwise it is
   transparency.  There is no field to disambiguate, so a reader has to choose.
@@ -799,7 +799,7 @@ Three Blender suites, and the difference between the first two is the point.
 and exports.  That covers reading files the add-on did not write, and it is the
 only way to check a feature no fixture-free scene can produce.
 
-`tests/blender/test_authoring.py` (107 tests) never imports anything.  Every test
+`tests/blender/test_authoring.py` (108 tests) never imports anything.  Every test
 builds a shape from nothing — armature, meshes, materials, actions — exports it,
 and reads the feature back out of the file.  This is the suite that answers
 "can a user *make* one of these", which a round-trip cannot: the exporter may be

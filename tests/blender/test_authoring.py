@@ -2868,6 +2868,35 @@ def test_selected_only_export():
     assert A.object_names(shape) == ["keep"], A.object_names(shape)
 
 
+def test_selected_only_keeps_the_detail_levels_that_are_hidden():
+    """Hiding the small LODs is how anyone works on a shape -- every level
+    stands at the same origin -- and a hidden object cannot be selected.
+
+    So "Selected Objects Only" used to write detail 128 and nothing else,
+    silently, while the other levels sat in the scene untouched.  Hiding is a
+    display choice; the hidden levels of a selected object come with it.
+    """
+    A.reset()
+    arm = A.armature("Tower")
+    big = A.mesh_object("body128", arm, bone="root")
+    small = A.mesh_object("body32", arm, bone="root")
+    other = A.mesh_object("stand128", arm, bone="root")
+    small.hide_viewport = True                     # cannot be selected now
+
+    bpy.ops.object.select_all(action="DESELECT")
+    big.select_set(True)
+    arm.select_set(True)
+    bpy.context.view_layer.objects.active = arm
+
+    shape = A.read(A.export_dts(selected_only=True))
+    assert A.object_names(shape) == ["body"], A.object_names(shape)
+    sizes = sorted(int(d.size) for d in shape.details)
+    assert sizes == [32, 128], sizes
+    assert shape.objects[0].num_meshes == 2, "the hidden level lost its slot"
+    # ...and a *visible* mesh left unselected is still a choice, not an oversight
+    assert "stand" not in A.object_names(shape), other.name
+
+
 def test_exporting_without_sequences():
     A.reset()
     arm = A.armature("Static", bones=(("root", None), ("j", "root")))

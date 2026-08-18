@@ -537,16 +537,38 @@ def _gather_mesh_objects(context, arm_obj, selected_only):
     on the armature exactly like their targets, and letting one through exports
     it as a phantom object with its own geometry and detail levels.
     """
-    objs = []
-    pool = context.selected_objects if selected_only else context.scene.objects
-    for o in pool:
+    def belongs(o):
         if o.type != "MESH" or "dts_decal_name" in o:
-            continue
-        if o.parent == arm_obj or any(
+            return False
+        return o.parent == arm_obj or any(
             m.type == "ARMATURE" and m.object == arm_obj for m in o.modifiers
-        ):
-            objs.append(o)
-    return objs
+        )
+
+    if not selected_only:
+        return [o for o in context.scene.objects if belongs(o)]
+
+    chosen = [o for o in context.selected_objects if belongs(o)]
+    # A hidden object cannot be selected, so "Selected Objects Only" would drop
+    # every detail level the user had switched off in the viewport -- and
+    # eleven LODs stand at the same origin, so hiding the small ones to see the
+    # large one is the normal way to work.  The file came out with detail 128
+    # and nothing else, silently, because the meshes were still *there*.
+    #
+    # Hiding is a display choice, so the hidden levels of an object that was
+    # selected come too.  Only those: a mesh that is visible and simply not
+    # selected is a choice, and still left out.
+    picked = {id(o) for o in chosen}
+    wanted = {dts_object_and_size(o)[0] for o in chosen}
+    for o in context.scene.objects:
+        if id(o) in picked or not belongs(o):
+            continue
+        try:
+            visible = o.visible_get()
+        except RuntimeError:
+            visible = False  # not in this view layer at all, so unselectable
+        if not visible and dts_object_and_size(o)[0] in wanted:
+            chosen.append(o)
+    return chosen
 
 
 def _action_targets_armature(action, arm_obj) -> bool:

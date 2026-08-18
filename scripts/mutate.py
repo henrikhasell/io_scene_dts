@@ -124,6 +124,14 @@ MUTATIONS = {
         "        ifl_name = ifl_name_for(Material(name=dts_name).basename)",
         ["test_a_prefixed_ifl_material_keeps_its_directory"],
     ),
+    # A hidden LOD cannot be selected, so without the sibling sweep
+    # "Selected Objects Only" writes the visible level and drops the rest.
+    "selected-only-drops-hidden-lods": (
+        "mapping/blender_to_shape.py",
+        "        if not visible and dts_object_and_size(o)[0] in wanted:",
+        "        if False and dts_object_and_size(o)[0] in wanted:",
+        ["test_selected_only_keeps_the_detail_levels_that_are_hidden"],
+    ),
     # A decal is an empty now, so the "dts_decal_name" guard in
     # _gather_mesh_objects is dead for any migrated scene -- mutating it caught
     # nothing, which the harness reported.  What still protects against phantom
