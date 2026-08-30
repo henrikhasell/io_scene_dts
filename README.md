@@ -22,15 +22,15 @@ animation.
   straight away, because pointing at it was already the choice.
 
 The format core (`dtslib/`) is bpy-free and reads and writes the formats
-directly, exercised against a corpus of 407 Tribes 2 / TGE shapes and 1709
-DSQ files.  Fields the engine recomputes at load are carried through from the
+directly, exercised against a corpus of 867 Tribes 2 / TGE shapes and 1410
+DSQ files held outside this repository.  Fields the engine recomputes at load are carried through from the
 source rather than regenerated, so a rewrite stays as close to the original as
 the data allows.
 
 ## Install
 
 ```sh
-blender --command extension build   # produces io_scene_dts-1.4.0.zip
+blender --command extension build   # produces io_scene_dts-1.5.0.zip
 ```
 
 then install the zip via Edit → Preferences → Get Extensions → Install from
@@ -217,8 +217,11 @@ scripts/check_citations.py
 
 The corpus tests reference the local Tribes 2 / TGE game data
 (`~/Documents/Repositories/hasell-engine`, `~/Documents/Repositories/agentic-torque`)
-and skip automatically when absent; `tests/fixtures/` carries small
-self-contained representatives (see `tests/fixtures/NOTES.md`).
+and skip automatically when absent — no game data is in this repository.
+`tests/fixtures/` is generated from `examples/` by
+`tests/fixtures/build_fixtures.py`, which is also where each fixture says what
+format feature it exists to carry; see `tests/fixtures/NOTES.md` for what that
+trade costs and what the corpus tests are covering in exchange.
 
 Format ground truth: `agentic-torque/engine/ts/` (`tsShape.cc`
 `assembleShape`/`disassembleShape`, `tsMesh.cc`, `tsShapeOldRead.cc` for

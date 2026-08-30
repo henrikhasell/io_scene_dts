@@ -38,20 +38,22 @@ def _armature():
     return next(o for o in bpy.context.scene.objects if o.type == "ARMATURE")
 
 
-def _import_dts(name):
+def _import_dts_path(path):
     # every level: these are fidelity tests, and the operator now defaults
     # to the visible detail only
-    res = bpy.ops.io_scene_dts.import_dts(
-        filepath=str(FIXTURES / name), import_details=True
-    )
+    res = bpy.ops.io_scene_dts.import_dts(filepath=str(path), import_details=True)
     assert res == {"FINISHED"}, res
     return _armature()
 
 
+def _import_dts(name):
+    return _import_dts_path(FIXTURES / name)
+
+
 def test_import_static_v24():
     _reset()
-    arm = _import_dts("v24_octahedron.dts")
-    src = read_shape_file(FIXTURES / "v24_octahedron.dts")
+    arm = _import_dts("v24_test_crate.dts")
+    src = read_shape_file(FIXTURES / "v24_test_crate.dts")
     assert len(arm.data.bones) == len(src.nodes)
     meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
     assert meshes
@@ -61,11 +63,11 @@ def test_import_static_v24():
 
 def test_static_roundtrip_v24():
     _reset()
-    _import_dts("v24_ammo.dts")
+    _import_dts("v24_detail_levels.dts")
     out = _tmp(".dts")
     res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="24")
     assert res == {"FINISHED"}, res
-    src = read_shape_file(FIXTURES / "v24_ammo.dts")
+    src = read_shape_file(FIXTURES / "v24_detail_levels.dts")
     dst = read_shape_file(out)
     assert dst.source_version == 24
     assert len(dst.nodes) == len(src.nodes)
@@ -91,11 +93,11 @@ def test_static_roundtrip_v24():
 
 def test_skinned_roundtrip_v24():
     _reset()
-    _import_dts("v24_w_sqknest.dts")
+    _import_dts("v24_skin_animation.dts")
     out = _tmp(".dts")
     res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="24")
     assert res == {"FINISHED"}, res
-    src = read_shape_file(FIXTURES / "v24_w_sqknest.dts")
+    src = read_shape_file(FIXTURES / "v24_skin_animation.dts")
     dst = read_shape_file(out)
     assert len(dst.nodes) == len(src.nodes)
     src_skins = [m for m in src.meshes if m and m.mesh_type == SKIN_MESH]
@@ -111,8 +113,8 @@ def test_skinned_roundtrip_v24():
 
 def test_animated_roundtrip_v23():
     _reset()
-    _import_dts("v23_pack_upgrade_shield.dts")
-    src = read_shape_file(FIXTURES / "v23_pack_upgrade_shield.dts")
+    _import_dts("v23_crt_monitor.dts")
+    src = read_shape_file(FIXTURES / "v23_crt_monitor.dts")
     out = _tmp(".dts")
     res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="23")
     assert res == {"FINISHED"}, res
@@ -134,8 +136,8 @@ def test_animation_values_survive():
     """Sampled keyframe transforms must survive import -> export within
     Quat16 quantization tolerance."""
     _reset()
-    _import_dts("v23_pack_upgrade_shield.dts")
-    src = read_shape_file(FIXTURES / "v23_pack_upgrade_shield.dts")
+    _import_dts("v23_crt_monitor.dts")
+    src = read_shape_file(FIXTURES / "v23_crt_monitor.dts")
     out = _tmp(".dts")
     bpy.ops.io_scene_dts.export_dts(filepath=out, version="23")
     dst = read_shape_file(out)
@@ -166,8 +168,8 @@ def test_v23_drops_ground_frames():
     """An imported shape with ground frames still exports as v23 -- the frames
     go, because v23 has nowhere to put them, and v24 keeps them."""
     _reset()
-    _import_dts("v24_w_sqknest.dts")
-    src = read_shape_file(FIXTURES / "v24_w_sqknest.dts")
+    _import_dts("v24_skin_animation.dts")
+    src = read_shape_file(FIXTURES / "v24_skin_animation.dts")
     out = _tmp(".dts")
 
     res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="23")
@@ -184,14 +186,14 @@ def test_v23_drops_ground_frames():
 
 def test_dsq_roundtrip():
     _reset()
-    _import_dts("v24_w_sqknest.dts")
+    _import_dts("v24_skin_animation.dts")
     arm = _armature()
     bpy.context.view_layer.objects.active = arm
     out = _tmp(".dsq")
     res = bpy.ops.io_scene_dts.export_dsq(filepath=out)
     assert res == {"FINISHED"}, res
     dsq = read_dsq(Path(out).read_bytes())
-    src = read_shape_file(FIXTURES / "v24_w_sqknest.dts")
+    src = read_shape_file(FIXTURES / "v24_skin_animation.dts")
     assert len(dsq.sequences) == len(src.sequences)
     assert {n.lower() for n in dsq.sequence_names} == {
         src.name(s.name_index).lower() for s in src.sequences
@@ -244,10 +246,11 @@ def test_synthetic_scene_export():
 
 def test_textures_and_materials():
     _reset()
-    _import_dts("v24_w_sqknest.dts")
+    _import_dts("v24_skin_animation.dts")
     mats = [m for m in bpy.data.materials if "dts_name" in m]
     assert mats
-    # the fixture dir carries NSQK_Top1.png — at least one material found it
+    # the fixture directory carries every example texture, named the way the
+    # engine looks for them -- so at least one material found its own
     teximages = [
         n.image
         for m in mats
@@ -260,7 +263,7 @@ def test_textures_and_materials():
 
 def test_dsq_active_action_only():
     _reset()
-    _import_dts("v24_w_sqknest.dts")
+    _import_dts("v24_skin_animation.dts")
     arm = _armature()
     bpy.context.view_layer.objects.active = arm
     # "active" is the single unmuted NLA track, not an assigned action -- and
@@ -282,12 +285,15 @@ def test_dsq_active_action_only():
     assert len(dsq.sequences) == 1
 
 
-def test_import_t2_player():
-    """bioderm_light: node-rigged v23 player with decals, sequences that
-    claim ground frames the shape doesn't carry, and null meshes."""
+def test_import_node_rigged_v23_shape():
+    """A node-rigged v23 shape: one bone per node, decals, and a sequence.
+
+    Node-rigged rather than skinned is the case the importer has to get right
+    separately -- each mesh is bone-parented instead of carrying weights.
+    """
     _reset()
-    arm = _import_dts("v23_bioderm_light.dts")
-    src = read_shape_file(FIXTURES / "v23_bioderm_light.dts")
+    arm = _import_dts("v23_decals.dts")
+    src = read_shape_file(FIXTURES / "v23_decals.dts")
     assert len(arm.data.bones) == len(src.nodes)
     meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
     assert meshes
@@ -298,11 +304,11 @@ def test_import_t2_player():
 def test_material_fields_survive():
     """All six material-list fields survive import -> export."""
     _reset()
-    _import_dts("v23_pack_upgrade_cloaking.dts")
+    _import_dts("v24_material_flags.dts")
     out = _tmp(".dts")
     res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="23")
     assert res == {"FINISHED"}, res
-    src = read_shape_file(FIXTURES / "v23_pack_upgrade_cloaking.dts")
+    src = read_shape_file(FIXTURES / "v24_material_flags.dts")
     dst = read_shape_file(out)
     src_by_name = {m.name.lower(): (i, m) for i, m in enumerate(src.materials)}
     assert len(dst.materials) == len(src.materials)
@@ -360,13 +366,14 @@ def test_material_cross_refs_survive():
     assert abs(m.reflection_amount - 0.25) < 1e-6
 
 
-def _env_mapped_fixture(*, translucent=False, name="shrub"):
+def _env_mapped_fixture(*, translucent=False, name="scorchmark"):
     """A shape whose one material is env-mapped, beside a texture on disk.
 
     Synthesised rather than shipped: 270 of the corpus's 3185 materials are
-    env-mapped, but none of the fixtures that carry their textures is one of
-    them.  ``shrub.png`` is the fixture with a genuinely varying alpha, which
-    is what a reflectance mask has to have to be worth splitting out.
+    env-mapped, but no example is one.  ``scorchmark.png`` is the texture with a
+    genuinely varying alpha -- 185 distinct values, where the alpha-cut cards
+    have two -- and varying is what a reflectance mask has to be to be worth
+    splitting out at all.
 
     Returns (dts path, texture path) in a fresh directory.
     """
@@ -387,7 +394,7 @@ def _env_mapped_fixture(*, translucent=False, name="shrub"):
 
     directory = Path(tempfile.mkdtemp())
     texture = directory / f"{name}.png"
-    shutil.copy(FIXTURES / "shrub.png", texture)
+    shutil.copy(FIXTURES / "scorchmark.png", texture)
     dts = directory / f"{name}.dts"
     write_shape_file(shape, str(dts), 24)
     return dts, texture
@@ -421,7 +428,7 @@ def test_a_self_reflectance_imports_as_two_images():
     _reset()
     assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
 
-    mat = _material_of("shrub")
+    mat = _material_of("scorchmark")
     diffuse = _node_feeding(mat, "Base Color")
     reflectance = _reflectance_of(mat)
     assert diffuse is not None and reflectance is not None, "both maps must arrive"
@@ -458,8 +465,8 @@ def test_a_reflectance_round_trips_byte_identically():
     assert len(dst.materials) == len(src.materials) == 1
     for field in ("name", "flags", "reflectance_map", "bump_map", "detail_map"):
         assert getattr(dst.materials[0], field) == getattr(src.materials[0], field), field
-    assert [p.name for p in out.parent.glob("*.png")] == ["shrub.png"], (
-        "the material names shrub, so shrub.png has to be beside the shape"
+    assert [p.name for p in out.parent.glob("*.png")] == ["scorchmark.png"], (
+        "the material names scorchmark, so scorchmark.png has to be beside the shape"
     )
 
 
@@ -478,7 +485,7 @@ def test_unticking_combine_splits_the_material_list():
     dts, _ = _env_mapped_fixture()
     _reset()
     assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
-    assert _material_of("shrub").dts_material.reflectance_packing == "DEFAULT"
+    assert _material_of("scorchmark").dts_material.reflectance_packing == "DEFAULT"
 
     out = Path(tempfile.mkdtemp()) / "out.dts"
     assert bpy.ops.io_scene_dts.export_dts(
@@ -511,7 +518,7 @@ def test_an_env_mapped_translucent_material_keeps_its_transparency():
     _reset()
     assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
 
-    mat = _material_of("shrub")
+    mat = _material_of("scorchmark")
     links = [(l.from_socket.name, l.to_socket.name) for l in mat.node_tree.links]
     assert ("Alpha", "Alpha") in links, links
     assert ("Alpha", "Mask") in links, links
@@ -538,20 +545,20 @@ def test_a_cross_referenced_reflectance_imports_as_the_other_materials_texture()
     wrap = MAT_S_WRAP | MAT_T_WRAP
     shape = make_triangle_shape()
     shape.materials = [
-        Material(name="shrub", flags=wrap, reflectance_map=1),
+        Material(name="scorchmark", flags=wrap, reflectance_map=1),
         # the target is not itself env-mapped -- it is there to be pointed at,
         # so its own texture stays whole
         Material(name="wall", flags=wrap | MAT_NEVER_ENV_MAP, reflectance_map=1),
     ]
     directory = Path(tempfile.mkdtemp())
-    for name in ("shrub", "wall"):
-        shutil.copy(FIXTURES / "shrub.png", directory / f"{name}.png")
+    for name in ("scorchmark", "wall"):
+        shutil.copy(FIXTURES / "scorchmark.png", directory / f"{name}.png")
     dts = directory / "cross.dts"
     write_shape_file(shape, str(dts), 24)
 
     _reset()
     assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
-    base, other = _material_of("shrub"), _material_of("wall")
+    base, other = _material_of("scorchmark"), _material_of("wall")
     reflectance = _reflectance_of(base)
     assert reflectance is not None, "the referenced texture must be loaded"
     assert reflectance.image == _node_feeding(other, "Base Color").image, (
@@ -586,7 +593,7 @@ def test_export_copies_an_imported_texture_beside_the_dts():
     destination = Path(tempfile.mkdtemp())
     out = destination / "out.dts"
     assert bpy.ops.io_scene_dts.export_dts(filepath=str(out), version="24") == {"FINISHED"}
-    assert (destination / "shrub.png").is_file(), sorted(
+    assert (destination / "scorchmark.png").is_file(), sorted(
         p.name for p in destination.iterdir()
     )
 
@@ -605,7 +612,7 @@ def test_export_overwrites_a_source_texture():
     assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
     # paint on the mask, so the bytes that come back are provably ours and not
     # a byte-identical re-encode of the file already there
-    mat = _material_of("shrub")
+    mat = _material_of("scorchmark")
     reflectance = _reflectance_of(mat)
     reflectance.image.pixels = [0.5] * len(reflectance.image.pixels)
     reflectance.image.update()
@@ -622,7 +629,7 @@ def test_export_textures_unticked_leaves_a_source_texture_alone():
     dts, texture = _env_mapped_fixture()
     _reset()
     assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
-    mat = _material_of("shrub")
+    mat = _material_of("scorchmark")
     reflectance = _reflectance_of(mat)
     reflectance.image.pixels = [0.5] * len(reflectance.image.pixels)
     reflectance.image.update()
@@ -636,37 +643,56 @@ def test_export_textures_unticked_leaves_a_source_texture_alone():
 
 
 def test_texture_pairing():
-    """Every material whose texture exists next to the .dts gets its own image."""
+    """Every material whose texture exists next to the .dts gets its own image.
+
+    Swept across several shapes rather than asked of one, because the failure
+    this catches is a material picking up its *neighbour's* image: a single
+    shape with one material cannot tell a correct pairing from a lucky one.
+    The fixture directory holds every example texture, named the way the engine
+    looks for them -- the material name is the filename.
+    """
+    from io_scene_dts.mapping.materials import diffuse_image_node
+
     _reset()
-    res = bpy.ops.io_scene_dts.import_dts(
-        filepath=str(FIXTURES / "gman" / "v24_gman.dts"), import_details=True
-    )
-    assert res == {"FINISHED"}, res
-    on_disk = {p.stem.lower() for p in (FIXTURES / "gman").glob("*.png")}
+    on_disk = {p.stem.lower() for p in FIXTURES.glob("*.png")}
     paired = 0
-    for m in bpy.data.materials:
-        if "dts_name" not in m or not m.use_nodes:
-            continue
-        # the node feeding Base Color, not merely the first image node: a
-        # material with a reflectance map has two, and their order in the node
-        # list is not a fact about which is the diffuse
-        node = _node_feeding(m, "Base Color")
-        stem = Path(str(m["dts_name"])).stem.lower()
-        if stem in on_disk:
-            assert node is not None, (
-                f"material {m['dts_name']!r} has a texture on disk but none loaded"
-            )
-            assert Path(node.image.filepath).stem.lower() == stem, (
-                f"material {m['dts_name']!r} got wrong image {node.image.filepath!r}"
-            )
-            paired += 1
+    for fixture in (
+        "v24_detail_levels.dts",   # crate
+        "v24_billboards.dts",      # flare, trunkcard
+        "v24_sorted_foliage.dts",  # leafcard
+        "v24_blend_modes.dts",     # glass, plasma, shade
+        "v24_material_flags.dts",  # lamppanel, chrome
+        "v24_sequence_triggers.dts",  # turret
+        "v24_decals.dts",          # hullplate, scorchmark
+    ):
+        _reset()
+        _import_dts(fixture)
+        for m in bpy.data.materials:
+            if "dts_name" not in m or not m.use_nodes:
+                continue
+            # the add-on's own idea of which node is the diffuse, not merely
+            # the first image node: a material with a reflectance map has two
+            # and their order in the node list says nothing, and an additive
+            # one has no Principled at all -- its texture feeds an Emission
+            node = diffuse_image_node(m)
+            stem = Path(str(m["dts_name"])).stem.lower()
+            if stem in on_disk:
+                assert node is not None, (
+                    f"{fixture}: material {m['dts_name']!r} has a texture on disk "
+                    "but none loaded"
+                )
+                assert Path(node.image.filepath).stem.lower() == stem, (
+                    f"{fixture}: material {m['dts_name']!r} got the wrong image "
+                    f"{node.image.filepath!r}"
+                )
+                paired += 1
     assert paired >= 10, f"only {paired} materials paired with their textures"
 
 
 def test_uv_and_alpha():
     _reset()
-    _import_dts("v24_shrub.dts")
-    src = read_shape_file(FIXTURES / "v24_shrub.dts")
+    _import_dts("v24_sorted_foliage.dts")
+    src = read_shape_file(FIXTURES / "v24_sorted_foliage.dts")
     # uv set matches tverts (v flipped)
     src_uvs = {(round(u, 4), round(1.0 - v, 4)) for m in src.meshes if m for (u, v) in m.tverts}
     mesh_obj = next(o for o in bpy.context.scene.objects if o.type == "MESH")
@@ -710,7 +736,7 @@ def test_reflectance_map_only_survives_the_int_prop_limit():
     from io_scene_dts.dtslib.writer import write_shape_file
 
     _reset()
-    src = read_shape_file(FIXTURES / "v24_shrub.dts")
+    src = read_shape_file(FIXTURES / "v24_sorted_foliage.dts")
     src.materials[0].flags |= MAT_REFLECTANCE_MAP_ONLY
     src_flags = src.materials[0].flags
     assert src_flags > 0x7FFFFFFF, hex(src_flags)
@@ -749,7 +775,7 @@ def test_every_material_flag_bit_has_a_checkbox():
     }
 
     _reset()
-    src = read_shape_file(FIXTURES / "v24_shrub.dts")
+    src = read_shape_file(FIXTURES / "v24_sorted_foliage.dts")
     for bit in bits.values():
         src.materials[0].flags |= bit
     want = src.materials[0].flags
@@ -774,10 +800,12 @@ def test_dsq_sequences_use_the_same_tables_as_dts_ones():
     path used collections.  Nothing read the JSON any more, so a sequence
     imported from a .dsq lost both on a DTS export -- and once export started
     refusing legacy keys, it could not be exported at all."""
+    # the ground-frame shape on both sides: a .dsq with no ground frames in it
+    # makes every count below zero, and the test asserts nothing
     _reset()
-    arm = _import_dts("v24_w_sqknest.dts")
+    arm = _import_dts("v24_ground_frames.dts")
     before = {a.name for a in bpy.data.actions}
-    res = bpy.ops.io_scene_dts.import_dsq(filepath=str(FIXTURES / "v24_player_root.dsq"))
+    res = bpy.ops.io_scene_dts.import_dsq(filepath=str(FIXTURES / "v24_ground_frames.dsq"))
     assert res == {"FINISHED"}, res
     fresh = [a for a in bpy.data.actions if a.name not in before]
     assert fresh, "no action imported from the dsq"
@@ -786,14 +814,19 @@ def test_dsq_sequences_use_the_same_tables_as_dts_ones():
         for key in ("dts_ground", "dts_triggers"):
             assert key not in action.keys(), f"{action.name} still writes {key}"
 
-    src = read_dsq(Path(FIXTURES / "v24_player_root.dsq").read_bytes())
+    src = read_dsq(Path(FIXTURES / "v24_ground_frames.dsq").read_bytes())
+    src_ground = sum(s.num_ground_frames for s in src.sequences)
+    assert src_ground > 0, "fixture carries no ground frames; test is vacuous"
     total_ground = sum(len(a.dts_sequence_props.ground) for a in fresh)
-    assert total_ground == sum(s.num_ground_frames for s in src.sequences)
+    assert total_ground == src_ground
 
     # and it still exports, which the legacy-key guard would otherwise refuse
     out = _tmp(".dsq")
     assert bpy.ops.io_scene_dts.export_dsq(filepath=out) == {"FINISHED"}
     dst = read_dsq(Path(out).read_bytes())
+    # >=, not ==: the shape brought its own Run along, so the export writes that
+    # sequence's ground frames as well as the imported copy's.  The floor is
+    # what matters and it is no longer zero, which is what made this vacuous.
     assert sum(s.num_ground_frames for s in dst.sequences) >= total_ground
 
 
@@ -802,7 +835,7 @@ def test_export_refuses_a_scene_that_has_not_been_converted():
     already enabled.  Enable it afterwards and the legacy keys are still there,
     unread -- exporting then would drop the name table and details silently."""
     _reset()
-    arm = _import_dts("v24_ammo.dts")
+    arm = _import_dts("v24_detail_levels.dts")
     arm["dts_names_order"] = json.dumps(["stale"])
 
     out = _tmp(".dts")
@@ -833,8 +866,8 @@ def test_additive_flag_lives_in_the_shader():
     from io_scene_dts.dtslib.types import MAT_ADDITIVE, MAT_TRANSLUCENT
 
     _reset()
-    _import_dts("v22_energy_explosion.dts")
-    bmat = _mat_by_index(0)
+    _import_dts("v24_blend_modes.dts")
+    bmat = _mat_by_index(1)  # glass, plasma, shade -- plasma is the additive one
     types = {n.type for n in bmat.node_tree.nodes}
     assert "ADD_SHADER" in types and "EMISSION" in types and "BSDF_TRANSPARENT" in types, types
     assert "BSDF_PRINCIPLED" not in types, "Principled left dangling behind the Add Shader"
@@ -842,7 +875,10 @@ def test_additive_flag_lives_in_the_shader():
 
     out = _tmp(".dts")
     assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
-    flags = read_shape_file(out).materials[0].flags
+    # by name: the shape has three materials and export does not promise to
+    # keep their order, so materials[0] would be asking a different question
+    written = read_shape_file(out)
+    flags = next(m for m in written.materials if m.basename == "plasma").flags
     assert flags & MAT_ADDITIVE, "additive lost"
     assert flags & MAT_TRANSLUCENT, "additive material must still blend"
 
@@ -857,7 +893,7 @@ def test_subtractive_round_trips_through_the_invert_node():
     from io_scene_dts.dtslib.writer import write_shape_file
 
     _reset()
-    src = read_shape_file(FIXTURES / "v24_shrub.dts")
+    src = read_shape_file(FIXTURES / "v24_sorted_foliage.dts")
     src.materials[0].flags |= MAT_SUBTRACTIVE
     seeded = _tmp(".dts")
     write_shape_file(src, seeded, version=24)
@@ -879,7 +915,7 @@ def test_shader_edit_reaches_the_exported_blend_flag():
     from io_scene_dts.mapping.materials import blend_flags_from_material
 
     _reset()
-    _import_dts("v24_shrub.dts")
+    _import_dts("v24_sorted_foliage.dts")
     bmat = _mat_by_index(0)
     assert blend_flags_from_material(bmat) & MAT_TRANSLUCENT, "fixture starts translucent"
     # and it is not *also* recorded beside the shader, which is the bug the
@@ -908,7 +944,7 @@ def test_migration_drops_the_blend_props_saved_beside_the_shader():
     from io_scene_dts.props import migrate
 
     _reset()
-    _import_dts("v24_shrub.dts")
+    _import_dts("v24_sorted_foliage.dts")
     bmat = _mat_by_index(0)
     for prop in migrate.DERIVED_MATERIAL_KEYS:
         bmat[prop] = True
@@ -936,7 +972,7 @@ def test_migration_converts_the_old_combine_checkbox():
     from io_scene_dts.props import migrate
 
     _reset()
-    _import_dts("v24_shrub.dts")
+    _import_dts("v24_sorted_foliage.dts")
     # the imported one and a fresh one, because the conversion is not gated on
     # dts_name: the old bool was authorable in a scene with no import in it
     split = _mat_by_index(0)
@@ -971,7 +1007,7 @@ def test_migration_converts_the_old_reflection_amount():
     from io_scene_dts.props import migrate
 
     _reset()
-    _import_dts("v24_shrub.dts")
+    _import_dts("v24_sorted_foliage.dts")
     imported = _mat_by_index(0)
     fresh = bpy.data.materials.new("fresh")
     imported["dts_reflection_amount"] = 0.5
@@ -1004,7 +1040,7 @@ def test_migration_leaves_a_metallic_reflectance_where_it_is():
     dts, _ = _env_mapped_fixture()
     _reset()
     assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
-    mat = _material_of("shrub")
+    mat = _material_of("scorchmark")
 
     # put the material back the way the older add-on left it
     source = _reflectance_of(mat)
@@ -1027,8 +1063,8 @@ def test_a_translucent_sorted_mesh_records_no_mode():
     """Export infers BSP from the material, so importing it would store a
     second copy of something already decided elsewhere."""
     _reset()
-    _import_dts("v21_xorg21.dts")
-    src = read_shape_file(FIXTURES / "v21_xorg21.dts")
+    _import_dts("v21_sorted_foliage.dts")
+    src = read_shape_file(FIXTURES / "v21_sorted_foliage.dts")
     assert any(m is not None and m.mesh_type == 3 for m in src.meshes), "fixture has no sorted mesh"
 
     objs = [o for o in bpy.context.scene.objects if o.type == "MESH"]
@@ -1048,7 +1084,7 @@ def test_an_opaque_sorted_mesh_still_records_its_mode():
     from io_scene_dts.dtslib import write_shape_file
     from io_scene_dts.dtslib.types import MAT_TRANSLUCENT
 
-    shape = read_shape_file(FIXTURES / "v21_xorg21.dts")
+    shape = read_shape_file(FIXTURES / "v21_sorted_foliage.dts")
     for mat in shape.materials:
         mat.flags &= ~MAT_TRANSLUCENT
     opaque = _tmp(".dts")
@@ -1064,21 +1100,22 @@ def test_an_opaque_sorted_mesh_still_records_its_mode():
     out = _tmp(".dts")
     assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
     dst = [m for m in read_shape_file(out).meshes if m is not None]
-    assert sum(1 for m in dst if m.mesh_type == 3) == 3, [m.mesh_type for m in dst]
+    sorted_meshes = sum(1 for m in dst if m.mesh_type == 3)
+    assert sorted_meshes == len(dst) >= 1, [m.mesh_type for m in dst]
 
 
 def test_fading_an_opaque_material_does_not_make_it_translucent():
     """A visibility fade forces BLENDED; export must not read that as the flag.
 
-    'skins\\ShieldPackAmbient' is opaque in the file and fades, so the render
-    method alone would flip it to MAT_TRANSLUCENT -- dts_blend_before_fade is
-    what keeps the exported flags honest.
+    The beacon's lamp is opaque in the file and its Pulse sequence fades it, so
+    the render method alone would flip it to MAT_TRANSLUCENT --
+    dts_blend_before_fade is what keeps the exported flags honest.
     """
     from io_scene_dts.dtslib.types import MAT_TRANSLUCENT
 
     _reset()
-    _import_dts("v23_pack_upgrade_shield.dts")
-    src = read_shape_file(FIXTURES / "v23_pack_upgrade_shield.dts")
+    _import_dts("v24_visibility.dts")
+    src = read_shape_file(FIXTURES / "v24_visibility.dts")
     faded = [
         m
         for m in bpy.data.materials
@@ -1117,19 +1154,19 @@ def _decal_triangles(shape, decal, slot, mesh):
 
 
 def test_a_shipped_shapes_decals_can_export_as_meshes():
-    """The other checkbox, on a real shape: 24 decals become 24 objects.
+    """The other checkbox, on a shape off disk: every decal becomes an object.
 
     A fresh scene proves the feature is authorable; this proves it survives the
-    thing users actually do, which is open a shipped shape and re-export it.
-    The object count is the assertion that matters -- a decal that silently
-    baked nothing would still produce a valid file.
+    thing users actually do, which is open a shape and re-export it.  The object
+    count is the assertion that matters -- a decal that silently baked nothing
+    would still produce a valid file.
     """
     _reset()
     assert bpy.ops.io_scene_dts.import_dts(
-        filepath=str(FIXTURES / "v23_bioderm_light.dts"), import_details=True
+        filepath=str(FIXTURES / "v23_decals.dts"), import_details=True
     ) == {"FINISHED"}
 
-    src = read_shape_file(FIXTURES / "v23_bioderm_light.dts")
+    src = read_shape_file(FIXTURES / "v23_decals.dts")
     out = Path(tempfile.mkdtemp()) / "baked.dts"
     assert bpy.ops.io_scene_dts.export_dts(
         filepath=str(out), version="24", decals_as_meshes=True, export_textures=False
@@ -1142,11 +1179,11 @@ def test_a_shipped_shapes_decals_can_export_as_meshes():
         filepath=str(plain), version="24", export_textures=False
     ) == {"FINISHED"}
     projected = read_shape_file(plain)
-    assert len(projected.decals) == len(src.decals) == 24
+    assert len(projected.decals) == len(src.decals) >= 2
 
     # one object per decal that covered something, on top of the ordinary ones
     extra = len(dst.objects) - len(projected.objects)
-    assert extra == 24, (extra, len(dst.objects), len(projected.objects))
+    assert extra == len(src.decals), (extra, len(dst.objects), len(projected.objects))
     # the default states run in step with the objects, and the sequence tracks
     # start after them -- a baked object appended without its state would shift
     # every track that follows
@@ -1168,14 +1205,14 @@ def test_a_shipped_shapes_decals_can_export_as_meshes():
 def test_decals_can_import_as_meshes():
     """The checkbox, on: the faces the *file* names, which a projector cannot.
 
-    Coverage is re-derived from the projector volume on export at recall 0.44,
-    so the shipped index list exists in Blender only in this form.  It is a way
-    to look at a file, not a way to author one -- there are no projectors, and
-    a decal is exported from a projector.
+    Coverage is re-derived from the projector volume on export, and not exactly,
+    so the file's own index list exists in Blender only in this form.  It is a
+    way to look at a file, not a way to author one -- there are no projectors,
+    and a decal is exported from a projector.
     """
     _reset()
     res = bpy.ops.io_scene_dts.import_dts(
-        filepath=str(FIXTURES / "v23_bioderm_light.dts"),
+        filepath=str(FIXTURES / "v23_decals.dts"),
         decals_as_meshes=True,
         import_details=True,
     )
@@ -1183,11 +1220,19 @@ def test_decals_can_import_as_meshes():
     from io_scene_dts.mapping.decals import decal_objects
     from io_scene_dts.mapping.shape_to_blender import decode_primitives
 
-    src = read_shape_file(FIXTURES / "v23_bioderm_light.dts")
+    src = read_shape_file(FIXTURES / "v23_decals.dts")
+    # one Blender mesh per (decal, slot) the file actually fills, counted off
+    # the file rather than written down: the number is a fact about the fixture
+    expected = sum(
+        1
+        for decal in src.decals
+        for j in range(decal.raw[1])
+        if (m := src.meshes[decal.raw[2] + j]) is not None and m.decal_data is not None
+    )
     assert decal_objects() == [], "meshes and projectors are alternatives, not both"
     meshes = [o for o in bpy.data.objects if o.type == "MESH" and "dts_decal_name" in o]
-    assert len(meshes) == 144, len(meshes)
-    assert len({int(o["dts_decal_index"]) for o in meshes}) == len(src.decals) == 24
+    assert len(meshes) == expected >= 2, (len(meshes), expected)
+    assert len({int(o["dts_decal_index"]) for o in meshes}) == len(src.decals)
 
     # each mesh is the file's own triangles, not a re-derivation
     by_key = {(int(o["dts_decal_index"]), int(o["dts_decal_slot"])): o for o in meshes}
@@ -1203,12 +1248,12 @@ def test_decals_can_import_as_meshes():
             want = {tuple(sorted(tri[:3])) for tri in decode_primitives(mesh.decal_data)}
             assert len(bobj.data.polygons) == len(want), (di, j)
             checked += 1
-    assert checked == 144, checked
+    assert checked == expected, (checked, expected)
 
     # the decal material, and UVs that are the file's own texgen planes
-    # evaluated per vertex.  Not a range check: 36% of this shape's decal
-    # vertices project outside the 0..1 square, because the original exporter
-    # kept faces that merely clip it, so [0,1] would be the wrong bar
+    # evaluated per vertex.  Compared against the planes rather than checked for
+    # range: a decal keeps faces that merely clip the 0..1 square, so vertices
+    # outside it are ordinary and [0,1] would be the wrong bar
     for (di, j), bobj in by_key.items():
         assert bobj.data.materials and bobj.data.materials[0] is not None, bobj.name
         dd = src.meshes[src.decals[di].raw[2] + j].decal_data
@@ -1238,36 +1283,30 @@ def test_decals_can_import_as_meshes():
 def test_import_can_leave_the_lods_out():
     """The other checkbox, in its default state.
 
-    Every level stands at the same origin, so importing all ten is ten
-    overlapping copies.  Off, only the size-145 level is built.
+    Every level stands at the same origin, so importing all of them is a stack
+    of overlapping copies.  Off, only the largest is built -- and the collision
+    hull, which is not a level of detail (see the next test).
     """
     _reset()
     res = bpy.ops.io_scene_dts.import_dts(
-        filepath=str(FIXTURES / "v23_bioderm_light.dts")
+        filepath=str(FIXTURES / "v23_crt_monitor.dts")
     )
     assert res == {"FINISHED"}, res
 
+    src = read_shape_file(FIXTURES / "v23_crt_monitor.dts")
+    lods = sorted(int(d.size) for d in src.details if d.size >= 0)
+    assert len(lods) > 1, "fixture has only one level, so the option does nothing"
+
     meshes = [o for o in bpy.data.objects if o.type == "MESH"]
     sizes = {int(o["dts_detail_size"]) for o in meshes}
-    assert sizes == {145}, sorted(sizes)
-
-    src = read_shape_file(FIXTURES / "v23_bioderm_light.dts")
-    full = [o for o in src.objects]
-    assert len(meshes) == sum(
-        1 for o in full
-        if src.meshes[o.start_mesh_index] is not None
-    ), len(meshes)
-
-    # decals still import, onto the one level that is there
-    from io_scene_dts.mapping.decals import decal_objects
-
-    assert len(decal_objects()) == 24
-    assert all(d.dts_decal.target["dts_detail_size"] == 145 for d in decal_objects())
+    assert sizes - {-1} == {max(lods)}, sorted(sizes)
 
     # the detail *table* survives -- it is stored on the armature, so the
-    # exported shape still declares all ten levels, with geometry at one
+    # exported shape still declares every level, with geometry at one
     out = _tmp(".dts")
-    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
+    assert bpy.ops.io_scene_dts.export_dts(
+        filepath=out, version="23", export_textures=False
+    ) == {"FINISHED"}
     dst = read_shape_file(out)
     assert len(dst.details) == len(src.details)
     assert len(dst.objects) == len(src.objects)
@@ -1281,16 +1320,14 @@ def test_collision_details_survive_leaving_the_lods_out():
     """
     _reset()
     res = bpy.ops.io_scene_dts.import_dts(
-        filepath=str(FIXTURES / "v22_station_teleport.dts")
+        filepath=str(FIXTURES / "v22_crt_monitor.dts")
     )
     assert res == {"FINISHED"}, res
-    src = read_shape_file(FIXTURES / "v22_station_teleport.dts")
+    src = read_shape_file(FIXTURES / "v22_crt_monitor.dts")
     negative = sorted(int(d.size) for d in src.details if d.size < 0)
-    assert negative == [-2, -1], negative
+    assert negative == [-1], negative
 
     sizes = sorted({int(o["dts_detail_size"]) for o in bpy.data.objects if o.type == "MESH"})
-    # Collision-2 is declared with no geometry behind it, so only -1 arrives --
-    # what matters is that a collision level is never treated as an LOD
     assert -1 in sizes, sizes
     assert [s for s in sizes if s >= 0] == [max(int(d.size) for d in src.details)], sizes
 
@@ -1300,13 +1337,14 @@ def test_decal_meshes_are_not_exported_as_objects():
     decal table alone.  Exporting it as both gave the shape a phantom object
     per decal, with its own geometry and detail levels."""
     _reset()
-    _import_dts("v23_bioderm_light.dts")
-    src = read_shape_file(FIXTURES / "v23_bioderm_light.dts")
+    _import_dts("v23_decals.dts")
+    src = read_shape_file(FIXTURES / "v23_decals.dts")
+    assert src.decals, "fixture carries no decals; test is vacuous"
     out = _tmp(".dts")
     assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
     dst = read_shape_file(out)
-    assert len(dst.objects) == len(src.objects) == 19
-    assert len(dst.details) == len(src.details) == 10
+    assert len(dst.objects) == len(src.objects)
+    assert len(dst.details) == len(src.details)
     src_names = sorted(src.name(o.name_index) for o in src.objects)
     dst_names = sorted(dst.name(o.name_index) for o in dst.objects)
     assert dst_names == src_names
@@ -1323,13 +1361,13 @@ def test_decals_roundtrip_through_their_projectors():
     equality.
     """
     _reset()
-    _import_dts("v23_bioderm_light.dts")
-    src = read_shape_file(FIXTURES / "v23_bioderm_light.dts")
+    _import_dts("v23_decals.dts")
+    src = read_shape_file(FIXTURES / "v23_decals.dts")
     out = _tmp(".dts")
     res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="23")
     assert res == {"FINISHED"}, res
     dst = read_shape_file(out)
-    assert len(dst.decals) == len(src.decals) == 24
+    assert len(dst.decals) == len(src.decals) >= 2
     src_names = [src.name(d.raw[0]) for d in src.decals]
     dst_names = [dst.name(d.raw[0]) for d in dst.decals]
     assert dst_names == src_names
@@ -1363,30 +1401,39 @@ def test_decals_roundtrip_through_their_projectors():
                     assert abs(x - y) < 1e-5, (x, y)
             assert (b.material_index & 0x0FFFFFFF) == (a.material_index & 0x0FFFFFFF)
             assert b.indices, "a decal that covers nothing should not be written"
-    assert compared >= 120, compared
+    assert compared == len(src.decals), compared
     # default decal states survive
     assert dst.decal_states[: len(dst.decals)] == src.decal_states[: len(src.decals)]
     # the Damage sequence's decal track survives
     s_src = next(s for s in src.sequences if src.name(s.name_index) == "Damage")
     s_dst = next(s for s in dst.sequences if dst.name(s.name_index) == "Damage")
-    assert s_dst.decal_matters.count() == s_src.decal_matters.count() == 24
+    matters = s_src.decal_matters.count()
+    assert s_dst.decal_matters.count() == matters == len(src.decals)
     n = s_src.num_keyframes
-    src_track = src.decal_states[s_src.base_decal_state : s_src.base_decal_state + 24 * n]
-    dst_track = dst.decal_states[s_dst.base_decal_state : s_dst.base_decal_state + 24 * n]
+    width = matters * n
+    src_track = src.decal_states[s_src.base_decal_state : s_src.base_decal_state + width]
+    dst_track = dst.decal_states[s_dst.base_decal_state : s_dst.base_decal_state + width]
     assert dst_track == src_track
 
 
 def test_decal_coverage_recall_has_a_floor():
     """Coverage is recomputed, so it drifts -- but it must not silently rot.
 
-    Measured on this fixture the round trip recalls 0.444 of the covered
-    triangles at precision 0.589, with rule, depth and angle fitted per decal
-    at import (fit_coverage).  The precision floor also guards the facing gate:
-    without it the same fit scores 0.312, so dropping it fails here.
+    Measured on this fixture the round trip recalls 0.750 of the covered
+    triangles at precision 0.750, with rule, depth and angle fitted per decal
+    at import (fit_coverage).  The floors sit just under that: a floor far below
+    what the shape actually scores passes whatever the fit did, which is how it
+    stood at 0.35/0.45 and caught nothing.
+
+    That the fit *happens* is checked next door, by
+    test_the_fitted_coverage_rule_reaches_the_projector, and not here: a decal
+    authored through create_decal has a projector sized to the faces it was
+    given, so the fit's answer is the default rule and this number is the same
+    either way.
     """
     _reset()
-    _import_dts("v23_bioderm_light.dts")
-    src = read_shape_file(FIXTURES / "v23_bioderm_light.dts")
+    _import_dts("v23_decals.dts")
+    src = read_shape_file(FIXTURES / "v23_decals.dts")
     out = _tmp(".dts")
     assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
     dst = read_shape_file(out)
@@ -1409,9 +1456,49 @@ def test_decal_coverage_recall_has_a_floor():
             recall += hit / len(want)
             precision += hit / len(got)
             n += 1
-    assert n >= 120, n
-    assert recall / n > 0.35, recall / n
-    assert precision / n > 0.45, precision / n
+    assert n == len(src.decals), n
+    assert recall / n > 0.70, recall / n
+    assert precision / n > 0.70, precision / n
+
+
+def test_the_fitted_coverage_rule_reaches_the_projector():
+    """Import fits rule, depth and angle per decal, and the fit has to land on
+    the projector -- export re-derives coverage from those three properties, so
+    a fit that is computed and dropped is a fit that never happened.
+
+    Seeded by exporting with a non-default rule first, because no shape this
+    add-on writes can tell the difference.  ``create_decal`` sizes a projector
+    to the faces it was handed, so CENTRE reproduces that selection by
+    construction and the fit's answer on any authored shape *is* the default.
+    The shapes that distinguish them are shipped art, whose coverage lists came
+    out of a tool with rules of its own (`mapping/decals.py:17-29`).  Writing
+    the file with ANY is how one is made here.
+    """
+    from io_scene_dts.mapping.decals import decal_objects
+
+    _reset()
+    _import_dts("v24_decals.dts")
+    projectors = decal_objects()
+    assert projectors, "fixture carries no decals"
+    for d in projectors:
+        # ANY at the default depth covers 22 faces where CENTRE covers 8, so
+        # the written coverage list is one CENTRE cannot reproduce
+        d.dts_decal.rule = "ANY"
+        d.dts_decal.depth = 4.0
+        d.dts_decal.max_angle = 90.0
+    seeded = _tmp(".dts")
+    assert bpy.ops.io_scene_dts.export_dts(
+        filepath=seeded, version="24", export_textures=False
+    ) == {"FINISHED"}
+
+    _reset()
+    _import_dts_path(seeded)
+    rules = [d.dts_decal.rule for d in decal_objects()]
+    assert rules, "no decals came back"
+    assert "ANY" in rules, (
+        f"the fitted rule did not reach the projector: {rules} -- every decal "
+        "came back on the property default, so nothing was fitted"
+    )
 
 
 def test_decals_import_as_projector_empties():
@@ -1423,11 +1510,12 @@ def test_decals_import_as_projector_empties():
     file will name it.
     """
     _reset()
-    _import_dts("v23_bioderm_light.dts")
+    _import_dts("v23_decals.dts")
     from io_scene_dts.mapping.decals import coverage_attribute, decal_objects
 
+    src = read_shape_file(FIXTURES / "v23_decals.dts")
     empties = decal_objects()
-    assert len(empties) == 24, len(empties)
+    assert len(empties) == len(src.decals) >= 2, len(empties)
     # the representation this replaced: no decal is a mesh object any more
     assert not [o for o in bpy.data.objects if o.type == "MESH" and "dts_decal_name" in o]
     assert not [
@@ -1435,7 +1523,7 @@ def test_decals_import_as_projector_empties():
         if any(m.type == "UV_PROJECT" for m in o.modifiers)
     ]
 
-    assert len({d.dts_decal.index for d in empties}) == 24
+    assert len({d.dts_decal.index for d in empties}) == len(src.decals)
     for d in empties:
         props = d.dts_decal
         assert props.target is not None and props.target.type == "MESH"
@@ -1491,15 +1579,25 @@ def test_decals_import_as_projector_empties():
 def test_decals_start_at_the_states_the_file_stores():
     """A decal's rest state is per decal, not a constant.
 
-    Most Tribes 2 decals rest at -1 (off) and a Damage sequence switches them
-    on, but 357 of the corpus's 2194 rest at 0 — a wreck is already damaged.
-    station_teleport carries 13 of each.
+    Most decals rest at -1 (off) and a Damage sequence switches them on, but 357
+    of the corpus's 2194 rest at 0 -- a wreck is already damaged.  No example
+    mixes the two, so the fixture is seeded: the file is read, one decal's rest
+    state is flipped, and the result written back out.  What is under test is
+    that the importer reads the state per decal rather than assuming one.
     """
+    from io_scene_dts.dtslib.writer import write_shape_file
     from io_scene_dts.mapping.decals import decal_prop
 
     _reset()
-    arm = _import_dts("v22_station_teleport.dts")
-    src = read_shape_file(FIXTURES / "v22_station_teleport.dts")
+    src = read_shape_file(FIXTURES / "v23_decals.dts")
+    assert len(src.decals) >= 2, "seeding both rest states needs two decals"
+    src.decal_states[0] = 0
+    src.decal_states[1] = -1
+    seeded = _tmp(".dts")
+    write_shape_file(src, seeded, version=23)
+
+    arm = _import_dts_path(seeded)
+    src = read_shape_file(seeded)
     states = src.decal_states[: len(src.decals)]
     assert {s < 0 for s in states} == {True, False}, "fixture must carry both"
 
@@ -1532,14 +1630,27 @@ def test_decals_start_at_the_states_the_file_stores():
 
 
 def test_decal_identity_is_the_index_not_the_name():
-    """Decal names repeat within a shape — station_teleport's 26 decals share
+    """Decal names repeat within a shape -- station_teleport's 26 decals share
     13 names, and turret_tank_base gives all fourteen of its decals one name.
-    Keying on the name would collapse them on export."""
+    Keying on the name would collapse them on export.
+
+    Seeded rather than shipped: the examples name their decals apart, because a
+    person authoring one would.  The shapes that do not are files, so the case
+    is made by making a file.
+    """
+    from io_scene_dts.dtslib.writer import write_shape_file
     from io_scene_dts.mapping.decals import decal_prop
 
     _reset()
-    arm = _import_dts("v22_station_teleport.dts")
-    src = read_shape_file(FIXTURES / "v22_station_teleport.dts")
+    src = read_shape_file(FIXTURES / "v23_decals.dts")
+    assert len(src.decals) >= 2, "sharing a name needs two decals"
+    shared = src.decals[0].raw[0]
+    src.decals[1].raw = (shared,) + tuple(src.decals[1].raw[1:])
+    seeded = _tmp(".dts")
+    write_shape_file(src, seeded, version=23)
+
+    arm = _import_dts_path(seeded)
+    src = read_shape_file(seeded)
     names = [src.name(d.raw[0]) for d in src.decals]
     assert len(set(names)) < len(names), "fixture must have duplicate names"
 
@@ -1576,8 +1687,8 @@ def test_decals_follow_their_state_through_a_sequence():
     from io_scene_dts.mapping.visibility import _do_refresh
 
     _reset()
-    arm = _import_dts("v23_bioderm_light.dts")
-    src = read_shape_file(FIXTURES / "v23_bioderm_light.dts")
+    arm = _import_dts("v23_decals.dts")
+    src = read_shape_file(FIXTURES / "v23_decals.dts")
     names = [src.name(d.raw[0]) for d in src.decals]
 
     # every decal's Value node is driven, and by that decal's own property
@@ -1602,21 +1713,34 @@ def test_decals_follow_their_state_through_a_sequence():
     assert damage is not None
     for t in arm.animation_data.nla_tracks:
         t.mute = t.name != "Damage"
+    # Muting a track does not on its own tag the animation for re-evaluation in
+    # a background session, so every frame samples the rest pose and the ramp
+    # reads as flat.  Writing to animation_data does tag it; the action is
+    # already None, so this changes nothing except the tag.
+    arm.animation_data.action = None
 
-    n = _keyframes_of(damage)
+    # Walk the *strip's* frames, not the action's keyframe count.  A sequence
+    # whose duration is not its keyframe count arrives time-scaled -- this one
+    # is eleven keyframes over twenty-five frames -- so stepping 1..11 samples
+    # only the first fifth of the ramp and sees nothing switch on.
+    strip = next(
+        s for t in arm.animation_data.nla_tracks if not t.mute for s in t.strips
+    )
+    assert strip.action is damage, strip.action
     counts = []
-    for f in range(1, n + 1):
+    for f in range(int(strip.frame_start), int(strip.frame_end) + 1):
         bpy.context.scene.frame_set(f)
         bpy.context.view_layer.update()
         counts.append(sum(1 for i, nm in enumerate(names) if arm[decal_prop(i, nm)] >= 0))
     assert counts[0] == 0, counts
-    assert counts[-1] > counts[0], counts
+    assert counts[-1] == len(names), counts
+    assert counts == sorted(counts), "a damage ramp only ever turns decals on"
 
 
 def test_multiframe_shape_keys():
     _reset()
-    _import_dts("v22_disc.dts")
-    src = read_shape_file(FIXTURES / "v22_disc.dts")
+    _import_dts("v24_vertex_animation.dts")
+    src = read_shape_file(FIXTURES / "v24_vertex_animation.dts")
     keyed = [
         o for o in bpy.context.scene.objects
         if o.type == "MESH" and o.data.shape_keys is not None
@@ -1628,9 +1752,9 @@ def test_multiframe_shape_keys():
     dst = read_shape_file(out)
     src_mf = [m for m in src.meshes if m and m.num_frames > 1]
     dst_mf = [m for m in dst.meshes if m and m.num_frames > 1]
-    assert len(dst_mf) == len(src_mf) == 2
+    assert len(dst_mf) == len(src_mf) >= 1
     for m_src, m_dst in zip(src_mf, dst_mf):
-        assert m_dst.num_frames == m_src.num_frames == 17
+        assert m_dst.num_frames == m_src.num_frames > 1
         assert len(m_dst.verts) == m_dst.num_frames * m_dst.verts_per_frame
         # frame geometry survives (dedup may reorder/split verts; compare
         # point sets with a small tolerance)
@@ -1659,13 +1783,16 @@ def test_frame_track_previews_the_vertex_animation():
     """The sequence's frame track drives the shape keys, so the animation
     shows in the viewport and not only in the exported file."""
     _reset()
-    _import_dts("v22_disc.dts")
-    src = read_shape_file(FIXTURES / "v22_disc.dts")
-    # Activate's frame track names object 3, trailAct; slot 0 of that object is
-    # the largest detail level
-    obj = src.objects[3]
+    _import_dts("v24_vertex_animation.dts")
+    src = read_shape_file(FIXTURES / "v24_vertex_animation.dts")
+    # Wave's frame track names the flag -- by name, not by position: the pole
+    # is object 0 and animates a different channel, which is the whole reason
+    # the shape has one.  Slot 0 of the object is the largest detail level.
+    seq = next(s for s in src.sequences if s.frame_matters.count())
+    obj_index = next(iter(seq.frame_matters.indices()))
+    obj = src.objects[obj_index]
     base_name = src.name(obj.name_index)
-    assert base_name == "trailAct", base_name
+    assert base_name == "flag", base_name
     dts_mesh = src.meshes[obj.start_mesh_index]
     vpf = dts_mesh.verts_per_frame
 
@@ -1689,11 +1816,12 @@ def test_frame_track_previews_the_vertex_animation():
         return max(sum((p - q) ** 2 for p, q in zip(x, y)) ** 0.5 for x, y in zip(a, b))
 
     # the sequences arrive as an NLA library with one track playing; the frame
-    # track under test is Activate's
+    # track under test is Wave's
     anim = arm.animation_data
     for track in anim.nla_tracks:
-        track.mute = track.name != "Activate"
-    strip = next(s for t in anim.nla_tracks if t.name == "Activate" for s in t.strips)
+        track.mute = track.name != "Wave"
+    anim.action = None  # tag the animation; see the note in the decal ramp test
+    strip = next(s for t in anim.nla_tracks if t.name == "Wave" for s in t.strips)
 
     # the rest pose is the mesh's own vertices -- frame 0, what the Basis holds
     rest = [tuple(v.co) for v in bobj.data.vertices]
@@ -1739,7 +1867,7 @@ def test_imported_frames_rest_at_the_first_frame():
     """
     _reset()
     res = bpy.ops.io_scene_dts.import_dts(
-        filepath=str(FIXTURES / "v22_disc.dts"),
+        filepath=str(FIXTURES / "v24_vertex_animation.dts"),
         import_details=True,
         import_sequences=False,
     )
@@ -1780,7 +1908,7 @@ def test_uv_edit_reaches_the_exported_file():
     and this test fails, which is what makes it worth having.
     """
     _reset()
-    _import_dts("v24_ammo.dts")
+    _import_dts("v24_detail_levels.dts")
     shifted = 0
     for obj in bpy.context.scene.objects:
         if obj.type != "MESH" or obj.data.uv_layers.active is None:
@@ -1792,7 +1920,7 @@ def test_uv_edit_reaches_the_exported_file():
 
     out = _tmp(".dts")
     assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
-    src_lo, src_hi = _uv_range(read_shape_file(FIXTURES / "v24_ammo.dts"))
+    src_lo, src_hi = _uv_range(read_shape_file(FIXTURES / "v24_detail_levels.dts"))
     dst_lo, dst_hi = _uv_range(read_shape_file(out))
     assert abs(dst_lo - (src_lo + 0.25)) < 1e-4, (src_lo, dst_lo)
     assert abs(dst_hi - (src_hi + 0.25)) < 1e-4, (src_hi, dst_hi)
@@ -1813,8 +1941,8 @@ def test_matframes_survive_an_edit():
     refused the export outright rather than lose them.
     """
     _reset()
-    _import_dts("v21_weapon_energy.dts")
-    src = read_shape_file(FIXTURES / "v21_weapon_energy.dts")
+    _import_dts("v21_material_frames.dts")
+    src = read_shape_file(FIXTURES / "v21_material_frames.dts")
 
     from io_scene_dts.mapping import matframes
 
@@ -1822,8 +1950,10 @@ def test_matframes_survive_an_edit():
         o for o in bpy.context.scene.objects
         if o.type == "MESH" and matframes.frame_count(o.data) > 1
     ]
+    frames = max(m.num_mat_frames for m in src.meshes if m is not None)
+    assert frames > 1, "fixture has no extra material frames; test is vacuous"
     assert carriers, "no matframe attributes created"
-    assert all(matframes.frame_count(o.data) == 17 for o in carriers), [
+    assert all(matframes.frame_count(o.data) == frames for o in carriers), [
         matframes.frame_count(o.data) for o in carriers
     ]
     assert not any(o.get("dts_strict_freeze") for o in carriers), "matframes still frozen"
@@ -1838,18 +1968,18 @@ def test_matframes_survive_an_edit():
 
     src_mf = [m for m in src.meshes if m is not None and m.num_mat_frames > 1]
     dst_mf = [m for m in dst.meshes if m is not None and m.num_mat_frames > 1]
-    assert len(dst_mf) == len(src_mf) == 3, (len(dst_mf), len(src_mf))
+    assert len(dst_mf) == len(src_mf) >= 1, (len(dst_mf), len(src_mf))
     for m_src, m_dst in zip(src_mf, dst_mf):
-        assert m_dst.num_mat_frames == 17
-        assert len(m_dst.tverts) == 17 * len(m_dst.verts)
+        assert m_dst.num_mat_frames == frames
+        assert len(m_dst.tverts) == frames * len(m_dst.verts)
         src_blocks = _matframe_blocks(m_src)
         dst_blocks = _matframe_blocks(m_dst)
         # the dedup can split a vertex across a UV seam, so compare the set of
         # coordinates a frame holds rather than their order
-        for f in range(17):
+        for f in range(frames):
             assert set(src_blocks[f]) == set(dst_blocks[f]), f"material frame {f}"
-        # and the frames stay distinct from one another -- 9 distinct blocks
-        # among the 17 is what the fixture ships
+        # and the frames stay distinct from one another, as many of them as the
+        # fixture ships -- a flipbook collapsed to one block still round-trips
         assert len({tuple(b) for b in dst_blocks}) == len({tuple(b) for b in src_blocks})
 
 
@@ -1860,9 +1990,22 @@ def test_merge_indices_survive_an_edit():
     that only appear in a degenerate stitch triangle, and re-deriving as
     triangle lists drops them, so a merge entry naming one has nothing to
     point at.  Export warns and keeps the rest.
+
+    Seeded rather than shipped.  A merge table is something the 3ds Max
+    exporters emitted and this add-on only carries through -- no shape it
+    writes has one, so the only way to have a file with merge indices in it is
+    to put them there.  One of them points past the triangulated mesh on
+    purpose: dropping it is the behaviour under test.
     """
+    from io_scene_dts.dtslib.writer import write_shape_file
+
     _reset()
-    _import_dts("v23_weapon_energy_vehicle.dts")
+    src = read_shape_file(FIXTURES / "v24_detail_levels.dts")
+    mesh = next(m for m in src.meshes if m is not None and len(m.verts) > 2)
+    mesh.merge_indices = [0, 1, len(mesh.verts) - 1]
+    seeded = _tmp(".dts")
+    write_shape_file(src, seeded, version=23)
+    _import_dts_path(seeded)
 
     carriers = [o for o in bpy.context.scene.objects if o.get("dts_merge_indices")]
     assert carriers, "no merge indices stored"
@@ -1897,7 +2040,7 @@ def test_mesh_flags_survive_an_edit():
     bits did not, and export dropped it.
     """
     _reset()
-    _import_dts("v21_xorg21.dts")
+    _import_dts("v24_billboards.dts")
     billboard = [
         o for o in bpy.context.scene.objects
         if o.type == "MESH" and o.dts_mesh.billboard
@@ -1923,7 +2066,7 @@ def test_a_billboard_can_be_authored_from_a_plain_mesh():
     from io_scene_dts.dtslib.types import MESH_BILLBOARD, MESH_BILLBOARD_Z_AXIS
 
     _reset()
-    _import_dts("v24_ammo.dts")
+    _import_dts("v24_detail_levels.dts")
     plain = next(
         o for o in bpy.context.scene.objects
         if o.type == "MESH" and "dts_object_name" in o and not o.dts_mesh.billboard
@@ -1954,7 +2097,7 @@ def test_every_mesh_flag_is_settable_not_just_clearable():
     """Each flag exists on every DTS mesh with a default, so a panel can draw
     it.  Absence used to mean False, which is not something you can tick."""
     _reset()
-    _import_dts("v24_ammo.dts")
+    _import_dts("v24_detail_levels.dts")
     for obj in bpy.context.scene.objects:
         if obj.type != "MESH" or "dts_object_name" not in obj:
             continue
@@ -1970,8 +2113,22 @@ def test_every_mesh_flag_is_settable_not_just_clearable():
 
 
 def test_mesh_type_echo_bits_survive_an_edit():
+    """The low three bits of a mesh's flags word repeat its type.
+
+    Seeded: nothing this add-on writes sets them, because they are redundant
+    with the type word the mesh already carries.  Some of the shipped art does,
+    and dropping bits a file holds is a change to the file -- so the property
+    exists and this checks it survives a re-export.
+    """
+    from io_scene_dts.dtslib.writer import write_shape_file
+
     _reset()
-    _import_dts("v24_w_sqknest.dts")
+    src = read_shape_file(FIXTURES / "v24_skin_animation.dts")
+    skin = next(m for m in src.meshes if m is not None and m.mesh_type == SKIN_MESH)
+    skin.flags |= skin.mesh_type
+    seeded = _tmp(".dts")
+    write_shape_file(src, seeded, version=24)
+    _import_dts_path(seeded)
     echoing = [
         o for o in bpy.context.scene.objects
         if o.type == "MESH" and o.dts_mesh.echo_type_bits
@@ -2006,8 +2163,8 @@ def test_lod_vertex_sharing_is_rederived():
     x1.85 in file size.
     """
     _reset()
-    _import_dts("v22_turret_belly_barrell.dts")
-    src = read_shape_file(FIXTURES / "v22_turret_belly_barrell.dts")
+    _import_dts("v22_detail_levels.dts")
+    src = read_shape_file(FIXTURES / "v22_detail_levels.dts")
     assert _sharing(src), "fixture does not use parent_mesh"
 
     out = _tmp(".dts")
@@ -2034,10 +2191,10 @@ def test_lod_sharing_keeps_the_file_from_growing():
     import os
 
     _reset()
-    _import_dts("v22_turret_belly_barrell.dts")
+    _import_dts("v22_detail_levels.dts")
     out = _tmp(".dts")
     assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
-    before = os.path.getsize(FIXTURES / "v22_turret_belly_barrell.dts")
+    before = os.path.getsize(FIXTURES / "v22_detail_levels.dts")
     after = os.path.getsize(out)
     assert after <= before * 1.05, (before, after)
 
@@ -2049,7 +2206,7 @@ def test_lod_sharing_degrades_when_a_level_stops_nesting():
     is a larger pool, never an invalid prefix.
     """
     _reset()
-    _import_dts("v22_turret_belly_barrell.dts")
+    _import_dts("v22_detail_levels.dts")
     # the smallest detail level of some object, rebuilt as a cube nowhere near
     # the original geometry
     victim = min(
@@ -2077,8 +2234,8 @@ def test_shape_tables_are_editable_collections():
     """Four shape tables were JSON strings on the armature — present in the UI
     and unusable from it."""
     _reset()
-    arm = _import_dts("v22_energy_explosion.dts")
-    src = read_shape_file(FIXTURES / "v22_energy_explosion.dts")
+    arm = _import_dts("v22_ifl_material.dts")
+    src = read_shape_file(FIXTURES / "v22_ifl_material.dts")
     props = arm.dts_shape
 
     assert props.is_shape
@@ -2100,7 +2257,7 @@ def test_shape_tables_are_editable_collections():
 
 def test_editing_a_detail_size_reaches_the_file():
     _reset()
-    arm = _import_dts("v24_ammo.dts")
+    arm = _import_dts("v24_detail_levels.dts")
     details = arm.dts_shape.details
     target = next(d for d in details if d.size > 0)
     target.size = 77.0
@@ -2113,8 +2270,8 @@ def test_editing_a_detail_size_reaches_the_file():
 
 def test_sequence_tables_are_editable_collections():
     _reset()
-    _import_dts("v23_pack_upgrade_shield.dts")
-    src = read_shape_file(FIXTURES / "v23_pack_upgrade_shield.dts")
+    _import_dts("v23_crt_monitor.dts")
+    src = read_shape_file(FIXTURES / "v23_crt_monitor.dts")
 
     checked = 0
     for seq in src.sequences:
@@ -2137,7 +2294,7 @@ def test_a_trigger_can_be_authored():
     one is the case that matters.  The packed U32 comes apart into a state
     number and two flags, so the numbers in the UI are the format's own."""
     _reset()
-    _import_dts("v24_woodDoor01.dts")
+    _import_dts("v24_crt_monitor.dts")
     action = next(a for a in bpy.data.actions if a.get("dts_sequence"))
     assert len(action.dts_sequence_props.triggers) == 0
 
@@ -2312,7 +2469,7 @@ def test_every_panel_polls_and_draws():
     for panel in _dts_panels():
         assert panel.poll(empty) in (True, False)
 
-    arm = _import_dts("v23_pack_upgrade_shield.dts")
+    arm = _import_dts("v23_crt_monitor.dts")
     bone = arm.data.bones[0]
     mesh = next(o for o in bpy.context.scene.objects if "dts_object_name" in o)
     material = next(m for m in bpy.data.materials if "dts_name" in m)
@@ -2336,7 +2493,7 @@ def test_every_panel_polls_and_draws():
 
 def test_the_list_operators_reach_their_collections():
     _reset()
-    arm = _import_dts("v24_ammo.dts")
+    arm = _import_dts("v24_detail_levels.dts")
     bpy.context.view_layer.objects.active = arm
     before = len(arm.dts_shape.details)
 
@@ -2472,8 +2629,8 @@ def test_ifl_preserved():
     """The IFL table is derived now, so what must survive is what it is derived
     from: the material flips, and its entry names it."""
     _reset()
-    _import_dts("v22_energy_explosion.dts")
-    src = read_shape_file(FIXTURES / "v22_energy_explosion.dts")
+    _import_dts("v22_ifl_material.dts")
+    src = read_shape_file(FIXTURES / "v22_ifl_material.dts")
     out = _tmp(".dts")
     res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="23")
     assert res == {"FINISHED"}, res
@@ -2502,8 +2659,8 @@ def test_sorted_meshes_survive_an_edit():
     tables lived only in the pickled payload and could not be re-derived.
     dtslib/sorted_build.py generates them, so it is ordinary geometry now."""
     _reset()
-    _import_dts("v21_xorg21.dts")
-    src = read_shape_file(FIXTURES / "v21_xorg21.dts")
+    _import_dts("v21_sorted_foliage.dts")
+    src = read_shape_file(FIXTURES / "v21_sorted_foliage.dts")
     assert any(m is not None and m.mesh_type == 3 for m in src.meshes), "fixture has no sorted mesh"
 
     src_sorted = [m for m in src.meshes if m is not None and m.mesh_type == 3]
@@ -2530,14 +2687,27 @@ def test_sorted_meshes_survive_an_edit():
 def test_an_imported_translucent_mesh_is_promoted_on_re_export():
     """The promotion is unconditional -- it fires on a re-export too.
 
-    v24_shrub's one mesh arrives as a STANDARD_MESH on a translucent material
-    and leaves as a sorted one, so a plain round trip changes the mesh type.
-    That is the deliberate cost of inferring sorting from the material rather
-    than only honouring an explicit setting.
+    The mesh arrives as a STANDARD_MESH on a translucent material and leaves as
+    a sorted one, so a plain round trip changes the mesh type.  That is the
+    deliberate cost of inferring sorting from the material rather than only
+    honouring an explicit setting.
+
+    Seeded, because the promotion means no shape this add-on writes is in the
+    starting state: exporting a translucent mesh always sorts it.  A material
+    flag is flipped on a shape of standard meshes to make one.
     """
+    from io_scene_dts.dtslib.types import MAT_TRANSLUCENT
+    from io_scene_dts.dtslib.writer import write_shape_file
+
     _reset()
-    _import_dts("v24_shrub.dts")
-    src = read_shape_file(FIXTURES / "v24_shrub.dts")
+    src = read_shape_file(FIXTURES / "v24_visibility.dts")
+    for mat in src.materials:
+        mat.flags |= MAT_TRANSLUCENT
+    seeded = _tmp(".dts")
+    write_shape_file(src, seeded, version=24)
+
+    _import_dts_path(seeded)
+    src = read_shape_file(seeded)
     live = [m for m in src.meshes if m is not None]
     assert all(m.mesh_type == 0 for m in live), "fixture should start standard"
 
@@ -2560,7 +2730,7 @@ def test_sorted_cluster_tree_walks_like_the_engine_reads_it():
     from sorted_walk import camera_positions, triangles_of, walk
 
     _reset()
-    _import_dts("v21_xorg21.dts")
+    _import_dts("v21_sorted_foliage.dts")
     out = _tmp(".dts")
     assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
     dst = read_shape_file(out)
@@ -2589,8 +2759,8 @@ def test_sorted_cluster_tree_walks_like_the_engine_reads_it():
 
 def test_import_v18_old_format():
     _reset()
-    arm = _import_dts("v18_octahedron.dts")
-    src = read_shape_file(FIXTURES / "v18_octahedron.dts")
+    arm = _import_dts("v18_test_crate.dts")
+    src = read_shape_file(FIXTURES / "v18_test_crate.dts")
     assert src.source_version == 18
     assert len(arm.data.bones) == len(src.nodes)
     meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
@@ -2772,7 +2942,7 @@ def test_dsq_rotation_only_node_keeps_rest_translation():
     """Regression: a node in rotation_matters but not translation_matters used
     to get translation (0,0,0), teleporting the bone onto its parent."""
     _reset()
-    arm = _import_dts("v24_w_sqknest.dts")
+    arm = _import_dts("v24_skin_animation.dts")
     node, bone = _offset_bone(arm)
     rest_t = _rest_local(bone).to_translation()
 
@@ -2792,7 +2962,7 @@ def test_dsq_translation_only_node_keeps_rest_rotation():
     the rest matrix composed on the wrong side, applying the translation in the
     bone's rotated frame."""
     _reset()
-    arm = _import_dts("v24_w_sqknest.dts")
+    arm = _import_dts("v24_skin_animation.dts")
     node, bone = _offset_bone(arm)
     rest_q = _rest_local(bone).to_quaternion()
     target = (0.25, -0.5, 0.75)
@@ -2826,7 +2996,7 @@ def test_import_dts_with_dsq_companions():
     import tempfile
 
     _reset()
-    arm = _import_dts("v24_w_sqknest.dts")
+    arm = _import_dts("v24_skin_animation.dts")
     node, bone = _offset_bone(arm)
     # the name, not the Bone: the reset below frees it, and reading a freed
     # StructRNA gives whatever is in that memory now -- which surfaced as a
@@ -2835,7 +3005,7 @@ def test_import_dts_with_dsq_companions():
     probes = ["ProbeA", "ProbeB", "ProbeC", "ProbeD", "ProbeE"]
 
     tmp = Path(tempfile.mkdtemp())
-    shutil.copy(FIXTURES / "v24_w_sqknest.dts", tmp / "shape.dts")
+    shutil.copy(FIXTURES / "v24_skin_animation.dts", tmp / "shape.dts")
     for seq in probes:
         (tmp / f"{seq}.dsq").write_bytes(
             _probe_dsq(arm, node, rotate=True, translate=None, name=seq)
@@ -2871,7 +3041,7 @@ def test_dsq_onto_an_existing_rig_plays_what_you_just_loaded():
     choice, and it plays.  Muting that too would make the importer look broken.
     """
     _reset()
-    arm = _import_dts("v24_w_sqknest.dts")
+    arm = _import_dts("v24_skin_animation.dts")
     assert [t.name for t in arm.animation_data.nla_tracks if not t.mute] == []
 
     node, bone = _offset_bone(arm)
@@ -2888,7 +3058,7 @@ def test_import_dts_rejects_more_than_one_shape():
     try:
         bpy.ops.io_scene_dts.import_dts(
             directory=str(FIXTURES),
-            files=[{"name": "v24_ammo.dts"}, {"name": "v24_octahedron.dts"}],
+            files=[{"name": "v24_detail_levels.dts"}, {"name": "v24_test_crate.dts"}],
         )
     except RuntimeError as e:
         assert "exactly one .dts" in str(e), str(e)
@@ -2911,7 +3081,7 @@ def test_dts_import_stacks_sequences_as_nla_strips():
     from io_scene_dts.mapping.nla import strip_scale
 
     _reset()
-    arm = _import_dts("v24_w_sqknest.dts")
+    arm = _import_dts("v24_skin_animation.dts")
     fps = bpy.context.scene.render.fps / bpy.context.scene.render.fps_base
 
     tracks = arm.animation_data.nla_tracks
@@ -2948,15 +3118,16 @@ def test_object_visibility_animates_through_the_strip():
     from io_scene_dts.mapping.visibility import vis_prop
 
     _reset()
-    arm = _import_dts("v23_pack_upgrade_cloaking.dts")
-    animated = ["Main_light", "Hand_bottom_light", "Hand_right_light", "Hand_left_light"]
+    arm = _import_dts("v24_crt_monitor.dts")
+    # the two objects the Power sequence switches: the lit screen and the LED
+    animated = ["ScreenON_", "LightON_"]
 
     # the value lives on the armature, in the bones' own slot
     for name in animated:
         assert vis_prop(name) in arm.keys(), name
     assert any(
-        fc.data_path == f'["{vis_prop("Main_light")}"]'
-        for fc in _fcurves(bpy.data.actions["ambient"])
+        fc.data_path == f'["{vis_prop("ScreenON_")}"]'
+        for fc in _fcurves(bpy.data.actions["Power"])
     )
 
     # every mesh built from an animated object is driven; a DTS object is one
@@ -2970,32 +3141,58 @@ def test_object_visibility_animates_through_the_strip():
         for d in o.animation_data.drivers:
             assert d.driver.variables[0].targets[0].id is arm
 
-    # a vis-only sequence must still get a strip — it used to be skipped for
+    # a vis-only sequence must still get a strip -- it used to be skipped for
     # having no bone channels, which left the visibility inert
     tracks = {t.name for t in arm.animation_data.nla_tracks}
-    assert "ambient" in tracks, tracks
+    assert "Visibility" in tracks, tracks
 
     # and it must actually move
     for t in arm.animation_data.nla_tracks:
-        t.mute = t.name != "ambient"
-    n = _keyframes_of(bpy.data.actions["ambient"])
+        t.mute = t.name != "Power"
+    arm.animation_data.action = None  # tag the animation; see the decal ramp test
+    strip = next(s for t in arm.animation_data.nla_tracks if not t.mute for s in t.strips)
     seen = set()
-    for f in range(1, n + 1):
+    for f in range(int(strip.frame_start), int(strip.frame_end) + 1):
         bpy.context.scene.frame_set(f)
         bpy.context.view_layer.update()
-        seen.add(round(arm[vis_prop("Main_light")], 3))
+        # the LED, not the screen: Power holds the screen at 1.0 and pulses
+        # the LED, so this is the object whose track has anything to say
+        seen.add(round(arm[vis_prop("LightON_")], 3))
     assert len(seen) > 1, f"visibility never changed: {seen}"
+
+
+def _hidden_at_rest_fixture(source="v24_crt_monitor.dts"):
+    """A shape whose default object states hide something, and the names hidden.
+
+    Seeded rather than shipped.  An example is built to be looked at, so every
+    one of them rests visible; the shapes that do not are files -- Tribes 2's
+    station_generator_large rests its destroyed hulk at vis 0, so the intact
+    machine is what you see until something breaks it.  Defaulting the vis
+    property to 1.0 instead of the file's value drew the hulk over the machine,
+    which is the bug this guards.
+    """
+    from io_scene_dts.dtslib.types import ObjectState
+    from io_scene_dts.dtslib.writer import write_shape_file
+
+    src = read_shape_file(FIXTURES / source)
+    hidden = []
+    for i, obj in enumerate(src.objects[: max(1, len(src.objects) // 2)]):
+        state = src.object_states[i]
+        src.object_states[i] = ObjectState(0.0, state.frame_index, state.mat_frame_index)
+        hidden.append(src.name(obj.name_index))
+    path = _tmp(".dts")
+    write_shape_file(src, path, version=24)
+    return path, hidden
 
 
 def test_visibility_starts_at_the_shapes_default_state():
     """Defaulting every vis property to 1.0 shows meshes the shape hides at
-    rest — station_generator_large's destroyed hulk swallowed the machine it
-    replaces, because its default vis is 0."""
+    rest."""
     from io_scene_dts.mapping.visibility import vis_prop
 
     _reset()
-    arm = _import_dts("v22_disc.dts")
-    hidden = ["leadingEdgeAct", "leadingEdgeMaint", "trailAct", "trailMaint"]
+    path, hidden = _hidden_at_rest_fixture()
+    arm = _import_dts_path(path)
 
     # mute everything so nothing overrides the resting value
     for t in arm.animation_data.nla_tracks:
@@ -3017,7 +3214,7 @@ def test_only_fractional_tracks_get_alpha_materials():
     from io_scene_dts.mapping.visibility import fractional_object_names
 
     _reset()
-    _import_dts("v22_disc.dts")
+    _import_dts("v24_vertex_animation.dts")
     actions = [a for a in bpy.data.actions if a.get("dts_sequence")]
     fades = fractional_object_names(actions)
 
@@ -3074,39 +3271,42 @@ def test_visibility_survives_export_and_reimport():
     """Resting object states and animated vis tracks must round-trip.
 
     The importer only previews what the file already said; the file is what
-    has to come back.  v22_disc hides four of its five objects at rest and
-    fades them in, and the cloaking pack fades four objects over 40 keyframes.
+    has to come back.  Both shapes are seeded to rest something hidden, for the
+    reason ``_hidden_at_rest_fixture`` gives -- the fades are the examples' own.
     """
     from io_scene_dts.mapping.visibility import vis_prop
 
-    for fixture in ("v22_disc.dts", "v23_pack_upgrade_cloaking.dts"):
+    for source in ("v24_visibility.dts", "v24_crt_monitor.dts"):
         _reset()
-        _import_dts(fixture)
+        fixture, _hidden = _hidden_at_rest_fixture(source)
+        _import_dts_path(fixture)
         out = _tmp(".dts")
-        res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="24")
-        assert res == {"FINISHED"}, (fixture, res)
+        res = bpy.ops.io_scene_dts.export_dts(
+            filepath=out, version="24", export_textures=False
+        )
+        assert res == {"FINISHED"}, (source, res)
 
-        src = read_shape_file(FIXTURES / fixture)
+        src = read_shape_file(fixture)
         dst = read_shape_file(out)
 
         # resting state: defaulting these to 1.0 would draw every hidden mesh
         src_def, dst_def = _file_default_vis(src), _file_default_vis(dst)
-        assert set(dst_def) == set(src_def), fixture
+        assert set(dst_def) == set(src_def), source
         for name, vis in src_def.items():
-            assert abs(dst_def[name] - vis) < 1e-6, (fixture, name, dst_def[name], vis)
-        assert any(v == 0.0 for v in src_def.values()), f"{fixture} tests nothing"
+            assert abs(dst_def[name] - vis) < 1e-6, (source, name, dst_def[name], vis)
+        assert any(v == 0.0 for v in src_def.values()), f"{source} tests nothing"
 
         # animated tracks, keyframe for keyframe
         src_tracks, dst_tracks = _file_vis_tracks(src), _file_vis_tracks(dst)
-        assert set(dst_tracks) == set(src_tracks), fixture
+        assert set(dst_tracks) == set(src_tracks), source
         for seq_name, objects in src_tracks.items():
-            assert set(dst_tracks[seq_name]) == set(objects), (fixture, seq_name)
+            assert set(dst_tracks[seq_name]) == set(objects), (source, seq_name)
             for obj_name, track in objects.items():
                 got = dst_tracks[seq_name][obj_name]
-                assert len(got) == len(track), (fixture, seq_name, obj_name)
+                assert len(got) == len(track), (source, seq_name, obj_name)
                 for kf, (a, b) in enumerate(zip(track, got)):
-                    assert abs(a - b) < 1e-6, (fixture, seq_name, obj_name, kf, a, b)
-        assert src_tracks, f"{fixture} has no vis tracks"
+                    assert abs(a - b) < 1e-6, (source, seq_name, obj_name, kf, a, b)
+        assert src_tracks, f"{source} has no vis tracks"
 
         # and the exported file must import back into a working preview
         _reset()
@@ -3116,16 +3316,16 @@ def test_visibility_survives_export_and_reimport():
         actions = {a.name.lower(): a for a in bpy.data.actions if a.get("dts_sequence")}
         for seq_name, objects in src_tracks.items():
             action = actions.get(seq_name)
-            assert action is not None, (fixture, seq_name, sorted(actions))
+            assert action is not None, (source, seq_name, sorted(actions))
             for obj_name, track in objects.items():
                 keys = _vis_keyframes(action, obj_name)
-                assert keys is not None, (fixture, seq_name, obj_name)
+                assert keys is not None, (source, seq_name, obj_name)
                 assert len(keys) == len(track)
                 for kf, (a, b) in enumerate(zip(track, keys)):
-                    assert abs(a - b) < 1e-5, (fixture, seq_name, obj_name, kf, a, b)
+                    assert abs(a - b) < 1e-5, (source, seq_name, obj_name, kf, a, b)
         for name, vis in src_def.items():
             if name in {o for objs in src_tracks.values() for o in objs}:
-                assert abs(arm[vis_prop(name)] - vis) < 1e-6, (fixture, name)
+                assert abs(arm[vis_prop(name)] - vis) < 1e-6, (source, name)
 
 
 def _vis_fcurve(action, dts_object_name):
@@ -3144,7 +3344,7 @@ def test_keyframed_visibility_reaches_the_exported_file():
     form and the curves were decoration.  There is no blob now.
     """
     _reset()
-    _import_dts("v23_bioderm_light.dts")
+    _import_dts("v24_crt_monitor.dts")
     arm = _armature()
 
     from io_scene_dts.mapping.objectstate import parse_path
@@ -3192,7 +3392,7 @@ def test_removing_a_keyframe_shortens_the_sequence():
     from io_scene_dts.mapping.sequences import _iter_fcurves
 
     _reset()
-    _import_dts("v24_woodDoor01.dts")
+    _import_dts("v24_crt_monitor.dts")
     action = next(a for a in bpy.data.actions if a.get("dts_sequence"))
     before = _keyframes_of(action)
     assert before > 2, before
@@ -3216,8 +3416,8 @@ def test_matters_sets_are_inferred_from_the_channels_that_exist():
     them reproduces the file exactly, and means a bone channel added in Blender
     marks its node instead of being ignored."""
     _reset()
-    _import_dts("v24_woodDoor01.dts")
-    src = read_shape_file(FIXTURES / "v24_woodDoor01.dts")
+    _import_dts("v24_crt_monitor.dts")
+    src = read_shape_file(FIXTURES / "v24_crt_monitor.dts")
     out = _tmp(".dts")
     assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
     dst = read_shape_file(out)
@@ -3237,8 +3437,8 @@ def test_scale_animation_rides_the_bone_scale_channels():
     from io_scene_dts.mapping.sequences import _iter_fcurves
 
     _reset()
-    _import_dts("v22_disc.dts")
-    src = read_shape_file(FIXTURES / "v22_disc.dts")
+    _import_dts("v24_node_scale.dts")
+    src = read_shape_file(FIXTURES / "v24_node_scale.dts")
     src_seq = next(s for s in src.sequences if s.flags & 0x7)
     assert src_seq.animates_aligned_scale()
 
@@ -3268,7 +3468,7 @@ def test_editing_a_scale_key_reaches_the_file():
     from io_scene_dts.mapping.sequences import _iter_fcurves
 
     _reset()
-    _import_dts("v22_disc.dts")
+    _import_dts("v24_node_scale.dts")
     action = next(
         a for a in bpy.data.actions if a.dts_sequence_props.scale_mode != "NONE"
     )
@@ -3291,7 +3491,7 @@ def test_editing_a_scale_key_reaches_the_file():
 def test_object_state_blobs_are_gone():
     """The JSON that used to shadow the curves must not come back."""
     _reset()
-    _import_dts("v23_bioderm_light.dts")
+    _import_dts("v23_decals.dts")
     for action in bpy.data.actions:
         for key in ("dts_object_anim", "dts_decal_anim"):
             assert key not in action.keys(), f"{action.name} still carries {key}"
@@ -3299,13 +3499,13 @@ def test_object_state_blobs_are_gone():
 
 def test_visibility_drivers_are_not_duplicated_on_reimport():
     _reset()
-    arm = _import_dts("v23_pack_upgrade_shield.dts")
+    arm = _import_dts("v23_crt_monitor.dts")
     driven = next(o for o in bpy.data.objects
-                  if o.type == "MESH" and o.get("dts_object_name") == "CenterFace_ambient")
+                  if o.type == "MESH" and o.get("dts_object_name") == "ScreenON_")
     before = len(driven.animation_data.drivers)
 
     from io_scene_dts.mapping.visibility import wire_drivers
-    wire_drivers(arm, {"CenterFace_ambient"}, [])
+    wire_drivers(arm, {"ScreenON_"}, [])
     assert len(driven.animation_data.drivers) == before
 
 
@@ -3323,7 +3523,7 @@ def test_nla_strips_do_not_reach_the_exported_file():
     """dts_duration stays the single source of truth, so retiming a strip
     cannot change what gets written."""
     _reset()
-    arm = _import_dts("v24_w_sqknest.dts")
+    arm = _import_dts("v24_skin_animation.dts")
     bpy.context.view_layer.objects.active = arm
 
     for track in arm.animation_data.nla_tracks:
@@ -3333,7 +3533,7 @@ def test_nla_strips_do_not_reach_the_exported_file():
     assert bpy.ops.io_scene_dts.export_dsq(filepath=out) == {"FINISHED"}
     dsq = read_dsq(Path(out).read_bytes())
     written = {n.lower(): s for n, s in zip(dsq.sequence_names, dsq.sequences)}
-    src = read_shape_file(FIXTURES / "v24_w_sqknest.dts")
+    src = read_shape_file(FIXTURES / "v24_skin_animation.dts")
     for s in src.sequences:
         name = src.name(s.name_index).lower()
         if name not in written:
@@ -3346,7 +3546,7 @@ def test_import_hides_non_default_detail_levels():
     """Every LOD sits at the same origin; only the default (largest size) one
     is visible after import."""
     _reset()
-    _import_dts("v23_bioderm_light.dts")
+    _import_dts("v24_crt_monitor.dts")
     vl = bpy.context.view_layer
     lods = [
         lc for lc in vl.layer_collection.children

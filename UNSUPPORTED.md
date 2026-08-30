@@ -1,6 +1,6 @@
 # Unsupported and partially supported DTS features
 
-What this add-on does *not* do, as of v1.4.0.  Everything here was read out of
+What this add-on does *not* do, as of v1.5.0.  Everything here was read out of
 the code rather than remembered; file:line references point at the deciding
 line so a claim can be checked or corrected.
 
@@ -71,10 +71,15 @@ instead:
 - **Vertex order and encoded normals are not preserved.**  Both are recomputed;
   the encoded normals from the 256-entry table in `dtslib/normals.py`.
 
-Where that lands, fixture by fixture: `turret_belly_barrell` ×0.98, `ammo`
-×0.97, `pack_upgrade_shield` ×0.97, `weapon_chaingun_ammocasing` ×1.01,
-`gman` ×1.23, `bioderm_light` ×1.32.  The two that grow are dominated by
-sequence data rather than geometry — see §4.
+Where that lands, corpus shape by corpus shape: `turret_belly_barrell` ×0.98,
+`ammo` ×0.97, `pack_upgrade_shield` ×0.97, `weapon_chaingun_ammocasing` ×1.01,
+`bioderm_light` ×1.32.  The one that grows is dominated by sequence data rather
+than geometry — see §4.  These were measured when the shapes were fixtures in
+this repository; they are corpus shapes now
+(`tests/fixtures/NOTES.md`), so re-measuring needs the game data.  The
+in-repo equivalent is `test_lod_sharing_keeps_the_file_from_growing`, which
+holds a re-derived export of `v22_detail_levels` to within 5% of the file it
+was read from.
 
 The remaining geometry cost is normal quantization.  Blender hands split
 normals back compressed, varying between two meshes of different topology, so
@@ -425,7 +430,9 @@ you export.
   go from 13,556 to 18,588 entries, which is most of that shape's growth.  This
   predates the geometry work and is not caused by it: the exporter writes a key
   for every node in the stored matters sets rather than for the channels that
-  actually exist.
+  actually exist.  (That shape was a fixture in this repository and is not in
+  the corpus, so the number stands but cannot be re-measured here; the
+  behaviour is what matters and any animated corpus shape shows it.)
 - **The `STANDARD_MESH` type of a mesh on a translucent material.**  Export
   promotes it to `SORTED_MESH`, so a plain import→export changes the mesh type
   and rewrites its primitive order and index buffer.  This is deliberate — see
@@ -482,8 +489,8 @@ you export.
   **0.4%** of slots come back identical.  Import does not apply a fixed rule:
   it fits rule, depth and angle per decal against the list the file carries
   (`fit_coverage`), with 180 degrees in the search so facing can be switched
-  off where it hurts.  On `bioderm_light` that returns coverage at recall
-  0.444, precision 0.589.
+  off where it hurts.  On `bioderm_light` — a corpus shape, not a fixture in
+  this repository — that returns coverage at recall 0.444, precision 0.589.
 
   Everything else about that round trip is exact: all 24 decals, their names,
   owners, states, materials, `decal_matters` bits and texgen planes.  What the
@@ -795,9 +802,29 @@ the same answer either way, and because someone will otherwise try to fix them.
 
 Three Blender suites, and the difference between the first two is the point.
 
-`tests/blender/test_operators.py` (100 tests) imports real fixtures, edits them
-and exports.  That covers reading files the add-on did not write, and it is the
+`tests/blender/test_operators.py` (101 tests) imports fixtures, edits them and
+exports.  That covers reading a file rather than building a scene, and it is the
 only way to check a feature no fixture-free scene can produce.
+
+One caveat about those fixtures, because it bounds what the suite proves: they
+are no longer game data.  `tests/fixtures/` is generated from `examples/` by
+`tests/fixtures/build_fixtures.py`, so a reader test there reads a file this
+library wrote, and the two halves agreeing on something the engine does not do
+is not a failure it can see.  The corpus sweeps below are the check against the
+format; `scripts/mutate.py` carries `pre-v19-bounds-recompute` and
+`writer-version-stamp` to hold each side against the other's committed bytes.
+
+Where a test needs a shape nothing here will ever write, it seeds one in-test
+and says so — a merge-index table, a mesh whose flags echo its type, two decals
+sharing a name, an object resting at vis 0, a matters bit naming an object the
+shape lacks, a decal coverage list the default rule cannot reproduce.  That last
+group is the real cost of generating the fixtures, and the mutation sweep is how
+it was found: four tests went quietly vacuous on the change and only
+`scripts/mutate.py` said so.  Two of them were answered by making the *examples*
+harder instead — the turret's base recoils so a sequence animates rotation and
+translation on different nodes, and the flag has a pole that fades while the
+flag's frames step, so a sequence's object-state blocks are indexed by the union
+of its channel sets rather than by one of them.
 
 `tests/blender/test_authoring.py` (110 tests) never imports anything.  Every test
 builds a shape from nothing — armature, meshes, materials, actions — exports it,
@@ -828,8 +855,10 @@ overrides to it, the environment-map preview those masks drive and
 `reflection_amount` scaling it, billboards including the Z-axis
 variant no shipped shape uses, sorted meshes in both modes and the promotion of translucent ones, skins, vertex
 animation, material frames, sequences, triggers, ground frames, object-state
-tracks, node scale, DSQ export, IFL flipbooks in both directions including
-the .ifl sidecar, decals in both the projected and the baked form and the translucency a shape
+tracks, node scale, DSQ export including its ground frames, IFL flipbooks in
+both directions including
+the .ifl sidecar, decals in both the projected and the baked form, the coverage
+rule fitted per decal on the way in, and the translucency a shape
 needs to draw the projected one, the
 object ordering that translucency forces, the size rule both texture checkboxes
 feed, and all ten output versions.
@@ -847,18 +876,24 @@ section cannot do (§7).  The version dropdown is also checked against
 `dtslib.fit`'s own range, so a version cannot be listed but unwritable or
 writable but unreachable.
 
-The library side backs that with the corpus: `test_dts_convert_to_every_version`
-fits, writes and re-reads each of the 302 distinct corpus shapes as all ten
-versions — 3020 conversions, every one required to come back exactly equal to
-what `fit_to_version` said would go in — and `test_dts_roundtrip` requires a
-same-version rewrite of all 856 paths to be byte-identical, with three named
-exceptions where the original holds bytes the engine discards (§7).
+The library side backs that with the corpus, which is where the check against
+real files went when the fixtures stopped being real files:
+`test_dts_convert_to_every_version` fits, writes and re-reads each of the 309
+distinct corpus shapes as all ten versions — 3090 conversions, every one
+required to come back exactly equal to what `fit_to_version` said would go in —
+and `test_dts_roundtrip` requires a same-version rewrite of all 867 paths to be
+byte-identical, with three named exceptions where the original holds bytes the
+engine discards (§7).  These skip when the game data is absent, which it is on
+any machine but the author's.
 
-`scripts/mutate.py` (88 mutations) disables one capability at a time and checks
-the matching test notices.  It has caught its own drift seven times — two
+`scripts/mutate.py` (114 mutations) disables one capability at a time and checks
+the matching test notices.  It has caught its own drift eleven times — two
 mutations that stopped biting when the code moved, three that were never testing
-what they claimed, and a redundant guard in the reflectance export path that no
-mutation could make fail because the line after it already did the same job.
+what they claimed, a redundant guard in the reflectance export path that no
+mutation could make fail because the line after it already did the same job, and
+four tests that went vacuous in one change when the fixtures stopped being game
+data.  Those four are the reason the sweep is not optional: the suite was green
+at 213/213 and three of the four read exactly as they had before.
 
 The third of those is worth the space, because the test looked airtight.
 `keyframe-major-transpose` turns the pre-v17 write-side transpose into a no-op,

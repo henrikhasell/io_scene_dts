@@ -8,10 +8,10 @@ from tests.conftest import fixture_bytes
 from tests.corpus import corpus_dts_files
 
 FIXTURE_SHAPES = [
-    "v23_pack_upgrade_shield.dts",
-    "v24_ammo.dts",
-    "v24_octahedron.dts",
-    "v24_w_sqknest.dts",
+    "v23_crt_monitor.dts",
+    "v24_detail_levels.dts",
+    "v24_test_crate.dts",
+    "v24_skin_animation.dts",
 ]
 
 
@@ -32,7 +32,7 @@ def test_recompute_matches_fixture(name):
 
 
 def test_recompute_is_idempotent():
-    shape = read_shape(fixture_bytes("v24_w_sqknest.dts"))
+    shape = read_shape(fixture_bytes("v24_skin_animation.dts"))
     recompute_runtime_links(shape)
     once = _links(shape)
     recompute_runtime_links(shape)

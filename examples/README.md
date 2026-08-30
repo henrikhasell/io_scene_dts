@@ -13,7 +13,7 @@ make one of these?*
 | `04_blend_modes` | Translucent, additive and subtractive, side by side |
 | `05_material_flags` | Self-illumination and environment mapping |
 | `06_skin_animation` | A skinned limb bending under its bones |
-| `07_vertex_animation` | `frame_NNN` shape keys, stepped by a sequence track |
+| `07_vertex_animation` | `frame_NNN` shape keys, stepped by a sequence track; the pole fades in the same sequence, so its object-state blocks are not all one channel |
 | `08_material_frames` | A UV flipbook in mesh attributes |
 | `09_sequence_triggers` | A cyclic sequence with two triggers |
 | `10_ground_frames` | Root motion — what gives a movement animation its speed |
@@ -23,15 +23,47 @@ make one of these?*
 | `14_ifl_material` | An IFL entry the engine flips through |
 | `15_dsq_animation` | A shape whose animation ships separately, as `.dsq` |
 
+## The hand-modelled three
+
+`16`–`18` are not built from nothing by a script. They were modelled by hand,
+which is the point of having them: the fifteen above are each one feature held
+still, and these are what a shape looks like when somebody was making a *thing*
+rather than a demonstration.
+
+| Example | What it is |
+| --- | --- |
+| `16_test_crate` | A crate: one LOD, a collision box, a reflectance map |
+| `17_tutorial_player` | 45 bones, 15 meshes, 13 sequences — a player skeleton |
+| `18_crt_monitor` | Three LODs, a collision box, an IFL screen, a visibility track and a power sequence |
+
+`17_tutorial_player` is the odd one and is flagged here rather than left to be
+found: it is an *import* of the Torque SDK's own tutorial player, `player.dts`
+plus the `.dsq` set beside it, and its texture is the SDK's. It is kept because
+nothing authored here is anywhere near that size, and the DSQ and matters-set
+tests want a shape that is.
+
 ## Rebuilding
 
 ```sh
 blender --background --factory-startup --python examples/build_examples.py -- --export examples/dist
 ```
 
-`build_examples.py` is the source of truth; the `.blend` files are committed so
-they can be opened without running it. `--export` also writes each shape's
-`.dts` and its generated textures into `examples/dist/`.
+`build_examples.py` is the source of truth for `01`–`15`; the `.blend` files are
+committed so they can be opened without running it. `--export` also writes each
+shape's `.dts` and its generated textures into `examples/dist/`.
+
+`16`–`18` come from `build_models.py` instead, which takes the author's working
+files and does only what a checkout needs — packs the textures, drops the one
+that came out of a retail game install, and gives the crate the armature the
+exporter asks for. Those source files are not in this repository, so unlike
+`build_examples.py` a checkout cannot re-run it. That is the trade for shapes a
+script did not make.
+
+## Fixtures
+
+`tests/fixtures/build_fixtures.py` exports these shapes at the DTS and DSQ
+versions the test suite needs. That is the whole of `tests/fixtures/` — change
+an example and the fixtures change with it, so run it afterwards.
 
 ## Verifying in Tribes 2
 
@@ -91,9 +123,11 @@ does not exist, which was checked before relying on it.
 Damage sequence and even with the decal state defaulted to on and no sequence
 involved at all.
 
-That is not a fault in the export.  `reference_stock_bioderm_light.png` is
-Tribes 2's own `bioderm_light.dts`, spawned the same way from the game's own
-data: it renders in full, textured, and *its* 24 decals do not appear either.
+That is not a fault in the export.  Tribes 2's own `bioderm_light.dts`, spawned
+the same way from the game's own data, renders in full and textured, and *its*
+24 decals do not appear either.  (The screenshot that showed this was a render
+of the game's own art and is no longer in the repository; the measurement
+stands, and re-taking it needs a Tribes 2 install.)
 `game/player.cc:3980,4030` is the only code that manages
 `smRenderData.renderDecals`, which suggests decal rendering is driven by the
 Player class rather than being available to any shape — and a StaticShape is

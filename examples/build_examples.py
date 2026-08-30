@@ -134,9 +134,10 @@ def stripes(u, v):
 TEXTURES = {}
 
 
-def textured_material(name, rgba_fn, **kwargs):
+def textured_material(name, rgba_fn, *, blended=False, **kwargs):
     """A material whose name is the texture filename the engine will look for."""
-    mat = A.principled_material(name, **kwargs)
+    make = A.blended_material if blended else A.principled_material
+    mat = make(name, **kwargs)
     TEXTURES[name] = rgba_fn
     return mat
 
@@ -309,8 +310,23 @@ def build_skin_animation():
 
 @example("07_vertex_animation")
 def build_vertex_animation():
-    """frame_NNN shape keys, plus the sequence track that steps through them."""
+    """frame_NNN shape keys, plus the sequence track that steps through them.
+
+    The pole is not decoration.  A sequence stores one block of object states
+    per object in the *union* of its vis, frame and matframe sets, so a shape
+    whose only animated object has all three channels cannot tell that union
+    apart from any one of them.  Fading the pole while stepping the flag's
+    frames makes the sets differ, and the flag is second in the union -- which
+    is what makes reading its block with a per-channel ordinal land on the
+    pole's instead.  See ``mapping/sequences.py:_object_state_tracks``.
+    """
     arm = A.armature("Flag", bones=(("root", None), ("mount", "root")))
+    pole_mat = textured_material("flagpole", checker)
+    pole_verts, pole_faces = A.cube_geometry(0.06)
+    pole_verts = [(x, y, z * 6.0 + 0.3) for x, y, z in pole_verts]
+    A.mesh_object("pole2", arm, bone="root", verts=pole_verts, faces=pole_faces,
+                  material=pole_mat)
+
     mat = textured_material("flagcloth", stripes)
     verts, faces = [], []
     for i in range(5):
@@ -343,6 +359,7 @@ def build_vertex_animation():
         bone.keyframe_insert("rotation_quaternion", frame=frame)
 
     ensure_props(arm, "frame", ["flag"])
+    ensure_props(arm, "vis", ["pole"])
     bag = A.channelbag(action, arm)
     curve = bag.fcurves.new(data_path=path_for("frame", "flag"), index=0)
     curve.keyframe_points.add(5)
@@ -351,6 +368,16 @@ def build_vertex_animation():
         point.co = (index + 1, float(value))
         point.interpolation = "CONSTANT"
     curve.update()
+
+    # the pole fades and does not step; the flag steps and does not fade
+    fade = bag.fcurves.new(data_path=path_for("vis", "pole"), index=0)
+    fade.keyframe_points.add(5)
+    for index in range(5):
+        fade.keyframe_points[index].co = (
+            index + 1,
+            0.5 + 0.5 * math.sin(index / 4.0 * math.tau),
+        )
+    fade.update()
     return arm
 
 
@@ -405,7 +432,14 @@ def build_material_frames():
 
 @example("09_sequence_triggers")
 def build_sequence_triggers():
-    """A spinning turret with triggers, which scripts hang effects off."""
+    """A spinning turret with triggers, which scripts hang effects off.
+
+    The barrel rotates and the base recoils, which are two different nodes with
+    two different kinds of track.  That matters below v22: a pre-v22 node state
+    is a rotation *and* a translation, so a shape animating them for different
+    nodes has to have the redundancy filled in from the rest pose on the way
+    down.  This is the only example that animates a translation at all.
+    """
     arm = A.armature("Turret", bones=(("root", None), ("barrel", "root")))
     mat = textured_material("turret", checker)
     verts, faces = A.cube_geometry(0.5)
@@ -426,6 +460,12 @@ def build_sequence_triggers():
         angle = (frame - 1) / 11.0 * math.tau
         bone.rotation_quaternion = (math.cos(angle / 2), 0.0, 0.0, math.sin(angle / 2))
         bone.keyframe_insert("rotation_quaternion", frame=frame)
+
+    base = arm.pose.bones["root"]
+    for frame in range(1, 13):
+        kick = math.sin((frame - 1) / 11.0 * math.tau * 2.0) * 0.08
+        base.location = (0.0, -abs(kick), 0.0)
+        base.keyframe_insert("location", frame=frame)
 
     for state, pos in ((1, 0.25), (2, 0.75)):
         trigger = action.dts_sequence_props.triggers.add()
@@ -503,7 +543,13 @@ def build_visibility():
 
 @example("12_node_scale")
 def build_node_scale():
-    """Node scale animation, on the bones' own scale channels."""
+    """Node scale animation, on the bones' own scale channels.
+
+    Squash and stretch rather than a uniform throb, so the three channels hold
+    three different numbers: that is DTS's *aligned* scale, and uniform scale is
+    the special case of it where they agree.  A pump that only ever scaled
+    uniformly would leave the general form with no example.
+    """
     arm = A.armature("Pump", bones=(("root", None), ("core", "root")))
     mat = textured_material("pump", checker)
     verts, faces = A.cube_geometry(0.4)
@@ -514,14 +560,15 @@ def build_node_scale():
     action["dts_sequence"] = True
     action["dts_duration"] = 1.2
     action["dts_cyclic"] = True
-    action.dts_sequence_props.scale_mode = "UNIFORM"
+    action.dts_sequence_props.scale_mode = "ALIGNED"
     arm.animation_data_create()
     arm.animation_data.action = action
     bone = arm.pose.bones["core"]
     bone.rotation_mode = "QUATERNION"
     for frame in range(1, 9):
         factor = 1.0 + 0.4 * math.sin((frame - 1) / 7.0 * math.tau)
-        bone.scale = (factor, factor, factor)
+        # volume-preserving: tall and thin, then short and wide
+        bone.scale = (1.0 / factor**0.5, 1.0 / factor**0.5, factor)
         bone.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
         bone.keyframe_insert("scale", frame=frame)
         bone.keyframe_insert("rotation_quaternion", frame=frame)
@@ -555,7 +602,11 @@ def build_decals():
     target = A.mesh_object("hull2", arm, bone="shell", verts=verts, faces=faces,
                            material=hull_mat)
 
-    scorch_mat = textured_material("scorchmark", scorch)
+    # Blended, and not just because a burn has soft edges: the exporter refuses
+    # a decal-bearing shape with nothing translucent in it, because the engine
+    # draws decals in the translucent pass and one without is a shape whose
+    # decals never appear.  See dtslib/translucency.py.
+    scorch_mat = textured_material("scorchmark", scorch, blended=True)
     # two burns over different corners of the plate
     patches = (
         [(r * n + c) * 2 + t for r in (1, 2) for c in (1, 2) for t in (0, 1)],
@@ -604,10 +655,13 @@ def build_ifl_material():
     verts, faces = A.quad_geometry()
     A.mesh_object("screen2", arm, bone="face", verts=verts, faces=faces, material=mat)
 
-    entry = arm.dts_shape.ifl_materials.add()
-    entry.name = "screenframe.ifl"
-    entry.material_slot = 0
-    entry.num_frames = 4
+    # Ticking IFL Material is what puts an entry in the shape's table -- the
+    # table is derived from the materials that flip, not stored beside them.
+    mat.dts_material.is_ifl = True
+    for index in range(4):
+        frame = mat.dts_material.ifl_frames.add()
+        frame.image = make_texture(f"screenframe{index:02d}", stripes)
+        frame.duration = 1
 
     action = bpy.data.actions.new("Play")
     action.use_fake_user = True
@@ -621,7 +675,7 @@ def build_ifl_material():
     for frame in range(1, 5):
         bone.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
         bone.keyframe_insert("rotation_quaternion", frame=frame)
-    action.dts_sequence_props.ifl_matters.add().index = 0
+    action.dts_sequence_props.ifl_matters.add().material = mat
     return arm
 
 

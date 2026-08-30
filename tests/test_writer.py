@@ -20,7 +20,7 @@ ALL_VERSIONS = tuple(range(15, 25))
 
 class TestVersionRefusals:
     def test_bad_versions(self):
-        shape = read_shape(fixture_bytes("v24_octahedron.dts"))
+        shape = read_shape(fixture_bytes("v24_test_crate.dts"))
         for v in (0, 14, 25, 26):
             with pytest.raises(DtsWriteError):
                 write_shape(shape, v)
@@ -28,7 +28,7 @@ class TestVersionRefusals:
     @pytest.mark.parametrize("version", (22, 23))
     def test_ground_frames_refused_where_there_is_no_room(self, version):
         """v22 and v23 are the two with no ground storage at all."""
-        shape = read_shape(fixture_bytes("v24_octahedron.dts"))
+        shape = read_shape(fixture_bytes("v24_test_crate.dts"))
         shape.ground_translations = [(0.0, 1.0, 0.0)]
         shape.ground_rotations = [Quat16.identity()]
         with pytest.raises(DtsWriteError) as e:
@@ -36,7 +36,7 @@ class TestVersionRefusals:
         assert "ground frame" in str(e.value)
 
     def test_v24_with_ground_frames_ok(self):
-        shape = read_shape(fixture_bytes("v24_octahedron.dts"))
+        shape = read_shape(fixture_bytes("v24_test_crate.dts"))
         shape.ground_translations = [(0.0, 1.0, 0.0)]
         shape.ground_rotations = [Quat16.identity()]
         data = write_shape(shape, 24)
@@ -44,7 +44,7 @@ class TestVersionRefusals:
         assert again.ground_translations == [(0.0, 1.0, 0.0)]
 
     def test_strip_ground_frames(self):
-        shape = read_shape(fixture_bytes("v24_octahedron.dts"))
+        shape = read_shape(fixture_bytes("v24_test_crate.dts"))
         shape.ground_translations = [(0.0, 1.0, 0.0)]
         shape.ground_rotations = [Quat16.identity()]
         if shape.sequences:
@@ -60,7 +60,7 @@ class TestFitToVersion:
     and hand back something to put in front of the user."""
 
     def _with_ground(self, n=2):
-        shape = read_shape(fixture_bytes("v24_octahedron.dts"))
+        shape = read_shape(fixture_bytes("v24_test_crate.dts"))
         shape.ground_translations = [(0.0, float(i), 0.0) for i in range(n)]
         shape.ground_rotations = [Quat16.identity()] * n
         for seq in shape.sequences:
@@ -83,14 +83,14 @@ class TestFitToVersion:
         assert len(shape.ground_translations) == 2
 
     def test_a_shape_without_ground_frames_is_left_alone(self):
-        shape = read_shape(fixture_bytes("v24_octahedron.dts"))
+        shape = read_shape(fixture_bytes("v24_test_crate.dts"))
         assert not shape.ground_translations
         assert fit_to_version(shape, 23) == []
 
     def _animated_with_ground(self, n=2):
         """Ground frames only survive a round trip if a sequence claims them --
         the pre-v22 layout has no way to name an orphan."""
-        shape = read_shape(fixture_bytes("v24_woodDoor01.dts"))
+        shape = read_shape(fixture_bytes("v24_crt_monitor.dts"))
         assert shape.sequences
         shape.ground_translations = [(0.0, float(i), 0.0) for i in range(n)]
         shape.ground_rotations = [Quat16.identity()] * n
@@ -112,7 +112,7 @@ class TestFitToVersion:
         ]
 
     def test_v21_drops_scale_animation(self):
-        shape = read_shape(fixture_bytes("v24_woodDoor01.dts"))
+        shape = read_shape(fixture_bytes("v24_crt_monitor.dts"))
         shape.node_uniform_scales = [1.0, 2.0]
         shape.sequences[0].flags |= SEQ_UNIFORM_SCALE
         shape.sequences[0].scale_matters.set(0)
@@ -129,7 +129,7 @@ class TestFitToVersion:
         """Pre-v22 a node state is a rotation *and* a translation.  A shape that
         animates them for different nodes gets the redundancy filled in from the
         rest pose, so every original track survives at its original ordinal."""
-        shape = read_shape(fixture_bytes("v22_station_teleport.dts"))
+        shape = read_shape(fixture_bytes("v22_sequence_triggers.dts"))
         seq = next(s for s in shape.sequences if s.translation_matters.count())
         before = {
             node: shape.node_translations[
@@ -148,7 +148,17 @@ class TestFitToVersion:
             assert shape.node_translations[start : start + seq.num_keyframes] == before[node]
 
     def test_v18_drops_merge_indices(self):
-        shape = read_shape(fixture_bytes("v23_bioderm_light.dts"))
+        """Merge indices are synthesised here, not read out of a fixture.
+
+        Nothing in ``examples/`` carries any: they are an LOD-morphing table the
+        3ds Max exporters emitted and this add-on only ever passes through, so
+        no shape it writes has them.  What is under test is the refusal and the
+        drop, and both read the field rather than where it came from.
+        """
+        # an unanimated shape, so the refusal under test is the only one v18 has
+        shape = read_shape(fixture_bytes("v24_detail_levels.dts"))
+        mesh = next(m for m in shape.meshes if m is not None and m.verts)
+        mesh.merge_indices = [0, min(1, len(mesh.verts) - 1)]
         assert any(m.merge_indices for m in shape.meshes if m is not None)
         with pytest.raises(DtsWriteError) as e:
             write_shape(shape, 18)
@@ -158,21 +168,45 @@ class TestFitToVersion:
         assert not any(m.merge_indices for m in shape.meshes if m is not None)
 
     def test_v18_drops_decal_texgens(self):
-        shape = read_shape(fixture_bytes("v22_turret_belly_barrell.dts"))
+        shape = read_shape(fixture_bytes("v22_decals.dts"))
         assert any(m.decal_data and m.decal_data.texgen_s for m in shape.meshes if m)
         warnings = fit_to_version(shape, 18)
         assert any("texture-generation" in w for w in warnings)
         # ...and v19, one version up, keeps them
-        shape = read_shape(fixture_bytes("v22_turret_belly_barrell.dts"))
+        shape = read_shape(fixture_bytes("v22_decals.dts"))
         assert not any("texture-generation" in w for w in fit_to_version(shape, 19))
+
+    def test_pre_v22_clears_matters_bits_naming_things_the_shape_lacks(self):
+        """A matters bit past the end of a table is ignored by the engine but
+        not by the pre-v22 layout, which derives its channel counts from these
+        sets — a count that disagrees with the stored tracks scrambles the
+        transpose.
+
+        Seeded, because a shape this add-on writes has no such bit: the sets are
+        built from the channels that exist.  The shipped art is where they come
+        from, and the count is derived either way, so what is under test reads
+        the set rather than where it came from.
+        """
+        shape = read_shape(fixture_bytes("v24_crt_monitor.dts"))
+        seq = next(s for s in shape.sequences if s.vis_matters.count())
+        stray = len(shape.objects) + 3
+        seq.vis_matters.set(stray)
+        assert stray in set(seq.vis_matters.indices())
+
+        fit_to_version(shape, 21)
+        assert stray not in set(seq.vis_matters.indices()), "stray bit survived"
+        assert all(i < len(shape.objects) for i in seq.vis_matters.indices())
+        # and the shape still writes, which it would not if the count and the
+        # track lengths had been allowed to disagree
+        assert_shapes_equal(shape, read_shape(write_shape(shape, 21)))
 
     def test_fit_is_idempotent(self):
         """Fitting twice must not double up the ground frames it folds into the
         node array, or shift a base index a second time."""
         for version in ALL_VERSIONS:
-            once = read_shape(fixture_bytes("v24_woodDoor01.dts"))
+            once = read_shape(fixture_bytes("v24_crt_monitor.dts"))
             fit_to_version(once, version)
-            twice = read_shape(fixture_bytes("v24_woodDoor01.dts"))
+            twice = read_shape(fixture_bytes("v24_crt_monitor.dts"))
             fit_to_version(twice, version)
             fit_to_version(twice, version)
             assert_shapes_equal(once, twice)
@@ -183,20 +217,20 @@ class TestEveryVersion:
     out is what fit_to_version said would go in."""
 
     NAMES = [
-        "v15_chaingun_shot.dts",
-        "v16_borg11.dts",
-        "v18_octahedron.dts",
-        "v19_turret_muzzlepoint.dts",
-        "v19_vehicle_air_scout_wreck.dts",
-        "v19_xorg20.dts",
-        "v21_weapon_energy.dts",
-        "v22_energy_explosion.dts",
-        "v22_station_teleport.dts",
-        "v22_turret_belly_barrell.dts",
-        "v23_bioderm_light.dts",
-        "v24_ammo.dts",
-        "v24_w_sqknest.dts",
-        "v24_woodDoor01.dts",
+        "v15_sequence_triggers.dts",
+        "v16_detail_levels.dts",
+        "v18_test_crate.dts",
+        "v19_test_crate.dts",
+        "v19_decals.dts",
+        "v19_sorted_foliage.dts",
+        "v21_material_frames.dts",
+        "v22_ifl_material.dts",
+        "v22_sequence_triggers.dts",
+        "v22_decals.dts",
+        "v23_decals.dts",
+        "v24_detail_levels.dts",
+        "v24_skin_animation.dts",
+        "v24_crt_monitor.dts",
     ]
 
     @pytest.mark.parametrize("version", ALL_VERSIONS)
@@ -213,7 +247,7 @@ class TestEveryVersion:
         """Pre-v23 files keep skins in a section of their own, which has nowhere
         for the object's name or node.  Writing them into the mesh list instead
         is read correctly by every version and keeps both."""
-        shape = read_shape(fixture_bytes("v24_w_sqknest.dts"))
+        shape = read_shape(fixture_bytes("v24_skin_animation.dts"))
         fit_to_version(shape, version)
         skinned = [
             (i, shape.name(o.name_index), o.node_index)
@@ -236,23 +270,23 @@ class TestFixtureRoundtrips:
     @pytest.mark.parametrize(
         "name,version",
         [
-            ("v18_octahedron.dts", 18),
-            ("v19_turret_muzzlepoint.dts", 19),
-            ("v19_xorg20.dts", 19),
-            ("v21_weapon_energy.dts", 21),
-            ("v21_xorg21.dts", 21),
-            ("v22_porg1.dts", 22),
-            ("v22_energy_explosion.dts", 22),
-            ("v22_station_teleport.dts", 22),
-            ("v22_turret_belly_barrell.dts", 22),
-            ("v23_weapon_energy_vehicle.dts", 23),
-            ("v23_pack_upgrade_shield.dts", 23),
-            ("v23_bioderm_light.dts", 23),
-            ("v24_octahedron.dts", 24),
-            ("v24_woodDoor01.dts", 24),
-            ("v24_shrub.dts", 24),
-            ("v24_ammo.dts", 24),
-            ("v24_w_sqknest.dts", 24),
+            ("v18_test_crate.dts", 18),
+            ("v19_test_crate.dts", 19),
+            ("v19_sorted_foliage.dts", 19),
+            ("v21_material_frames.dts", 21),
+            ("v21_sorted_foliage.dts", 21),
+            ("v22_test_crate.dts", 22),
+            ("v22_ifl_material.dts", 22),
+            ("v22_sequence_triggers.dts", 22),
+            ("v22_decals.dts", 22),
+            ("v23_skin_animation.dts", 23),
+            ("v23_crt_monitor.dts", 23),
+            ("v23_decals.dts", 23),
+            ("v24_test_crate.dts", 24),
+            ("v24_crt_monitor.dts", 24),
+            ("v24_sorted_foliage.dts", 24),
+            ("v24_detail_levels.dts", 24),
+            ("v24_skin_animation.dts", 24),
         ],
     )
     def test_byte_identical(self, name, version):
@@ -263,14 +297,14 @@ class TestFixtureRoundtrips:
     @pytest.mark.parametrize(
         "name",
         [
-            "v19_turret_muzzlepoint.dts",
-            "v19_weapon_chaingun_ammocasing.dts",
-            "v19_xorg20.dts",
-            "v21_xorg21.dts",
-            "v22_porg1.dts",
-            "v22_porg5.dts",
-            "v22_energy_explosion.dts",
-            "v22_turret_belly_barrell.dts",
+            "v19_test_crate.dts",
+            "v19_detail_levels.dts",
+            "v19_sorted_foliage.dts",
+            "v21_sorted_foliage.dts",
+            "v22_test_crate.dts",
+            "v22_detail_levels.dts",
+            "v22_ifl_material.dts",
+            "v22_decals.dts",
         ],
     )
     def test_old_version_structural(self, name):
@@ -280,13 +314,13 @@ class TestFixtureRoundtrips:
         assert_shapes_equal(shape, read_shape(out))
 
     def test_upconvert_v23_to_v24(self):
-        shape = read_shape(fixture_bytes("v23_pack_upgrade_shield.dts"))
+        shape = read_shape(fixture_bytes("v23_crt_monitor.dts"))
         out = write_shape(shape, 24)
         again = read_shape(out)
         assert again.source_version == 24
         assert_shapes_equal(shape, again)
 
     def test_exporter_version_stamped(self):
-        shape = read_shape(fixture_bytes("v24_octahedron.dts"))
+        shape = read_shape(fixture_bytes("v24_test_crate.dts"))
         out = write_shape(shape, 24, exporter_version=99)
         assert read_shape(out).exporter_version == 99
