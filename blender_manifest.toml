@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "io_scene_dts"
-version = "1.4.0"
+version = "1.5.0"
 name = "Torque DTS format"
 tagline = "Import/export Torque DTS shapes and DSQ sequences"
 maintainer = "Henrik <henrik@henrik.si>"
