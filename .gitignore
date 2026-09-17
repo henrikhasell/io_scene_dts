@@ -7,3 +7,10 @@ htmlcov/
 dist/
 *.blend1
 screenshot-*.png
+
+# Third-party reference art kept beside the icon while drawing it.  Not
+# committed: the Torque 3D logo is someone else's trademark, and the platform
+# will not accept it in a bundle either (terms 1.2 and 2.4).  The manifest
+# already excludes everything in ui/icons/ but the icon itself, so this is
+# belt-and-braces -- it keeps the mark out of the public repository too.
+ui/icons/1280px-T3D_Logo.svg.png
