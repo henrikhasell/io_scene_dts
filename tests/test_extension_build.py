@@ -142,13 +142,25 @@ def test_the_manifest_excludes_the_things_that_leaked(tmp_path):
         assert required in patterns, f"{required!r} missing from paths_exclude_pattern"
 
 
-def test_the_licence_is_declared_and_present():
+def test_the_licence_is_the_one_the_platform_requires():
+    """"or-later", not "only", and nothing local would catch the difference.
+
+    The platform requires exactly this for add-ons.  Blender's own validator
+    checks only that ``license`` is a non-empty list of non-empty strings
+    (``blender_ext.py:1980``), so ``extension validate`` is happy with any
+    string and the first thing to reject a wrong one is the upload -- which is
+    how 1.7.0 shipped as ``GPL-3.0-only`` and bounced.  This test is the local
+    stand-in for a check the toolchain does not have.
+    """
     data = manifest()
-    assert data["license"] == ["SPDX:GPL-3.0-only"]
+    assert data["license"] == ["SPDX:GPL-3.0-or-later"], (
+        "extensions.blender.org requires GPL-3.0-or-later for add-ons; "
+        "GPL-3.0-only is rejected at upload"
+    )
     assert data["copyright"] == ["2026 Henrik Hasell"]
 
     copying = REPO / "COPYING"
-    assert copying.is_file(), "license = GPL-3.0-only but there is no COPYING"
+    assert copying.is_file(), "a GPL is declared but there is no COPYING"
     text = copying.read_text()
     assert "GNU GENERAL PUBLIC LICENSE" in text
     assert "Version 3, 29 June 2007" in text

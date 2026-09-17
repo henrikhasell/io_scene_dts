@@ -24,7 +24,14 @@ tags = ["Import-Export"]
 blender_version_min = "4.5.0"
 
 copyright = ["2026 Henrik Hasell"]
-license = ["SPDX:GPL-3.0-only"]
+# "or-later", not "only", because the platform requires exactly this for
+# add-ons -- docs.blender.org/manual/en/latest/advanced/extensions/licenses.html
+# says "For add-ons, the required license is GNU General Public License v3.0 or
+# later".  Nothing local catches a wrong value: Blender's own validator checks
+# only that this is a non-empty list of non-empty strings (blender_ext.py:1980),
+# so `extension validate` passes either way and the upload is where it fails.
+# 1.7.0 went out as GPL-3.0-only and was rejected on exactly that.
+license = ["SPDX:GPL-3.0-or-later"]
 
 [permissions]
 files = "Read/write .dts and .dsq files and textures beside them"

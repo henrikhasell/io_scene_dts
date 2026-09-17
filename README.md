@@ -249,15 +249,15 @@ scheme).
 
 ## License
 
-GNU General Public License v3.0 only (`SPDX:GPL-3.0-only`).  The full text is
-in [`COPYING`](COPYING).
+GNU General Public License v3.0 **or later** (`SPDX:GPL-3.0-or-later`).  The
+full text is in [`COPYING`](COPYING).
 
 Copyright © 2026 Henrik Hasell.
 
-Releases up to and including 1.6.0 were published as GPL-3.0-**or-later**;
-every release after it is GPL-3.0-**only**.  That narrows what the newer
-releases grant — it does not retroactively change the terms 1.6.0 was received
-under.
+"Or later" is not a preference: the Blender Extensions Platform
+[requires it](https://docs.blender.org/manual/en/latest/advanced/extensions/licenses.html)
+for add-ons.  1.7.0 briefly declared `GPL-3.0-only` and was rejected at upload
+for it; 1.7.1 onward is `-or-later`, as every release up to 1.6.0 was.
 
 `examples/02_tutorial_player.blend` contains Torque SDK sample content and its
 texture; see `examples/README.md`.
