@@ -68,8 +68,14 @@ def dts_local_matrix(q: Quat16, t) -> Matrix:
 
 
 # ----------------------------------------------------------------------
-# slotted-action compatibility (Blender 4.4+ layered actions)
+# slotted actions
 # ----------------------------------------------------------------------
+#
+# An Action does not own fcurves; a channelbag inside a strip inside a layer
+# does, keyed by the slot an ID is bound to.  Every fcurve access in the add-on
+# goes through the two functions below, which is what made raising
+# blender_version_min to 4.5 a two-function change: the pre-4.4 branches that
+# read Action.fcurves directly lived here and nowhere else.
 
 
 def _action_channelbag(action: bpy.types.Action, id_obj):
@@ -80,29 +86,22 @@ def _action_channelbag(action: bpy.types.Action, id_obj):
     in a bag nothing evaluates: the fcurve was there, sampled correctly on
     export, and moved nothing in the viewport.
     """
-    if hasattr(action, "slots"):
-        anim = getattr(id_obj, "animation_data", None)
-        slot = anim.action_slot if anim is not None and anim.action == action else None
-        if slot is None:
-            slot = next(
-                (s for s in action.slots if s.name_display == id_obj.name), None
-            )
-        if slot is None:
-            slot = action.slots.new(id_type="OBJECT", name=id_obj.name)
-        layer = action.layers.new("Layer") if not action.layers else action.layers[0]
-        strip = layer.strips.new(type="KEYFRAME") if not layer.strips else layer.strips[0]
-        return strip.channelbag(slot, ensure=True), slot
-    return action, None  # pre-4.4: Action itself owns .fcurves
+    anim = getattr(id_obj, "animation_data", None)
+    slot = anim.action_slot if anim is not None and anim.action == action else None
+    if slot is None:
+        slot = next((s for s in action.slots if s.name_display == id_obj.name), None)
+    if slot is None:
+        slot = action.slots.new(id_type="OBJECT", name=id_obj.name)
+    layer = action.layers.new("Layer") if not action.layers else action.layers[0]
+    strip = layer.strips.new(type="KEYFRAME") if not layer.strips else layer.strips[0]
+    return strip.channelbag(slot, ensure=True), slot
 
 
 def _iter_fcurves(action: bpy.types.Action):
-    if hasattr(action, "layers") and action.layers:
-        for layer in action.layers:
-            for strip in layer.strips:
-                for bag in strip.channelbags:
-                    yield from bag.fcurves
-    else:
-        yield from action.fcurves
+    for layer in action.layers:
+        for strip in layer.strips:
+            for bag in strip.channelbags:
+                yield from bag.fcurves
 
 
 # ----------------------------------------------------------------------

@@ -157,7 +157,7 @@ way to check your work short of re-reading the exported file.
   - `grenade_flare.dts` imported and exported again by this add-on **still
     billboards**, side by side with the stock original.  The writer preserves
     a working billboard.
-  - The `examples/02_billboards` cards **do not** billboard: they draw lying
+  - The showcase's `02_billboards` cards **do not** billboard: they draw lying
     on the ground.  Built flat in Blender's XY, built upright in XZ to match
     every billboard in the corpus, at four sizes, and at object scale 1 and
     1.6 — all draw flat.
@@ -509,7 +509,7 @@ you export.
   armature; its channels are dropped` — expected when applying a sequence to a
   different skeleton. `mapping/dsq.py:60`
 - **Bone channels with no DTS node.**  A bone you add in Blender animates
-  nothing on export. `mapping/sequences.py:415`, `mapping/dsq.py:179`
+  nothing on export. `mapping/sequences.py:414`, `mapping/dsq.py:179`
 - **Duplicate detail sizes for one object.**  `duplicate detail 'X' for object
   'Y'; 'Z' skipped`. `mapping/blender_to_shape.py:161`
 - **`dts_bump_map` and `dts_detail_map` on a material created in Blender.**
@@ -760,7 +760,7 @@ the same answer either way, and because someone will otherwise try to fix them.
   factors *plus* an orientation quaternion naming the axes to measure along; a
   pose bone's scale is three numbers in its own space and cannot express the
   second half.  Refused on export rather than half-written.  No sequence in the
-  630-shape corpus uses it, so nothing real is blocked. `mapping/sequences.py:581`
+  630-shape corpus uses it, so nothing real is blocked. `mapping/sequences.py:582`
 - **EEVEE has no subtractive blend mode.**  `MAT_SUBTRACTIVE` is encoded as the
   additive graph with the emission colour inverted — this add-on's own
   convention, chosen so the flag has somewhere to live that export can read
@@ -807,8 +807,8 @@ exports.  That covers reading a file rather than building a scene, and it is the
 only way to check a feature no fixture-free scene can produce.
 
 One caveat about those fixtures, because it bounds what the suite proves: they
-are no longer game data.  `tests/fixtures/` is generated from `examples/` by
-`tests/fixtures/build_fixtures.py`, so a reader test there reads a file this
+are no longer game data.  `tests/fixtures/` is generated from the example
+shapes by `tests/fixtures/build_fixtures.py`, so a reader test there reads a file this
 library wrote, and the two halves agreeing on something the engine does not do
 is not a failure it can see.  The corpus sweeps below are the check against the
 format; `scripts/mutate.py` carries `pre-v19-bounds-recompute` and

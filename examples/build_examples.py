@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""Build the example .blend files, one per implemented DTS feature.
+"""Build the showcase shapes, one per implemented DTS feature.
 
 Run:
     blender --background --factory-startup --python examples/build_examples.py
 
-Each example is a shape a user could have made in Blender -- nothing here sets
-a property the importer would have written, for the same reason
+Each is a shape a user could have made in Blender -- nothing here sets a
+property the importer would have written, for the same reason
 tests/blender/test_authoring.py does not: an example that only works because
 it came from a file is not an example of authoring.
 
-The .blend files are the deliverable and are committed.  This script is how
-they are reproduced, so a change to the add-on can be rolled through them
-rather than re-made by hand.
+This script is the whole source of truth for the fifteen.  Their .blend files
+are *not* committed: there is nothing in one that this does not put there, so a
+checkout rebuilds them on demand -- ``tests/fixtures/build_fixtures.py`` does
+exactly that, into a scratch directory.  ``--out`` therefore defaults somewhere
+scratch rather than into ``examples/``, which holds the four hand-made shapes
+``build_models.py`` prepares and nothing else.
 
-``--export DIR`` also writes each example's .dts and its textures, which is
+``--export DIR`` also writes each shape's .dts and its textures, which is
 what gets loaded into the game.
 
 ``--lifts`` then rewrites the ``$DtsShowcaseLift`` table in the showcase script
@@ -26,6 +29,7 @@ from __future__ import annotations
 import argparse
 import math
 import sys
+import tempfile
 from pathlib import Path
 
 import bpy
@@ -47,6 +51,11 @@ from io_scene_dts.mapping.decals import create_decal  # noqa: E402
 from io_scene_dts.mapping.objectstate import ensure_props, path_for  # noqa: E402
 
 EXAMPLES = {}
+
+# where the .blend files land when nobody says.  Not examples/: these fifteen
+# are not committed, and dropping them beside the four that are is how the two
+# sets get confused for one.
+DEFAULT_OUT = Path(tempfile.gettempdir()) / "io_scene_dts_showcase"
 
 
 def box_unwrap(obj, scale=1.0):
@@ -777,7 +786,7 @@ def update_lifts(shapes_dir: Path, script: Path = SHOWCASE_CS) -> int:
 def main():
     argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
     parser = argparse.ArgumentParser()
-    parser.add_argument("--out", default=str(REPO / "examples"))
+    parser.add_argument("--out", default=str(DEFAULT_OUT))
     parser.add_argument("--export", default=None, help="also write .dts and textures here")
     parser.add_argument(
         "--lifts",
@@ -800,7 +809,7 @@ def main():
             return 2
         path = build(name, out_dir, export_dir)
         print(f"built {path.name}")
-    print(f"\n{len(names)} example(s)")
+    print(f"\n{len(names)} shape(s) in {out_dir}")
     if args.lifts:
         print(f"lift table: {update_lifts(export_dir)} entries")
     return 0

@@ -4,17 +4,16 @@
 # Usage:
 #   scripts/publish_version.sh <major|minor|patch> [--dry-run] [--skip-tests]
 #
-# `blender_manifest.toml` is the version: it is what the extension system reads
-# and what names the built zip.  Two files restate it in prose and are bumped
-# with it, because they start lying the moment the tag lands:
+# The git tag is the version.  Nothing in the tree stores it:
+# `blender_manifest.toml` holds a 0.0.0 placeholder and CI injects the tag into
+# it at build time (scripts/set_version.py), so the next version is computed
+# from the latest tag rather than read out of a file that could disagree with
+# it.
 #
-#   README.md       the example zip name in the build section
+# One file restates the version in prose and is bumped with the tag, because it
+# starts lying the moment the tag lands:
+#
 #   UNSUPPORTED.md  "as of vX.Y.Z", a claim about which version the doc describes
-#
-# `pyproject.toml` and `dtslib/__init__.py` carry versions of their own and are
-# deliberately left alone -- they already disagree with the manifest and with
-# each other, so folding them in here would be guessing at what they mean.
-# The script says so rather than silently picking a side.
 #
 # Tags match the ones already in the repo: a bare "1.4.0", no "v", lightweight.
 #
@@ -60,8 +59,14 @@ fi
 
 git remote get-url origin >/dev/null 2>&1 || die "no 'origin' remote to push to"
 
-current="$(sed -n 's/^version = "\([0-9]\+\.[0-9]\+\.[0-9]\+\)"$/\1/p' "$MANIFEST")"
-[ -n "$current" ] || die "no 'version = \"x.y.z\"' line in blender_manifest.toml"
+# The latest tag is the current version.  Sorted by version, not by date: a
+# patch cut from an old branch would otherwise look like the newest release.
+current="$(git tag --sort=-v:refname | head -1)"
+[ -n "$current" ] || die "no tags in this repository; nothing to bump from"
+case "$current" in
+    [0-9]*.[0-9]*.[0-9]*) ;;
+    *) die "latest tag $current is not X.Y.Z; bump by hand" ;;
+esac
 
 IFS=. read -r major minor patch <<<"$current"
 case "$part" in
@@ -79,14 +84,12 @@ fi
 
 echo "publish_version: $current -> $next  (${part}, on branch $branch)"
 
-# versions this script does not own, reported so the drift is visible
-for other in "pyproject.toml:^version = " "dtslib/__init__.py:^__version__ = "; do
-    file="${other%%:*}"; pattern="${other#*:}"
-    [ -f "$file" ] || continue
-    theirs="$(sed -n "s/$pattern\"\([^\"]*\)\"/\1/p" "$file" | head -1)"
-    [ -n "$theirs" ] && [ "$theirs" != "$current" ] \
-        && echo "publish_version: note: $file is at $theirs and is not bumped by this script"
-done
+# The manifest must still be the placeholder.  A real version committed there
+# is a second source of truth, and the one it would disagree with is the tag
+# this script is about to create.
+committed="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$MANIFEST")"
+[ "$committed" = "0.0.0" ] \
+    || die "blender_manifest.toml has version \"$committed\", not the 0.0.0 placeholder; run scripts/set_version.py --reset"
 
 # -- tests ----------------------------------------------------------------
 # CLAUDE.md: the fast loop and the Blender suite both pass before a commit.
@@ -126,10 +129,9 @@ fi
 
 if [ "$dry_run" = true ]; then
     echo "publish_version: --dry-run, stopping before any change"
-    echo "  would set  blender_manifest.toml  version = \"$next\""
-    echo "  would set  README.md              io_scene_dts-$next.zip"
     echo "  would set  UNSUPPORTED.md         as of v$next"
     echo "  would commit, tag $next, and push both to origin/$branch"
+    echo "  blender_manifest.toml stays at the 0.0.0 placeholder; CI injects $next"
     exit 0
 fi
 
@@ -143,15 +145,14 @@ subst() {  # file, sed expression, description
     [ "$before" != "$(cat "$file")" ] || die "$file: $what did not change (pattern missed?)"
 }
 
-subst "$MANIFEST" "s/^version = \"$current\"$/version = \"$next\"/" "the version line"
-subst "$REPO/README.md" "s/io_scene_dts-$current\.zip/io_scene_dts-$next.zip/g" "the zip name"
 subst "$REPO/UNSUPPORTED.md" "s/as of v$current\b/as of v$next/g" "the 'as of' version"
 
-git add blender_manifest.toml README.md UNSUPPORTED.md
+git add UNSUPPORTED.md
 git commit -q -m "Release $next
 
-blender_manifest.toml is the version the extension system reads; README.md and
-UNSUPPORTED.md restate it and are bumped with it."
+The tag is the version; blender_manifest.toml keeps its 0.0.0 placeholder and
+CI injects $next into it at build time.  UNSUPPORTED.md restates the version in
+prose and is bumped with the tag."
 
 git tag "$next"
 

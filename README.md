@@ -1,9 +1,15 @@
 # io_scene_dts — Torque DTS/DSQ importer/exporter for Blender
 
-A pure-Python Blender extension (4.2+, tested on 5.2 LTS) that imports and
+A pure-Python Blender extension (4.5 LTS+, tested on 5.2 LTS) that imports and
 exports Torque three-space shapes (`.dts`) and standalone sequence files
 (`.dsq`) — geometry, materials, node hierarchy, detail levels, skinning, and
 animation.
+
+![A Tribes 2 light male playing its celTaunt sequence in Blender](https://raw.githubusercontent.com/henrikhasell/io_scene_dts/main/examples/celtaunt.gif)
+
+[`examples/04_light_male.blend`](https://github.com/henrikhasell/io_scene_dts/blob/main/examples/04_light_male.blend)
+— 32 nodes, 26 meshes, 58 decals and a twenty-sequence animation library, with
+`celTaunt` soloed in the NLA editor.
 
 - **Reads and writes** every DTS version from **15** to **24** — the
   keyframe-table era through Torque Game Engine 1.5 — with the target selectable
@@ -29,13 +35,26 @@ the data allows.
 
 ## Install
 
+Released builds are on
+[extensions.blender.org](https://extensions.blender.org/add-ons/io-scene-dts/)
+and in *Edit → Preferences → Get Extensions*.  To build one from a checkout:
+
 ```sh
-blender --command extension build   # produces io_scene_dts-1.6.0.zip
+scripts/build-blender-addon.sh      # writes dist/io_scene_dts-<version>.zip
 ```
 
 then install the zip via Edit → Preferences → Get Extensions → Install from
 Disk.  For development, symlink this checkout into
 `~/.config/blender/<ver>/extensions/user_default/io_scene_dts`.
+
+Use the script rather than `blender --command extension build` directly.  **The
+git tag is the version**: `blender_manifest.toml` holds a `0.0.0` placeholder,
+and the script fills it in from `git describe` for the length of the build
+before putting the placeholder back.  Calling Blender's builder yourself
+produces a `0.0.0` zip.  A version with a `+` in it (`1.6.0+4.g1a2b3c4`) is a
+dev build — that many commits past the tag, `.dirty` if the tree had
+uncommitted edits.  A release is cut with `scripts/publish_version.sh
+<major|minor|patch>`, which tags and pushes; CI injects the tag and publishes.
 
 ## Mapping conventions
 
@@ -217,8 +236,8 @@ scripts/check_citations.py
 
 The corpus tests reference the local Tribes 2 / TGE game data
 (`~/Documents/Repositories/hasell-engine`, `~/Documents/Repositories/agentic-torque`)
-and skip automatically when absent — no game data is in this repository.
-`tests/fixtures/` is generated from `examples/` by
+and skip automatically when absent — the corpus itself is not in this
+repository.  `tests/fixtures/` is generated from the example shapes by
 `tests/fixtures/build_fixtures.py`, which is also where each fixture says what
 format feature it exists to carry; see `tests/fixtures/NOTES.md` for what that
 trade costs and what the corpus tests are covering in exchange.
@@ -227,3 +246,18 @@ Format ground truth: `agentic-torque/engine/ts/` (`tsShape.cc`
 `assembleShape`/`disassembleShape`, `tsMesh.cc`, `tsShapeOldRead.cc` for
 sequences and the DSQ layout, `tsShapeAlloc.cc` for the three-buffer guard
 scheme).
+
+## License
+
+GNU General Public License v3.0 only (`SPDX:GPL-3.0-only`).  The full text is
+in [`COPYING`](COPYING).
+
+Copyright © 2026 Henrik Hasell.
+
+Releases up to and including 1.6.0 were published as GPL-3.0-**or-later**;
+every release after it is GPL-3.0-**only**.  That narrows what the newer
+releases grant — it does not retroactively change the terms 1.6.0 was received
+under.
+
+`examples/02_tutorial_player.blend` contains Torque SDK sample content and its
+texture; see `examples/README.md`.

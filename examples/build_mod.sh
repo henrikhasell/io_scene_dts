@@ -1,12 +1,14 @@
 #!/bin/bash
-# Rebuild examples/mod/DtsExamples from the .blend examples.
+# Rebuild examples/mod/DtsExamples from the showcase shapes.
 #
 # Usage: examples/build_mod.sh
 #
 # Three steps that have to happen together, which is why this exists rather
 # than a note in a README:
 #
-#   1. Blender rebuilds every .blend and exports it to examples/dist.
+#   1. Blender rebuilds all fifteen and exports them to examples/dist.  Their
+#      .blend files land wherever build_examples.py defaults to, which is
+#      scratch: only the .dts and the textures below are wanted.
 #   2. The shapes and the textures go to *different* places in the mod: the
 #      engine resolves a material named "crate" to <mod>/textures/crate.png
 #      wherever the .dts itself lives, so exporting straight into shapes/dtsx

@@ -6,17 +6,18 @@ blender_manifest.toml and the add-on files at the zip root.  Used by CI,
 where downloading Blender just to zip six directories is wasteful.
 
 Usage:
-    scripts/build_extension.py [--check-version vX.Y.Z] [--out-dir dist]
+    scripts/build_extension.py [--out-dir dist]
 
---check-version fails the build if the manifest version does not match the
-given tag's X.Y.Z core (an optional leading "v" and any semver
-prerelease/build suffix are ignored for the comparison).
+The version comes from whatever blender_manifest.toml currently says, which on
+a plain checkout is the 0.0.0 placeholder.  Injecting the real one is
+scripts/set_version.py's job and is deliberately not done here: the Blender
+builder reads the manifest off the working tree too, so a version this script
+applied on its own would produce two differently-versioned zips.
 """
 
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 import tomllib
 import zipfile
@@ -24,18 +25,26 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
-# runtime files only — mirrors [build] paths_exclude_pattern in the manifest
-INCLUDE_FILES = ["blender_manifest.toml", "__init__.py", "README.md"]
+# Runtime files only.  This is an allowlist where the manifest's
+# [build] paths_exclude_pattern is a blocklist, so the two can drift -- and did:
+# the manifest once let .claude/settings.local.json and three internal notes
+# into the Blender-built zip while this builder kept them out.
+# tests/test_extension_build.py compares the two archives and fails on a
+# mismatch, so adding a runtime file here means adding it there too.
+# INCLUDE_DIRS is globbed for *.py below, so a non-Python runtime file has to be
+# named here or it silently ships from Blender's builder and not from this one.
+INCLUDE_FILES = [
+    "blender_manifest.toml",
+    "__init__.py",
+    "README.md",
+    "COPYING",
+    "ui/icons/logo-128.png",
+]
 INCLUDE_DIRS = ["dtslib", "mapping", "ops", "props", "ui"]
-
-SEMVER_RE = re.compile(
-    r"^v?(?P<core>\d+\.\d+\.\d+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$"
-)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--check-version", metavar="TAG", default=None)
     parser.add_argument("--out-dir", default="dist")
     args = parser.parse_args()
 
@@ -43,20 +52,6 @@ def main() -> int:
     manifest = tomllib.loads(manifest_path.read_text())
     ext_id = manifest["id"]
     version = manifest["version"]
-
-    if args.check_version is not None:
-        m = SEMVER_RE.match(args.check_version)
-        if m is None:
-            print(f"error: tag {args.check_version!r} is not a semver tag", file=sys.stderr)
-            return 1
-        if m.group("core") != version:
-            print(
-                f"error: tag {args.check_version!r} does not match manifest "
-                f"version {version!r} — bump blender_manifest.toml (and "
-                f"pyproject.toml) before tagging",
-                file=sys.stderr,
-            )
-            return 1
 
     out_dir = REPO / args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)

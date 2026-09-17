@@ -105,5 +105,3 @@ __all__ = [
     "TRIGGER_INVERT_ON_REVERSE",
     "NO_MAP",
 ]
-
-__version__ = "1.0.0"

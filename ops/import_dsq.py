@@ -53,4 +53,8 @@ class ImportDSQ(bpy.types.Operator, ImportHelper):
 
 
 def menu_func(self, context):
-    self.layout.operator(ImportDSQ.bl_idname, text="Torque Sequence (.dsq)")
+    from ..ui.icons import icon_id
+
+    self.layout.operator(
+        ImportDSQ.bl_idname, text="Torque Sequence (.dsq)", icon_value=icon_id()
+    )

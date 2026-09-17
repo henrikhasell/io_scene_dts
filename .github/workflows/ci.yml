@@ -1,15 +1,26 @@
 # Test on pushes to main, PRs, and semver tags; on a semver tag, build the
-# extension zip and create a GitHub release with the zip attached.
+# extension zip, create a GitHub release with the zip attached, and submit that
+# same zip to extensions.blender.org.
 #
 # Release flow:
-#   1. bump `version` in blender_manifest.toml (and pyproject.toml)
-#   2. git tag v1.2.3 && git push origin v1.2.3
-# The build fails if the tag's X.Y.Z core doesn't match the manifest version.
+#   scripts/publish_version.sh <major|minor|patch>     (tags and pushes)
+#
+# The git tag is the version.  blender_manifest.toml carries a 0.0.0
+# placeholder and scripts/set_version.py injects the tag into it below, before
+# either builder reads it -- so there is no manifest version to bump and
+# nothing for a tag to disagree with.
+#
+# The platform upload is versions-only.  Its API
+# (https://extensions.blender.org/api/v1/, OpenAPI 3.0.3) exposes exactly two
+# endpoints -- list extensions, and POST a new version to an existing one --
+# so there is no call that would have created the listing.  The first
+# submission went through the web UI by hand; every release after it goes
+# through the step below.  Don't look for the create call, it isn't there.
 #
 # Semver tags: optional leading "v", X.Y.Z core, optional -prerelease/+build,
-# e.g. v1.2.3, 1.2.3, v1.2.3-rc.1, v1.2.3+build5.  The tag globs below are a
-# coarse filter; scripts/build_extension.py --check-version is the
-# authoritative semver gate.
+# e.g. v1.2.3, 1.2.3, v1.2.3-rc.1.  The tag globs below are a coarse filter;
+# scripts/set_version.py is the authoritative gate and refuses anything
+# Blender's own manifest validator would reject.
 
 name: CI
 
@@ -48,8 +59,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      # The tag is the version.  This must run before the build: the manifest
+      # in the repo holds a 0.0.0 placeholder, and both builders read the
+      # version off the working tree.  It also validates the tag, so a
+      # malformed one fails here rather than producing a zip Blender refuses.
+      - name: Inject the version from the tag
+        run: python scripts/set_version.py "$GITHUB_REF_NAME"
       - name: Build extension zip
-        run: python scripts/build_extension.py --check-version "$GITHUB_REF_NAME"
+        run: python scripts/build_extension.py
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -59,10 +76,47 @@ jobs:
           gh release create "$GITHUB_REF_NAME" "dist/${ASSET_NAME}" \
             --title "io_scene_dts $GITHUB_REF_NAME" \
             --notes "$(cat <<EOF
-          Torque DTS/DSQ importer/exporter for Blender 4.2+.
+          Torque DTS/DSQ importer/exporter for Blender 4.5+.
 
           **Install:** download \`${ASSET_NAME}\` below, then in Blender:
           *Edit → Preferences → Get Extensions → ⌄ → Install from Disk…*
           (or drag the zip onto a Blender window).
           EOF
           )"
+
+      # Submit the same zip to extensions.blender.org.  Skipped, not failed,
+      # when the token is absent, so a fork still gets a working GitHub
+      # release.  The check is on an env var rather than `if: secrets.X != ''`
+      # because secrets are not available to job-level `if` expressions.
+      - name: Publish to extensions.blender.org
+        env:
+          BLENDER_EXTENSIONS_TOKEN: ${{ secrets.BLENDER_EXTENSIONS_TOKEN }}
+        run: |
+          if [ -z "$BLENDER_EXTENSIONS_TOKEN" ]; then
+            echo "::notice::BLENDER_EXTENSIONS_TOKEN not set; skipping platform upload"
+            exit 0
+          fi
+          VERSION=$(python -c 'import tomllib; print(tomllib.load(open("blender_manifest.toml","rb"))["version"])')
+          ASSET="dist/io_scene_dts-${VERSION}.zip"
+
+          # release_notes is capped at 1024 chars by the API schema, which is
+          # shorter than the GitHub release body above -- so this is its own
+          # short text rather than a reuse of it.
+          NOTES="Torque DTS/DSQ importer/exporter, version ${VERSION}. See https://github.com/henrikhasell/io_scene_dts/releases/tag/${GITHUB_REF_NAME} for the changes in this release."
+
+          # curl exits 0 on a 4xx, so the status code is checked explicitly:
+          # without this a rejected upload reads as a green release.
+          STATUS=$(curl -sS -X POST \
+            "https://extensions.blender.org/api/v1/extensions/io_scene_dts/versions/upload/" \
+            -H "Authorization: bearer ${BLENDER_EXTENSIONS_TOKEN}" \
+            -F "version_file=@${ASSET}" \
+            -F "release_notes=${NOTES}" \
+            -o upload-response.json -w '%{http_code}')
+          echo "HTTP $STATUS"
+          cat upload-response.json || true
+          echo
+          if [ "$STATUS" != "201" ]; then
+            echo "::error::extensions.blender.org rejected the upload (HTTP $STATUS)"
+            exit 1
+          fi
+          echo "::notice::uploaded ${VERSION}; check https://extensions.blender.org/add-ons/io-scene-dts/ for its review state"

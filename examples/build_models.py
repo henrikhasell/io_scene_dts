@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""Turn the three hand-modelled shapes into the committed examples 16-18.
+"""Turn the four hand-made shapes into the committed examples.
 
-``build_examples.py`` builds its fifteen shapes from nothing, so that script is
-the source of truth for them.  These three were modelled by hand instead: the
-source of truth is a ``.blend`` in the author's working tree, and this script
-only does what has to happen for a checkout to stand on its own --
+These are what ``examples/`` holds.  ``build_examples.py`` builds fifteen
+one-feature shapes from nothing and they never land here as ``.blend`` files --
+they are the showcase, and the fixture sources, and a checkout rebuilds them on
+demand.  The four here cannot be rebuilt that way: the source of truth is a
+``.blend`` in the author's working tree, and this script only does what has to
+happen for a checkout to stand on its own --
 
 * pack every texture, so the ``.blend`` in the repo is not a bundle of absolute
   paths into somebody's home directory;
 * drop the one texture that came out of a retail Tribes 2 install, replacing it
   with a generated stand-in of the same size;
 * give the crate the armature the exporter asks for, which its working file has
-  never had.
+  never had;
+* stack the light male's loose actions onto NLA tracks and solo the T-pose.
 
 Run:
     blender --background --factory-startup --python examples/build_models.py
@@ -43,8 +46,12 @@ try:
 except Exception:  # already registered
     pass
 
+from io_scene_dts.mapping.nla import scene_fps, stack_actions  # noqa: E402
 
 DEFAULT_SOURCE = Path.home() / "Documents" / "3D Design"
+
+# the light male's own T-pose, and the track prepare_light_male leaves playing
+TPOSE = "T-Pose"
 
 
 # ----------------------------------------------------------------------
@@ -198,10 +205,57 @@ def prepare_crt_monitor():
     return bpy.data.objects["crt"]
 
 
+def prepare_light_male():
+    """The light male, T-posed, with its animation library on NLA tracks.
+
+    Three things about the working file are an author's convenience rather than
+    something a reader should have to reconstruct.
+
+    The movement actions -- ``Walk``, ``WalkBack``, ``StrafeWalk``, ``Run``,
+    ``RunBack``, ``StrafeRun`` -- sit on no NLA track at all.  They still
+    export: ``_actions_for_armature`` falls back to matching an action's bone
+    names against the rig.  But the fallback is a guess, nothing in Blender
+    says those six belong to this armature, and the file reads as though the
+    walk cycles were left out.  ``stack_actions`` says it outright, which is
+    also how an imported shape's sequences arrive.
+
+    The NLA carries strips whose action has been replaced and is now ``None``,
+    on four tracks that duplicate each other's names.  ``_solo`` picks a track
+    by name, so two tracks called ``Jump`` is a trap waiting on whoever opens
+    this next; each track is renamed to the action it actually holds.
+
+    And every track is muted, so the file opens in its rest pose -- which for a
+    Tribes 2 player is the unposed arms-forward stance nobody ever sees in
+    game, not the T-pose the file is named for.  Soloing ``T-Pose`` opens it in
+    the pose it is for.
+    """
+    for name in ("Camera", "Light"):
+        obj = bpy.data.objects.get(name)
+        if obj is not None:
+            bpy.data.objects.remove(obj)
+
+    arm = bpy.data.objects["light_male"]
+    anim = arm.animation_data
+
+    for track in list(anim.nla_tracks):
+        for strip in list(track.strips):
+            if strip.action is None:
+                track.strips.remove(strip)
+        if not track.strips:
+            anim.nla_tracks.remove(track)
+            continue
+        track.name = track.strips[0].action.name
+
+    stack_actions(arm, list(bpy.data.actions), scene_fps(bpy.context), keep_playing=TPOSE)
+    bpy.context.scene.frame_set(1)
+    return arm
+
+
 MODELS = {
-    "16_test_crate": ("Tribes2/TestCrate.blend", prepare_test_crate),
-    "17_tutorial_player": ("TutorialPlayer.blend", prepare_tutorial_player),
-    "18_crt_monitor": ("CRT Monitor/crt.blend", prepare_crt_monitor),
+    "01_test_crate": ("Tribes2/TestCrate.blend", prepare_test_crate),
+    "02_tutorial_player": ("TutorialPlayer.blend", prepare_tutorial_player),
+    "03_crt_monitor": ("CRT Monitor/crt.blend", prepare_crt_monitor),
+    "04_light_male": ("Tribes2/T-Pose.blend", prepare_light_male),
 }
 
 

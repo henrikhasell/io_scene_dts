@@ -1,8 +1,15 @@
 [project]
 name = "io_scene_dts"
-version = "1.2.0"
 description = "Blender add-on: Torque DTS/DSQ importer/exporter"
 requires-python = ">=3.11"
+# There is no version here on purpose.  The git tag is the version and
+# scripts/set_version.py injects it into blender_manifest.toml at build time; a
+# number restated here would be a second source of truth, which is exactly how
+# this file came to sit three releases behind the manifest.  Nothing consumes
+# it either: with no [build-system] table this project is never built or
+# installed as a Python distribution, and pytest and coverage read only the
+# [tool.*] tables below.
+dynamic = ["version"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,4 +1,4 @@
-"""io_scene_dts — Torque DTS/DSQ importer/exporter for Blender 4.2+.
+"""io_scene_dts — Torque DTS/DSQ importer/exporter for Blender 4.5+.
 
 Import/export Torque three-space shapes (.dts, versions 19-24 read; 24 and 23
 written) and sequence files (.dsq), including skinning and animation.

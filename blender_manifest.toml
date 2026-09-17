@@ -1,26 +1,46 @@
 schema_version = "1.0.0"
 
 id = "io_scene_dts"
-version = "1.6.0"
+# Placeholder.  The git tag is the version; scripts/set_version.py injects it
+# here at build time, because schema 1.0.0 requires a literal string and
+# Blender does no interpolation.  Do not hand-edit this -- nothing reads it,
+# tests/test_extension_build.py asserts it stays 0.0.0, and a real version
+# committed here would be a second source of truth for the tag to disagree
+# with.  Build with scripts/build-blender-addon.sh, which fills it in from
+# `git describe` and puts the placeholder back afterwards.
+version = "0.0.0"
 name = "Torque DTS format"
 tagline = "Import/export Torque DTS shapes and DSQ sequences"
-maintainer = "Henrik <henrik@henrik.si>"
+maintainer = "Henrik Hasell <henrik@henrik.si>"
 type = "add-on"
 
-website = "https://github.com/henrik/io_scene_dts"
+website = "https://github.com/henrikhasell/io_scene_dts"
 tags = ["Import-Export"]
 
-blender_version_min = "4.2.0"
+# 4.5 LTS is the floor because it is what the test suite covers.  Slotted
+# actions landed in 4.4 and every fcurve access goes through
+# mapping/sequences.py, so a lower floor would mean shipping a code path
+# nothing exercises.
+blender_version_min = "4.5.0"
 
-license = ["SPDX:GPL-3.0-or-later"]
+copyright = ["2026 Henrik Hasell"]
+license = ["SPDX:GPL-3.0-only"]
 
 [permissions]
 files = "Read/write .dts and .dsq files and textures beside them"
 
 [build]
+# gitignore semantics, order-independent, negation supported -- see
+# PathPatternMatch in Blender's cli/blender_ext.py.  The "*.md" + "!README.md"
+# pair is deliberate: it means a new note dropped at the repo root stays out of
+# the zip by default instead of shipping to every user.
+# tests/test_extension_build.py holds this list and scripts/build_extension.py
+# to the same file set, because the two builders have disagreed before.
 paths_exclude_pattern = [
   "__pycache__/",
   ".git/",
+  ".github/",
+  ".claude/",
   ".venv/",
   ".hypothesis/",
   ".pytest_cache/",
@@ -29,8 +49,17 @@ paths_exclude_pattern = [
   "examples/",
   "dist/",
   "htmlcov/",
-  ".github/",
   ".gitignore",
   ".coverage*",
   "pyproject.toml",
+  "*.md",
+  "!README.md",
+  # ui/icons/ holds the shipped icon and the reference art it was drawn from.
+  # Only the icon ships: the reference is the Torque 3D logo, a third-party
+  # trademark, and bundling it would fail the platform's terms twice over --
+  # (1.2) wants assets CC0, (2.4) wants documented permission from the mark's
+  # owner.  Excluding the directory and re-including the one file means a new
+  # reference dropped in here cannot start shipping by accident.
+  "ui/icons/*",
+  "!ui/icons/logo-128.png",
 ]

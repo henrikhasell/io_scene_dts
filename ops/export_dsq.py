@@ -70,4 +70,8 @@ class ExportDSQ(bpy.types.Operator, ExportHelper):
 
 
 def menu_func(self, context):
-    self.layout.operator(ExportDSQ.bl_idname, text="Torque Sequence (.dsq)")
+    from ..ui.icons import icon_id
+
+    self.layout.operator(
+        ExportDSQ.bl_idname, text="Torque Sequence (.dsq)", icon_value=icon_id()
+    )

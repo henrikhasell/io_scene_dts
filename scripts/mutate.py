@@ -954,6 +954,27 @@ MUTATIONS = {
         "    w.u32((24 | (exporter_version << 16)) & 0xFFFFFFFF)",
         ["test_byte_identical"],
     ),
+    # Packaging, not export -- but the same failure shape, and it happened.
+    # The manifest excludes and scripts/build_extension.py includes, so the two
+    # builders can disagree about what ships with nothing to notice: this exact
+    # line being absent put .claude/settings.local.json, an agent config
+    # carrying a local path and a shell allowlist, into every Blender-built zip
+    # for six releases while the CI-built zip stayed clean.
+    "extension-ships-agent-config": (
+        "blender_manifest.toml",
+        '  ".claude/",\n',
+        "",
+        ["test_both_builders_ship_the_same_files"],
+    ),
+    # The negation is what keeps README.md while "*.md" drops the internal
+    # notes.  Lose it and the zip ships no README at all -- gitignore semantics
+    # failing open in the quiet direction.
+    "extension-drops-readme": (
+        "blender_manifest.toml",
+        '  "!README.md",\n',
+        "",
+        ["test_nothing_but_code_readme_and_licence_ships"],
+    ),
 }
 
 # the version mutations above are caught by the pytest fixture sweep, not by
@@ -971,6 +992,9 @@ RUNNERS.update(
         # the two that guard the generated fixtures against themselves
         "pre-v19-bounds-recompute": "pytest",
         "writer-version-stamp": "pytest",
+        # packaging: tests/test_extension_build.py shells out to both builders
+        "extension-ships-agent-config": "pytest",
+        "extension-drops-readme": "pytest",
     }
 )
 

@@ -21,6 +21,12 @@ def _classes():
 def register() -> None:
     import bpy
 
+    from . import icons
+
+    # before the classes, and before the root __init__ appends the File menu
+    # entries that draw it -- a menu cannot ask for an icon_id that has no
+    # preview collection behind it yet
+    icons.register()
     for cls in _classes():
         bpy.utils.register_class(cls)
 
@@ -28,5 +34,8 @@ def register() -> None:
 def unregister() -> None:
     import bpy
 
+    from . import icons
+
     for cls in reversed(_classes()):
         bpy.utils.unregister_class(cls)
+    icons.unregister()

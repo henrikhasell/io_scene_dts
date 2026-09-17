@@ -161,4 +161,8 @@ class ExportDTS(bpy.types.Operator, ExportHelper):
 
 
 def menu_func(self, context):
-    self.layout.operator(ExportDTS.bl_idname, text="Torque Shape (.dts)")
+    from ..ui.icons import icon_id
+
+    self.layout.operator(
+        ExportDTS.bl_idname, text="Torque Shape (.dts)", icon_value=icon_id()
+    )

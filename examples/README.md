@@ -1,11 +1,42 @@
 # Examples
 
-One `.blend` per implemented DTS feature, each built from nothing in Blender —
-no import anywhere in its history. They are the worked answer to the question
+Four `.blend` files, each a shape somebody was making a *thing* with rather
+than demonstrating something. They are what this directory holds, and they are
+committed because a script cannot rebuild them.
+
+| Example | What it is |
+| --- | --- |
+| `01_test_crate` | A crate: one LOD, a collision box, a reflectance map |
+| `02_tutorial_player` | 45 bones, 15 meshes, 13 sequences — a player skeleton |
+| `03_crt_monitor` | Three LODs, a collision box, an IFL screen, a visibility track and a power sequence |
+| `04_light_male` | A T-posed player: 32 nodes, 26 meshes, 58 decals and a twenty-sequence animation library, `Walk`/`WalkBack`/`StrafeWalk`/`Run`/`RunBack`/`StrafeRun` among them |
+
+`02_tutorial_player` is the odd one and is flagged here rather than left to be
+found: it is an *import* of the Torque SDK's own tutorial player, `player.dts`
+plus the `.dsq` set beside it, and its texture is the SDK's. It is kept because
+nothing authored here is anywhere near that size, and the DSQ and matters-set
+tests want a shape that is.
+
+`04_light_male` opens with its `T-Pose` track soloed and the other nineteen
+muted, which is how a shape's sequences arrive from an import — a library, with
+the user picking. Its `Walk`, `WalkBack`, `StrafeWalk`, `Run`, `RunBack` and
+`StrafeRun` are hand-authored and carry no `dts_cyclic`, so they export as
+one-shot sequences; a walk cycle that should loop in the engine needs Cyclic
+ticked in the DTS Sequence panel first.
+
+## The showcase
+
+Fifteen one-feature shapes, each built from nothing in Blender — no import
+anywhere in its history. They are the worked answer to the question
 `tests/blender/test_authoring.py` asks in the abstract: *can a user actually
 make one of these?*
 
-| Example | Feature |
+`build_examples.py` builds them and is the whole source of truth; there are no
+`.blend` files for them in the repository, because there is nothing in one that
+the script does not put there. They number from `01` independently of the four
+above, which is why nothing downstream keys a shape by its number.
+
+| Shape | Feature |
 | --- | --- |
 | `01_detail_levels` | Four LODs plus a collision mesh; vertex sharing between levels |
 | `02_billboards` | A camera-facing flare and an upright, spinning trunk card |
@@ -23,47 +54,38 @@ make one of these?*
 | `14_ifl_material` | An IFL entry the engine flips through |
 | `15_dsq_animation` | A shape whose animation ships separately, as `.dsq` |
 
-## The hand-modelled three
-
-`16`–`18` are not built from nothing by a script. They were modelled by hand,
-which is the point of having them: the fifteen above are each one feature held
-still, and these are what a shape looks like when somebody was making a *thing*
-rather than a demonstration.
-
-| Example | What it is |
-| --- | --- |
-| `16_test_crate` | A crate: one LOD, a collision box, a reflectance map |
-| `17_tutorial_player` | 45 bones, 15 meshes, 13 sequences — a player skeleton |
-| `18_crt_monitor` | Three LODs, a collision box, an IFL screen, a visibility track and a power sequence |
-
-`17_tutorial_player` is the odd one and is flagged here rather than left to be
-found: it is an *import* of the Torque SDK's own tutorial player, `player.dts`
-plus the `.dsq` set beside it, and its texture is the SDK's. It is kept because
-nothing authored here is anywhere near that size, and the DSQ and matters-set
-tests want a shape that is.
-
 ## Rebuilding
 
 ```sh
-blender --background --factory-startup --python examples/build_examples.py -- --export examples/dist
+blender --background --factory-startup --python examples/build_examples.py -- --out /tmp/showcase --export examples/dist
 ```
 
-`build_examples.py` is the source of truth for `01`–`15`; the `.blend` files are
-committed so they can be opened without running it. `--export` also writes each
-shape's `.dts` and its generated textures into `examples/dist/`.
+`--out` is where the `.blend` files land, and it is worth pointing somewhere
+scratch: the fifteen are rebuilt on demand and nothing keeps them. `--export`
+writes each shape's `.dts` and its generated textures into `examples/dist/`,
+which is what gets loaded into the game.
 
-`16`–`18` come from `build_models.py` instead, which takes the author's working
-files and does only what a checkout needs — packs the textures, drops the one
-that came out of a retail game install, and gives the crate the armature the
-exporter asks for. Those source files are not in this repository, so unlike
+```sh
+blender --background --factory-startup --python examples/build_models.py
+```
+
+`build_models.py` rebuilds the four committed `.blend` files from the author's
+working tree, doing only what a checkout needs — packing the textures, dropping
+the one that came out of a retail game install, giving the crate the armature
+the exporter asks for, and stacking the light male's loose actions onto NLA
+tracks. Those source files are not in this repository, so unlike
 `build_examples.py` a checkout cannot re-run it. That is the trade for shapes a
 script did not make.
 
 ## Fixtures
 
 `tests/fixtures/build_fixtures.py` exports these shapes at the DTS and DSQ
-versions the test suite needs. That is the whole of `tests/fixtures/` — change
-an example and the fixtures change with it, so run it afterwards.
+versions the test suite needs, rebuilding the fifteen showcase ones into a
+scratch directory as it goes. That is the whole of `tests/fixtures/` — change a
+shape here and the fixtures change with it, so run it afterwards.
+
+`04_light_male` is the exception and does not become a fixture; see
+`tests/fixtures/NOTES.md`.
 
 ## Verifying in Tribes 2
 
