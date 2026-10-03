@@ -37,16 +37,6 @@ from bpy.types import PropertyGroup
 
 SCHEMA_VERSION = 4
 
-# The key `reflectance_packing` replaced.  A bool with no third state could not
-# say "follow the export setting", which is what the overwhelming majority of
-# materials want; props/migrate.py converts it.
-LEGACY_COMBINE_KEY = "combine_reflectance"
-
-# The ID property `reflection_amount` replaced.  It was a bare float in Custom
-# Properties, which meant it could be read and written but previewed nothing and
-# was absent on any material the importer had not touched.
-LEGACY_REFLECTION_AMOUNT_KEY = "dts_reflection_amount"
-
 
 def _sync_amount(self, context):
     from ..mapping import envmap

@@ -1,4 +1,4 @@
-"""Add, remove and reorder entries in the DTS tables, plus scene migration.
+"""Add, remove and reorder entries in the DTS tables.
 
 A CollectionProperty has no built-in add/remove buttons; every UIList needs
 operators beside it.  One generic pair covers all of them by naming the
@@ -242,28 +242,6 @@ class DTS_OT_refresh_ifl(Operator):
         return {"FINISHED"}
 
 
-class DTS_OT_migrate_scene(Operator):
-    bl_idname = "io_scene_dts.migrate_scene"
-    bl_label = "Convert DTS Data From an Older Version"
-    bl_description = (
-        "Convert the JSON blobs an earlier version of this add-on wrote into the "
-        "editable tables, and discard any pickled mesh payloads.  Runs automatically "
-        "when a file is opened with the add-on already enabled"
-    )
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context):
-        from ..props import migrate
-
-        report = migrate.migrate_all()
-        if not report:
-            self.report({"INFO"}, "nothing to convert")
-        else:
-            for line in report:
-                self.report({"WARNING"}, line)
-        return {"FINISHED"}
-
-
 class DTS_OT_add_reflectance(Operator):
     """Give a material a reflectance map, from nothing.
 
@@ -355,9 +333,8 @@ class DTS_OT_rebuild_env_map(Operator):
     """Move a reflectance map from Metallic onto the environment-map preview.
 
     Materials imported before ``mapping/envmap.py`` existed have theirs on the
-    Principled's Metallic input.  Those still export correctly, so this is not a
-    migration and does not run on load: it changes the user's node tree, which
-    is theirs, and it is offered rather than done.
+    Principled's Metallic input.  Those still export correctly, so this is
+    offered rather than done: it changes the user's node tree, which is theirs.
     """
 
     bl_idname = "io_scene_dts.rebuild_env_map"
@@ -452,19 +429,6 @@ class DTS_OT_rebuild_decal_preview(Operator):
         return {"FINISHED"}
 
 
-class DTS_OT_dismiss_migration_note(Operator):
-    bl_idname = "io_scene_dts.dismiss_migration_note"
-    bl_label = "Dismiss"
-    bl_description = "Hide the note about what conversion dropped"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context):
-        obj = context.object
-        if obj is not None:
-            obj.dts_shape.migration_note = ""
-        return {"FINISHED"}
-
-
 def list_buttons(layout, path: str, *, move: bool = False) -> None:
     """The add/remove (and optionally reorder) column beside a UIList."""
     column = layout.column(align=True)
@@ -488,7 +452,5 @@ CLASSES = (
     DTS_OT_list_add,
     DTS_OT_list_remove,
     DTS_OT_list_move,
-    DTS_OT_migrate_scene,
     DTS_OT_refresh_ifl,
-    DTS_OT_dismiss_migration_note,
 )

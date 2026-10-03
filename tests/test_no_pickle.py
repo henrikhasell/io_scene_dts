@@ -36,8 +36,8 @@ def shipped_python_files():
 def code_names(path):
     """(line, name) for every identifier in the file, skipping strings.
 
-    Tokenized rather than grepped so that prose can say the word: the migration
-    code explains at length why it does *not* unpickle the old payload, and a
+    Tokenized rather than grepped so that prose can say the word: comments and
+    docstrings explain at length why nothing here unpickles anything, and a
     substring scan would flag the explanation.
     """
     source = path.read_text()

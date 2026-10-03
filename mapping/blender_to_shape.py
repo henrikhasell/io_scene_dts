@@ -40,7 +40,6 @@ from ..dtslib.types import (
     STANDARD_MESH,
 )
 
-from ..props import migrate
 from . import matframes
 from .decals import bake_decals_as_objects, blender_lookup_of, build_decals
 from .materials import ifl_materials_from_blender, is_translucent, materials_from_blender
@@ -119,19 +118,6 @@ def _blender_to_shape(
     reset_material_cache()
     warnings: list[str] = []
     shape = Shape()
-
-    # A scene from v1.2 or earlier converts on load, but the handler only fires
-    # when a file is *opened* with the add-on already enabled.  Enable it
-    # afterwards and the old keys are still there, unread -- which would export
-    # a shape missing its name table, details and IFL entries without saying so.
-    stale = migrate.legacy_keys_present()
-    if stale:
-        raise ExportError(
-            f"this scene still holds data from an older version of the add-on "
-            f"({', '.join(stale[:3])}{'...' if len(stale) > 3 else ''}). Run "
-            f"Object > DTS > Convert DTS Data From an Older Version "
-            f"(io_scene_dts.migrate_scene) first"
-        )
 
     # seed the name table in its original order so every add_name() below
     # resolves to the source index; names for anything added in Blender still
@@ -404,7 +390,8 @@ def _blender_to_shape(
             warnings.append(
                 f"{len(orphans)} decal mesh object(s) were not exported: a decal "
                 f"is exported from its projector empty, and these have none.  "
-                f"Run Migrate DTS Scene to turn them into projectors"
+                f"Re-import without \"Import Decals as Meshes\", or fit "
+                f"projectors with Add DTS Decal, to export them"
             )
 
     # -- materials ----------------------------------------------------
@@ -531,11 +518,10 @@ def _gather_mesh_objects(context, arm_obj, selected_only):
     """Mesh objects belonging to this shape.
 
     A decal is an empty, so the ``dts_decal_name`` guard is not about the
-    ordinary case.  It covers the two ways decal *meshes* can be in a scene:
-    a .blend written by an older version whose ``props/migrate.py`` has not run
-    yet, and an import made with ``Import Decals as Meshes``.  Both park meshes
-    on the armature exactly like their targets, and letting one through exports
-    it as a phantom object with its own geometry and detail levels.
+    ordinary case.  It covers decal *meshes*, which an import made with
+    ``Import Decals as Meshes`` parks on the armature exactly like their
+    targets; letting one through exports it as a phantom object with its own
+    geometry and detail levels.
     """
     def belongs(o):
         if o.type != "MESH" or "dts_decal_name" in o:

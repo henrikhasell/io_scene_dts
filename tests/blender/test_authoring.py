@@ -522,10 +522,11 @@ def test_the_reflection_previews_over_the_principled():
 
 
 def test_a_reflectance_left_on_metallic_still_exports():
-    """A .blend from before the preview existed keeps working.
+    """A hand-wired material keeps working.
 
-    Nothing writes Metallic any more, and migration deliberately does not
-    re-wire node trees on load, so the export path has to keep reading it.
+    Nothing the add-on writes puts reflectance on Metallic any more, and
+    nothing re-wires a user's node tree behind their back, so the export path
+    has to keep reading it.
     """
     A.reset()
     arm = A.armature("Legacy")

@@ -14,7 +14,7 @@ from mathutils import Vector
 
 from ..dtslib import DsqFile, Quat16, Sequence, Trigger, TSIntegerSet
 from ..dtslib.types import SEQ_BLEND, SEQ_CYCLIC, SEQ_MAKE_PATH
-from ..props.legacy import pack_trigger, parse_trigger_state
+from .triggers import pack_trigger, parse_trigger_state
 from ..props.sequence import SCHEMA_VERSION
 from .naming import strip_blender_dedup
 from .sequences import (

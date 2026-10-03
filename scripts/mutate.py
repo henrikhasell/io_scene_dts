@@ -132,16 +132,15 @@ MUTATIONS = {
         "        if False and dts_object_and_size(o)[0] in wanted:",
         ["test_selected_only_keeps_the_detail_levels_that_are_hidden"],
     ),
-    # A decal is an empty now, so the "dts_decal_name" guard in
-    # _gather_mesh_objects is dead for any migrated scene -- mutating it caught
-    # nothing, which the harness reported.  What still protects against phantom
-    # decal objects is migration deleting the legacy meshes, so that is what
-    # this mutates instead.
+    # A decal is an empty, so the "dts_decal_name" guard in
+    # _gather_mesh_objects is only reached by an import made with "Import
+    # Decals as Meshes" -- drop it and every one of those meshes comes back out
+    # as a phantom shape object with its own geometry and detail levels.
     "decal-objects": (
-        "props/migrate.py",
-        "        bpy.data.objects.remove(mesh)",
-        "        pass",
-        ["test_legacy_decal_meshes_migrate_to_their_empty"],
+        "mapping/blender_to_shape.py",
+        '        if o.type != "MESH" or "dts_decal_name" in o:',
+        '        if o.type != "MESH":',
+        ["test_decals_can_import_as_meshes"],
     ),
     "matframes-store": (
         "mapping/matframes.py",
@@ -269,12 +268,6 @@ MUTATIONS = {
         "",
         ["test_every_material_flag_bit_has_a_checkbox"],
     ),
-    "legacy-guard": (
-        "mapping/blender_to_shape.py",
-        "    stale = migrate.legacy_keys_present()",
-        "    stale = []",
-        ["test_export_refuses_a_scene_that_has_not_been_converted"],
-    ),
     "dsq-ground": (
         "mapping/dsq.py",
         "            for item in action.dts_sequence_props.ground",
@@ -391,12 +384,6 @@ MUTATIONS = {
         "                reflection_amount=1.0,",
         ["test_reflection_amount_is_authorable"],
     ),
-    "reflection-amount-migration-keeps-old-key": (
-        "props/migrate.py",
-        "    del mat[LEGACY_REFLECTION_AMOUNT_KEY]",
-        "    pass",
-        ["test_migration_converts_the_old_reflection_amount"],
-    ),
     # the gate in the *permissive* direction: without the env-map check a
     # translucent material's alpha would be read as a reflectance mask too,
     # which is the one thing the disambiguation rule exists to prevent
@@ -497,20 +484,6 @@ MUTATIONS = {
         "                pass",
         ["test_a_cross_referenced_reflectance_imports_as_the_other_materials_texture"],
     ),
-    # the old bool, converted the wrong way: a material that asked for its own
-    # texture quietly starts following a ticked box instead
-    "combine-migration-flattened": (
-        "props/migrate.py",
-        '    props.reflectance_packing = "DEFAULT" if bool(value) else "SEPARATE"',
-        '    props.reflectance_packing = "DEFAULT"',
-        ["test_migration_converts_the_old_combine_checkbox"],
-    ),
-    "combine-migration-keeps-old-key": (
-        "props/migrate.py",
-        "    del props[LEGACY_COMBINE_KEY]",
-        "    pass",
-        ["test_migration_converts_the_old_combine_checkbox"],
-    ),
     "reflectance-forces-envmap": (
         "mapping/materials.py",
         "            mat.flags &= ~MAT_NEVER_ENV_MAP",
@@ -574,12 +547,7 @@ MUTATIONS = {
     ),
     # the other direction is `sorted-mode` above, which breaks the value
     # stored for a mesh that genuinely needs one
-    "blend-props-not-stored": (
-        "props/migrate.py",
-        "            if key in mat:\n                del mat[key]",
-        "            if False:\n                del mat[key]",
-        ["test_migration_drops_the_blend_props_saved_beside_the_shader"],
-    ),
+    #
     # -- IFL: the material's flipbook ------------------------------------
     # There were no IFL mutations at all before this, so none of the three
     # tests that claimed to cover it was ever checked for biting.

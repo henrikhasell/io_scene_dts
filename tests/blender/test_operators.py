@@ -797,9 +797,8 @@ def test_every_material_flag_bit_has_a_checkbox():
 
 def test_dsq_sequences_use_the_same_tables_as_dts_ones():
     """The DSQ path wrote its ground frames and triggers as JSON while the DTS
-    path used collections.  Nothing read the JSON any more, so a sequence
-    imported from a .dsq lost both on a DTS export -- and once export started
-    refusing legacy keys, it could not be exported at all."""
+    path used collections.  Nothing reads the JSON, so a sequence imported from
+    a .dsq would lose both on a DTS export."""
     # the ground-frame shape on both sides: a .dsq with no ground frames in it
     # makes every count below zero, and the test asserts nothing
     _reset()
@@ -820,7 +819,7 @@ def test_dsq_sequences_use_the_same_tables_as_dts_ones():
     total_ground = sum(len(a.dts_sequence_props.ground) for a in fresh)
     assert total_ground == src_ground
 
-    # and it still exports, which the legacy-key guard would otherwise refuse
+    # and it still exports
     out = _tmp(".dsq")
     assert bpy.ops.io_scene_dts.export_dsq(filepath=out) == {"FINISHED"}
     dst = read_dsq(Path(out).read_bytes())
@@ -828,27 +827,6 @@ def test_dsq_sequences_use_the_same_tables_as_dts_ones():
     # sequence's ground frames as well as the imported copy's.  The floor is
     # what matters and it is no longer zero, which is what made this vacuous.
     assert sum(s.num_ground_frames for s in dst.sequences) >= total_ground
-
-
-def test_export_refuses_a_scene_that_has_not_been_converted():
-    """The load_post handler only fires when a file is opened with the add-on
-    already enabled.  Enable it afterwards and the legacy keys are still there,
-    unread -- exporting then would drop the name table and details silently."""
-    _reset()
-    arm = _import_dts("v24_detail_levels.dts")
-    arm["dts_names_order"] = json.dumps(["stale"])
-
-    out = _tmp(".dts")
-    try:
-        res = bpy.ops.io_scene_dts.export_dts(filepath=out, version="24")
-        assert res == {"CANCELLED"}, res
-    except RuntimeError as exc:
-        assert "older version of the add-on" in str(exc), str(exc)
-
-    from io_scene_dts.props import migrate
-
-    migrate.migrate_all()
-    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="24") == {"FINISHED"}
 
 
 def _mat_by_index(index):
@@ -934,123 +912,30 @@ def test_shader_edit_reaches_the_exported_blend_flag():
     assert read_shape_file(out2).materials[0].flags & MAT_TRANSLUCENT, "not translucent again"
 
 
-def test_migration_drops_the_blend_props_saved_beside_the_shader():
-    """A scene from an older version carries dts_translucent and friends.
+def test_rebuild_env_map_moves_a_metallic_reflectance():
+    """A reflectance wired to Metallic still exports, so nothing rewrites it
+    behind the user's back -- the operator is how it is asked for.
 
-    They were already ignored on export -- masked off and recomputed from the
-    graph -- so deleting them changes no exported file and removes the second
-    source of truth.
-    """
-    from io_scene_dts.props import migrate
-
-    _reset()
-    _import_dts("v24_sorted_foliage.dts")
-    bmat = _mat_by_index(0)
-    for prop in migrate.DERIVED_MATERIAL_KEYS:
-        bmat[prop] = True
-
-    migrate.migrate_all()
-    for prop in migrate.DERIVED_MATERIAL_KEYS:
-        assert prop not in bmat.keys(), f"{prop} survived migration"
-    # idempotent, and the flags it never owned are untouched
-    migrate.migrate_all()
-    assert bmat["dts_s_wrap"] is not None
-
-
-def test_migration_converts_the_old_combine_checkbox():
-    """``combine_reflectance`` (bool) becomes ``reflectance_packing`` (enum).
-
-    The bool is not a registered property any more, so it is written and read
-    as the raw IDProperty a .blend saved by the older version still holds.
-
-    False was "give it its own texture", which a ticked export box must not
-    overrule, so it becomes SEPARATE.  True was only the old *default* -- it
-    says nobody objected, not that this material insists -- so it becomes
-    DEFAULT, and the box has something to act on.  Both export the bytes they
-    did before, because Combine defaults on.
-    """
-    from io_scene_dts.props import migrate
-
-    _reset()
-    _import_dts("v24_sorted_foliage.dts")
-    # the imported one and a fresh one, because the conversion is not gated on
-    # dts_name: the old bool was authorable in a scene with no import in it
-    split = _mat_by_index(0)
-    kept = bpy.data.materials.new("kept")
-    untouched = bpy.data.materials.new("untouched")
-    kept.dts_material["combine_reflectance"] = True
-    split.dts_material["combine_reflectance"] = False
-
-    migrate.migrate_all()
-    assert kept.dts_material.reflectance_packing == "DEFAULT"
-    assert split.dts_material.reflectance_packing == "SEPARATE"
-    assert untouched.dts_material.reflectance_packing == "DEFAULT"
-    for bmat in (kept, split):
-        assert "combine_reflectance" not in bmat.dts_material.keys(), (
-            "the old key has to go, or it is a second source of truth"
-        )
-
-    # idempotent, and it does not undo an override set after the conversion
-    split.dts_material.reflectance_packing = "COMBINE"
-    migrate.migrate_all()
-    assert split.dts_material.reflectance_packing == "COMBINE"
-
-
-def test_migration_converts_the_old_reflection_amount():
-    """``mat["dts_reflection_amount"]`` becomes a slider on ``dts_material``.
-
-    Same reasoning as the combine checkbox above: the ID property is what a
-    .blend saved by the older version holds, and it has to leave, or the
-    property and the key are two answers to one question.  Not gated on
-    dts_name either -- the key was writable on any material.
-    """
-    from io_scene_dts.props import migrate
-
-    _reset()
-    _import_dts("v24_sorted_foliage.dts")
-    imported = _mat_by_index(0)
-    fresh = bpy.data.materials.new("fresh")
-    imported["dts_reflection_amount"] = 0.5
-    fresh["dts_reflection_amount"] = 0.1
-
-    migrate.migrate_all()
-    assert abs(imported.dts_material.reflection_amount - 0.5) < 1e-6
-    assert abs(fresh.dts_material.reflection_amount - 0.1) < 1e-6
-    for bmat in (imported, fresh):
-        assert "dts_reflection_amount" not in bmat.keys(), (
-            "the old key has to go, or it is a second source of truth"
-        )
-
-    # idempotent, and it does not undo a value set after the conversion
-    fresh.dts_material.reflection_amount = 0.75
-    migrate.migrate_all()
-    assert abs(fresh.dts_material.reflection_amount - 0.75) < 1e-6
-
-
-def test_migration_leaves_a_metallic_reflectance_where_it_is():
-    """Converting properties is one thing; rewriting a node tree is another.
-
-    An older .blend has its reflectance on Metallic.  That still exports, so
-    there is nothing migration has to do, and doing it anyway would edit the
-    user's shader graph on load.  The operator is the way to ask for it.
+    Metallic is where a hand-wired material (or one made by an add-on build
+    from before ``mapping/envmap.py``) keeps its mask, and
+    :func:`mapping.materials.reflectance_image_node` falls back to it, so the
+    graph is left alone until the button is pressed.
     """
     from io_scene_dts.mapping import envmap
-    from io_scene_dts.props import migrate
 
     dts, _ = _env_mapped_fixture()
     _reset()
     assert bpy.ops.io_scene_dts.import_dts(filepath=str(dts), import_details=True) == {"FINISHED"}
     mat = _material_of("scorchmark")
 
-    # put the material back the way the older add-on left it
+    # wire it the way a hand-made material has it
     source = _reflectance_of(mat)
     envmap.unwire(mat)
     bsdf = next(n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
     mat.node_tree.links.new(source.outputs["Color"], bsdf.inputs["Metallic"])
 
-    migrate.migrate_all()
-    assert envmap.group_node(mat) is None, "migration must not re-wire the graph"
-    assert _reflectance_of(mat) == source, "and the fallback must still find it"
+    assert envmap.group_node(mat) is None
+    assert _reflectance_of(mat) == source, "the fallback must still find it"
 
     with bpy.context.temp_override(material=mat):
         assert bpy.ops.io_scene_dts.rebuild_env_map(all_materials=False) == {"FINISHED"}
@@ -2313,124 +2198,6 @@ def test_a_trigger_can_be_authored():
     assert state & (1 << 31), "on bit lost"
     assert state & (1 << 30), "invert-on-reverse bit lost"
     assert abs(dst.triggers[0].pos - 0.25) < 1e-6
-
-
-def test_legacy_blend_migrates():
-    """A scene saved by an older version keeps working: the blobs convert and
-    the pickled payload is discarded rather than unpickled."""
-    from io_scene_dts.props import migrate
-
-    _reset()
-    bpy.ops.object.armature_add()
-    arm = bpy.context.object
-    arm["dts_names_order"] = json.dumps(["base", "detail2"])
-    arm["dts_details"] = json.dumps([["detail2", 0, 0, 2.0, -1.0, -1.0, 8]])
-    arm["dts_materials_order"] = json.dumps([])
-    arm["dts_ifl_materials"] = json.dumps(
-        [{"name": "flame.ifl", "raw": [0, 1, 2, 0, 5]}]
-    )
-    bone = arm.data.bones[0]
-    bone["dts_name"] = "Bone"
-    arm["dts_node_transforms"] = json.dumps({"Bone": [[1, 2, 3, 32767], [0.0, 1.0, 0.0]]})
-
-    action = bpy.data.actions.new("Legacy")
-    action["dts_sequence"] = True
-    action["dts_triggers"] = json.dumps([[(1 << 3) | (1 << 31), 0.5]])
-    action["dts_ground"] = json.dumps([[[1.0, 0.0, 0.0], [0, 0, 0, 32767]]])
-    action["dts_keyframes"] = 4
-
-    bpy.ops.mesh.primitive_cube_add()
-    mesh_obj = bpy.context.object
-    mesh_obj["dts_source_payload"] = "not-actually-a-pickle"
-    mesh_obj["dts_strict_freeze"] = True
-
-    report = migrate.migrate_all()
-    assert report
-
-    props = arm.dts_shape
-    assert props.is_shape
-    assert [n.name for n in props.names] == ["base", "detail2"]
-    assert len(props.details) == 1 and props.details[0].poly_count == 8
-    # The legacy entry named material slot 1, and this scene has no materials
-    # at all -- the table was the only record of it, and the table is gone.
-    # Migration says so rather than dropping it silently.
-    assert any("IFL" in line for line in report), report
-    assert bone.dts_node.use_stored
-    assert tuple(bone.dts_node.stored_rotation) == (1, 2, 3, 32767)
-
-    seq_props = action.dts_sequence_props
-    assert len(seq_props.triggers) == 1
-    assert seq_props.triggers[0].state == 4  # bit 3
-    assert seq_props.triggers[0].on
-    assert len(seq_props.ground) == 1
-
-    # every legacy key is consumed, so the two forms cannot disagree
-    assert not migrate.legacy_keys_present(), migrate.legacy_keys_present()
-    # and the payload went without being read
-    assert "dts_source_payload" not in mesh_obj.keys()
-    assert any("discarded rather than unpickled" in line for line in report)
-
-    # idempotent
-    assert migrate.migrate_all() == []
-
-
-def test_legacy_decal_meshes_migrate_to_their_empty():
-    """A .blend from before decals became empties must not export phantoms.
-
-    The old form kept the covered faces as a mesh object parented to the
-    armature exactly like its target, so the exporter cannot tell it from a
-    real mesh: left in place, every decal comes back as an extra shape object
-    with its own geometry and detail levels.  Migration removes them and moves
-    what only they held -- the target and the material -- onto the empty.
-    """
-    sys.path.insert(0, str(REPO / "tests" / "blender"))
-    import authoring as A
-
-    from io_scene_dts.mapping.decals import decal_objects
-    from io_scene_dts.props import migrate
-
-    A.reset()
-    arm = A.armature("Wall")
-    verts, faces = A.quad_geometry()
-    target = A.mesh_object("wall2", arm, bone="root", verts=verts, faces=faces)
-    # blended, because a shape that carries decals has to have something
-    # translucent for the engine to draw them against
-    decal_mat = A.blended_material("scorch")
-
-    legacy = A.mesh_object(
-        "scorch2", arm, bone="root", verts=verts, faces=faces, material=decal_mat
-    )
-    legacy["dts_decal_name"] = "scorch"
-    legacy["dts_decal_index"] = 0
-    legacy["dts_decal_object"] = "wall"
-    legacy["dts_decal_slot"] = 0
-    legacy["dts_decal_target"] = target.name
-
-    empty = bpy.data.objects.new("decal_scorch", None)
-    bpy.context.scene.collection.objects.link(empty)
-    empty["dts_decal_name"] = "scorch"
-    empty["dts_decal_index"] = 0
-    empty["dts_decal_object"] = "wall"
-    empty.matrix_world = target.matrix_world
-
-    assert migrate.migrate_all()
-
-    # the mesh is gone and the empty carries the decal
-    assert "scorch2" not in bpy.data.objects
-    decals = decal_objects()
-    assert len(decals) == 1
-    props = decals[0].dts_decal
-    assert props.decal_name == "scorch"
-    assert props.target is target
-    assert props.material is decal_mat
-    assert "dts_decal_name" not in empty.keys()
-
-    # and the export has no phantom object for it
-    out = _tmp(".dts")
-    assert bpy.ops.io_scene_dts.export_dts(filepath=out, version="23") == {"FINISHED"}
-    shape = read_shape_file(out)
-    assert [shape.name(o.name_index) for o in shape.objects] == ["wall"]
-    assert len(shape.decals) == 1
 
 
 def _dts_panels():

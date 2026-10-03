@@ -22,8 +22,6 @@ from .operators import (
     DTS_OT_rebuild_env_map,
     DTS_OT_refresh_ifl,
     DTS_OT_remove_reflectance,
-    DTS_OT_dismiss_migration_note,
-    DTS_OT_migrate_scene,
     list_buttons,
 )
 
@@ -54,13 +52,6 @@ class OBJECT_PT_dts_shape(Panel):
     def draw(self, context):
         layout = self.layout
         props = context.object.dts_shape
-        if props.migration_note:
-            box = layout.box()
-            box.alert = True
-            column = box.column(align=True)
-            for line in props.migration_note.split("; "):
-                column.label(text=line, icon="ERROR")
-            box.operator(DTS_OT_dismiss_migration_note.bl_idname, icon="X")
         layout.label(text=f"{len(props.details)} detail level(s), "
                           f"{len(props.material_order)} material(s)")
 

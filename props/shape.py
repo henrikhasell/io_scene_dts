@@ -18,7 +18,7 @@ from bpy.props import (
 )
 from bpy.types import PropertyGroup
 
-# bumped when a conversion is added; see props/migrate.py
+# stamped on import so a later version has something to key a conversion on
 SCHEMA_VERSION = 1
 
 
@@ -80,10 +80,3 @@ class DtsShapeProps(PropertyGroup):
 
     material_order: CollectionProperty(type=DtsMaterialRef)
     material_order_index: IntProperty(default=0)
-
-
-    migration_note: StringProperty(
-        name="Migration Note",
-        description="What was dropped when this scene was brought forward",
-        default="",
-    )

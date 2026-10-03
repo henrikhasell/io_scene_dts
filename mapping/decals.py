@@ -1481,10 +1481,8 @@ def import_decal_meshes(
             coll.objects.link(bobj)
             parent_like(bobj, target_obj)
 
-            # the legacy property names, deliberately: the exporter already
-            # keys its "do not export this as an object" guard on
-            # dts_decal_name, and props/migrate.py already knows how to turn a
-            # scene full of these into projectors
+            # the exporter keys its "do not export this as an object" guard on
+            # dts_decal_name, so these meshes stay out of the shape
             bobj["dts_decal_name"] = decal_name
             bobj["dts_decal_index"] = decal_index
             bobj["dts_decal_object"] = owner

@@ -41,7 +41,7 @@ from ..dtslib.types import (
     SEQ_UNIFORM_SCALE,
 )
 from .decals import decal_names_by_index, read_decal_tracks, write_decal_fcurves
-from ..props.legacy import pack_trigger, parse_trigger_state
+from .triggers import pack_trigger, parse_trigger_state
 from ..props.sequence import SCHEMA_VERSION
 from .ifl import material_name_for
 from .objectstate import read_tracks, write_tracks

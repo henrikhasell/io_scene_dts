@@ -60,15 +60,15 @@ listed in `UNSUPPORTED.md` §3.
 | Node default rest transforms | ● | ● | ● | ● | The raw `Quat16` int16s live on the bone (Bone Properties → DTS Node).  Export prefers them while the bone still agrees, so an untouched shape keeps its exact node table; clear **Keep Imported Rest Transform** and the bone's matrix wins. |
 | Name table and its order | ● | ● | ● | ● | A UIList on the armature.  The order is load-bearing — every name index in the file is an offset into it — so the panel says so and the reorder buttons respect it. |
 | Objects | ● | ● | ● | ● | One DTS object becomes one mesh object *per detail level*, named with Torque's suffix convention (`shape2`, `shape32`). |
-| Object order | ● | ◐ | ● | ● | The file's own order is kept, except that everything with a translucent mesh is moved to the end of its sub-shape — objects are drawn in list order and a blended surface only composites over what is already drawn.  3 of 849 corpus shapes are reordered by this; see `UNSUPPORTED.md` §4.  `mapping/blender_to_shape.py:230` |
-| Visible detail levels (LODs) | ◐ | ● | ● | ● | `Import Detail Levels` is off by default, because every LOD stands at the same origin and eleven levels import as eleven overlapping copies.  Off, the levels below the largest lose their geometry in anything exported from that scene; the detail *table* still survives.  Warned at import.  `mapping/shape_to_blender.py:668`  Hiding the small levels to work on the large one is safe: a hidden mesh cannot be selected, so **Selected Objects Only** takes the hidden detail levels of any object you did select along with it.  A mesh that is *visible* and unselected is still left out.  `mapping/blender_to_shape.py:569` |
+| Object order | ● | ◐ | ● | ● | The file's own order is kept, except that everything with a translucent mesh is moved to the end of its sub-shape — objects are drawn in list order and a blended surface only composites over what is already drawn.  3 of 849 corpus shapes are reordered by this; see `UNSUPPORTED.md` §4.  `mapping/blender_to_shape.py:216` |
+| Visible detail levels (LODs) | ◐ | ● | ● | ● | `Import Detail Levels` is off by default, because every LOD stands at the same origin and eleven levels import as eleven overlapping copies.  Off, the levels below the largest lose their geometry in anything exported from that scene; the detail *table* still survives.  Warned at import.  `mapping/shape_to_blender.py:668`  Hiding the small levels to work on the large one is safe: a hidden mesh cannot be selected, so **Selected Objects Only** takes the hidden detail levels of any object you did select along with it.  A mesh that is *visible* and unselected is still left out.  `mapping/blender_to_shape.py:555` |
 | Collision and LOS details | ● | ● | ● | ● | Negative-size details (`Collision-1`, `LOSCollision-9`).  Never treated as LODs and always imported, whatever `Import Detail Levels` says — dropping one would produce a shape the engine cannot collide with. |
 | Empty detail slots | ● | ● | ● | ● | A detail can exist with no geometry at all, which is why the table is kept rather than derived from the objects.  Written back as null meshes. |
 | Detail metrics (average error, max error, poly count) | ● | ● | ● | ● | Fields of the detail UIList.  A detail authored in Blender gets the format's own defaults (−1, −1, 0). |
 | Detail sizes | ● | ◐ | ● | ● | Taken from the object-name suffix, with `dts_detail_size` overriding.  *Frozen*: renaming a collection does nothing. |
 | Sub-shapes | ● | ◐ | ◐ | ● | Preserved through `dts_subshape` on each mesh object, which is a raw custom property with no panel.  Export puts every node in sub-shape 0, so extra sub-shapes carry objects only. |
 | `smallestVisibleSize` / `smallestVisibleDL` | ● | ◐ | ● | ● | Raw custom properties on the armature; derived from the detail table when absent. |
-| Shape bounds, radius, tube radius, centre | ● | – | – | ● | Recomputed from the geometry on export — a stored copy would only go stale.  `mapping/blender_to_shape.py:1022` |
+| Shape bounds, radius, tube radius, centre | ● | – | – | ● | Recomputed from the geometry on export — a stored copy would only go stale.  `mapping/blender_to_shape.py:1008` |
 | Per-mesh bounds, centre, radius | ● | – | – | ● | Likewise. |
 | Runtime links (`firstObject`, `firstChild`, `nextSibling`, `firstDecal`) | ● | – | – | ● | Engine scratch, recomputed from the hierarchy.  `dtslib/runtime_links.py` |
 | Exporter version word | ● | ◐ | ◐ | ● | Raw custom property on the armature. |
@@ -84,19 +84,19 @@ listed in `UNSUPPORTED.md` §3.
 | Encoded normals | ● | – | – | ● | Recomputed from the format's 256-entry table.  `dtslib/normals.py` |
 | Triangle primitives | ● | ● | ● | ● | Export emits indexed Triangles grouped per material — the same policy as the engine's own `.mdl` exporter. |
 | Strip and fan primitives | ● | – | ○ | ○ | Decoded into triangles on import; never written.  Measured across the corpus this costs **×1.00** — 312,733 strip primitives become triangles for no size change, because the u16 index buffer is dwarfed by the float vertex arrays. |
-| `parent_mesh` vertex sharing across LODs | ● | – | ● | ● | Re-derived, not carried: each object's levels are interned into one pool lowest-detail-first, so every smaller level occupies a prefix of the larger one.  Skins and multi-frame meshes are excluded — their parallel arrays would have to be prefixes too.  `mapping/vertex_pool.py`, `mapping/blender_to_shape.py:679` |
-| `merge_indices` (legacy LOD morph table) | ● | ◐ | ◐ | ◐ | A raw int array on the mesh object, editable only as numbers in the N-panel — order matters and entries repeat, so a vertex group cannot hold it.  Entries naming a vertex no face uses any more are dropped with a warning.  Exporting as v18 or older drops the whole table — the flat-stream format has no field for it — also with a warning.  *Blind.*  `mapping/blender_to_shape.py:861`, `dtslib/fit.py:264` |
+| `parent_mesh` vertex sharing across LODs | ● | – | ● | ● | Re-derived, not carried: each object's levels are interned into one pool lowest-detail-first, so every smaller level occupies a prefix of the larger one.  Skins and multi-frame meshes are excluded — their parallel arrays would have to be prefixes too.  `mapping/vertex_pool.py`, `mapping/blender_to_shape.py:749`, `mapping/blender_to_shape.py:688` |
+| `merge_indices` (legacy LOD morph table) | ● | ◐ | ◐ | ◐ | A raw int array on the mesh object, editable only as numbers in the N-panel — order matters and entries repeat, so a vertex group cannot hold it.  Entries naming a vertex no face uses any more are dropped with a warning.  Exporting as v18 or older drops the whole table — the flat-stream format has no field for it — also with a warning.  *Blind.*  `mapping/blender_to_shape.py:847`, `dtslib/fit.py:264` |
 | Billboard flag | ● | ● | ● | ● | Checkbox in Object Properties → DTS Mesh.  *Blind* — nothing in the viewport turns a billboard to face you, and authoring one the engine actually turns is not solved (`UNSUPPORTED.md` §3).  A round-tripped billboard keeps working. |
 | Z-axis billboard flag | ● | ● | ● | ● | Same, and worse: no shipped Tribes 2 shape sets it, so there is no reference render to compare against. |
 | `MESH_HAS_DETAIL_TEXTURE`, `MESH_USE_ENCODED_NORMALS` | ● | ● | ● | ● | Checkboxes.  Neither occurs in the corpus. |
 | Mesh-type echo bits | ● | ● | ● | ● | Whether an exporter repeated the mesh type in the flags word varies per mesh, so it is recorded rather than inferred.  Undocumented bits are dropped with a warning. |
 | Skinned mesh | ● | ● | ● | ● | Vertex groups named after bones plus an armature modifier; rigid meshes are bone-parented. |
-| Sorted mesh (translucency draw order) | ● | ● | ● | ● | The cluster tree is regenerated from the geometry, so the mesh is ordinary editable geometry.  `NONE`/`FLAT`/`BSP` plus depth in Object Properties → DTS Mesh.  A standard mesh on a translucent material is **promoted** to BSP on export, which changes the mesh type of an imported shape on re-export.  *Blind* — nothing previews draw order.  `mapping/blender_to_shape.py:924` |
+| Sorted mesh (translucency draw order) | ● | ● | ● | ● | The cluster tree is regenerated from the geometry, so the mesh is ordinary editable geometry.  `NONE`/`FLAT`/`BSP` plus depth in Object Properties → DTS Mesh.  A standard mesh on a translucent material is **promoted** to BSP on export, which changes the mesh type of an imported shape on re-export.  *Blind* — nothing previews draw order.  `mapping/blender_to_shape.py:910` |
 | Null mesh | ● | ● | ● | ● | A detail slot an object has no geometry for; trailing null slots the source declared are kept. |
 | Decal mesh | ● | ● | ● | ● | Not a mesh in Blender at all — see §6. |
 | Vertex animation (multi-frame meshes) | ● | ● | ● | ● | Frames arrive as shape keys `frame_001…`, driven by the sequence's `frame` track, so scrubbing plays the animation.  `mapping/framepreview.py` |
 | Material frames (UV flipbooks) | ● | ● | ● | ● | Frame 0 is the active UV map; frames 1..n−1 are `FLOAT2` point attributes (`Mesh.uv_layers` caps at 8 while real shapes reach 62).  *Blind*: only frame 0 renders.  `mapping/matframes.py` |
-| 65535 vertices per mesh | – | – | – | ● | The index buffer is u16; a larger mesh is refused rather than written short.  `mapping/blender_to_shape.py:800` |
+| 65535 vertices per mesh | – | – | – | ● | The index buffer is u16; a larger mesh is refused rather than written short.  `mapping/blender_to_shape.py:786` |
 
 ---
 
@@ -194,7 +194,7 @@ the projector and export recomputes the rest.
 | Coverage controls (rule, depth, max angle) | – | ● | ● | – | The format stores no depth axis, so `Depth` and `Coverage` are choices the user makes rather than recovered values.  `Max Angle` is the original exporter's `DECAL::MAX_ANGLE`, same 90° default. |
 | Per-detail-level decal meshes | ● | ● | ● | ● | A decal owns a mesh run parallel to its owner's slots, so export writes one `TSDecalMesh` per LOD.  The preview draws on the target only. |
 | Decal material | ● | ● | ● | ● | A pointer on the empty — it had nowhere to live once a decal stopped being a mesh with a material slot. |
-| Something translucent to draw against | ● | ● | ● | ● | The engine needs a blended mesh in a shape that carries decals, so export **refuses** one that has none — see `UNSUPPORTED.md` §1.  Either the decal's own material or the mesh it sits on: every one of the 153 decal-bearing corpus shapes does one (94) or the other (59).  `mapping/blender_to_shape.py:433`  Not reached when decals are baked as meshes: the check is about the decal table, and a baked shape has none. |
+| Something translucent to draw against | ● | ● | ● | ● | The engine needs a blended mesh in a shape that carries decals, so export **refuses** one that has none — see `UNSUPPORTED.md` §1.  Either the decal's own material or the mesh it sits on: every one of the 153 decal-bearing corpus shapes does one (94) or the other (59).  `mapping/blender_to_shape.py:420`  Not reached when decals are baked as meshes: the check is about the decal table, and a baked shape has none. |
 | Viewport preview | ● | ● | ● | – | A branch in the *target's* material: a Texture Coordinate reading the projector's object space, masked to its box and to the one object the decal targets.  Per-pixel where export decides per-face, so it is close to the exported coverage rather than identical.  A lit decal composites its colour into the host's **Base Color** and is shaded by the host's one Principled — the engine lights a decal with the target mesh's normals and DTS stores no gloss term, so there is nothing for a second BSDF to do except cost a full shader evaluation per pixel per decal, on or off.  Only unlit decals get a surface of their own.  `mapping/decals.py:940` |
 | Authoring from a selection | – | ● | ● | ● | **Add DTS Decal** (Object Properties → DTS Mesh) makes one from the faces you have selected, across every detail level of the object. |
 | Decals as meshes (import option) | ◐ | ○ | – | ○ | Off by default.  On, each decal arrives as a copy of the faces the file says it covers and no projector is built — the only way to see the file's own face list, and a way to *look at* a shape rather than author one: export reads projectors and nothing else, so these reach no file.  Warned at import and again at export.  `mapping/shape_to_blender.py:193` |
@@ -226,11 +226,10 @@ None of these corrupt a file; all stop with an error.
 | --- | --- | --- |
 | DTS versions 14 and older, and 25+ | Nothing that old exists to test against; nothing that new is documented here. | `dtslib/old_reader.py:50`, `dtslib/reader.py:71` |
 | Writing a shape an older version cannot hold | `write_shape` refuses rather than lose ground frames, scale animation, merge indices or LOD error metrics quietly.  The export dialog calls `fit_to_version` first, which drops them *and warns*, so the refusal is a library guard rather than something a user meets. | `dtslib/fit.py:469` |
-| Exporting without an armature | The armature *is* the shape. | `mapping/blender_to_shape.py:102` |
-| More than 192 nodes or objects | `TSIntegerSet` is 6 dwords wide, so there is no bit for a 193rd in a matters set.  A format limit, not a gap. | `mapping/blender_to_shape.py:144`, `mapping/blender_to_shape.py:357` |
-| More than 65535 vertices in one mesh | The index buffer is u16.  Split the mesh. | `mapping/blender_to_shape.py:800` |
+| Exporting without an armature | The armature *is* the shape. | `mapping/blender_to_shape.py:101` |
+| More than 192 nodes or objects | `TSIntegerSet` is 6 dwords wide, so there is no bit for a 193rd in a matters set.  A format limit, not a gap. | `mapping/blender_to_shape.py:130`, `mapping/blender_to_shape.py:343` |
+| More than 65535 vertices in one mesh | The index buffer is u16.  Split the mesh. | `mapping/blender_to_shape.py:786` |
 | Arbitrary node scale on export | A bone's scale cannot express the orientation half. | `mapping/sequences.py:581` |
-| Exporting a scene saved by v1.2 or earlier | Its legacy keys are unread until **Convert DTS Data From an Older Version** runs; exporting first would write a shape missing its name table, details and IFL entries without saying so. | `props/migrate.py` |
 
 ---
 
@@ -238,7 +237,7 @@ None of these corrupt a file; all stop with an error.
 
 | Panel | Holds |
 | --- | --- |
-| Object Properties → **DTS Shape** (armature) | Name table, detail levels, material order, migration note. |
+| Object Properties → **DTS Shape** (armature) | Name table, detail levels, material order. |
 | Bone Properties → **DTS Node** | The stored rest transform and whether to keep it. |
 | Object Properties → **DTS Mesh** | Mesh flags, sorted mode and depth, **Add DTS Decal**. |
 | Object Properties → **DTS Decal** (empty) | Target, material, **Rebuild Decal Preview**, coverage rule, depth, max angle. |

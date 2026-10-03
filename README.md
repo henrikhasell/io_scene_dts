@@ -203,9 +203,6 @@ viewport, dropped outright, or frozen against Blender-side edits.
 - Extra material frames are `FLOAT2` mesh attributes; only frame 0 renders.
 - IFL flipbooks import their `.ifl`, preview as a keyframed image switch, and
   are written back out beside the exported `.dts`.
-- A `.blend` saved by v1.2 or earlier converts on load, but its mesh payloads
-  are discarded rather than unpickled — re-import the `.dts` to recover strip
-  packing, merge indices, material frames and cluster tables.
 - DTS versions below 17 (the keyframe-table era) are refused.
 
 ## Development
